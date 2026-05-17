@@ -21040,6 +21040,18 @@ def main(
     
     parsed_skills = _parse_skills_argument(skills)
 
+    # Resolve skills.auto_load for dedup. The actual injection of auto_load
+    # skills happens once in AIAgent._build_system_prompt_parts (gated on
+    # new-session). Here we only need the list so we can avoid injecting the
+    # same skill twice when --skills overlaps with auto_load, and so the
+    # "Activated skills" display reflects both sources.
+    # --ignore-rules suppresses all auto-injection (AGENTS.md, SOUL.md,
+    # memory, skills), so auto_load is skipped in that mode.
+    from agent.skill_commands import resolve_auto_load_skills
+    auto_load_skills = resolve_auto_load_skills(CLI_CONFIG) if not ignore_rules else []
+    auto_load_set = set(auto_load_skills)
+    cli_only_skills = [s for s in parsed_skills if s not in auto_load_set]
+
     # Create CLI instance
     cli = HermesCLI(
         model=model,
@@ -21058,7 +21070,7 @@ def main(
         ignore_rules=ignore_rules,
     )
 
-    if parsed_skills:
+    if cli_only_skills:
         # Load the skill payloads in the background: skill_view walks the
         # full skills tree per skill (~0.5s for a large library) and the
         # result is only consumed at agent init (first message / first
@@ -21069,17 +21081,27 @@ def main(
         def _load_preloaded_skills() -> None:
             try:
                 cli._preload_skills_result = build_preloaded_skills_prompt(
-                    parsed_skills,
+                    cli_only_skills,
                     task_id=cli.session_id,
                 )
             except Exception as exc:  # surfaced by finalize below
                 cli._preload_skills_error = exc
 
-        cli._preload_skills_requested = parsed_skills
+        cli._preload_skills_requested = cli_only_skills
         cli._preload_skills_thread = threading.Thread(
             target=_load_preloaded_skills, name="skills-preload", daemon=True
         )
         cli._preload_skills_thread.start()
+
+    # Display includes both CLI --skills and auto_load (deduped, auto_load first).
+    # Functional injection of auto_load happens in AIAgent; CLI just shows the
+    # combined activated set so users see what's loaded.
+    if auto_load_skills or parsed_skills:
+        display = list(auto_load_skills)
+        for s in parsed_skills:
+            if s not in auto_load_set:
+                display.append(s)
+        cli.preloaded_skills = display
 
     # Join the background worktree creation (started above) before anything
     # consumes TERMINAL_CWD / wt_info — the HermesCLI construction it
