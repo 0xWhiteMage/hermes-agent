@@ -562,6 +562,17 @@ Three dashboard-auth providers ship in the box. For a remote Hermes Desktop conn
 | `HERMES_DESKTOP_DEV_SERVER` | Vite dev-server URL the Electron shell loads instead of the packaged bundle (e.g. `http://127.0.0.1:5174`). Set automatically by `npm run dev`; only relevant when hacking on the app. |
 | `HERMES_DESKTOP_CDP_PORT` | Overrides the Chrome DevTools Protocol port the renderer exposes on `127.0.0.1` for DOM/CSS inspection tooling (default `9222`). Dev-server runs (`npm run dev`, `hgui`) open it automatically; a packaged app never does, and no value here changes that. Set to `off` to disable it on a dev run. Anything that can reach the port can execute code in the renderer. |
 
+### Computer Use bridge
+
+Settings for forwarding `computer_use` calls from a remote backend to a local desktop bridge. See [Computer Use → Remote Desktop/local-tool bridge](/user-guide/features/computer-use#remote-desktoplocal-tool-bridge).
+
+| Variable | Description |
+|----------|-------------|
+| `HERMES_COMPUTER_USE_BACKEND` | Set to `bridge` on the backend machine to use the HTTP bridge instead of spawning local `cua-driver`. |
+| `HERMES_COMPUTER_USE_BRIDGE_URL` | Backend-side URL of the bridge, typically a loopback SSH tunnel such as `http://127.0.0.1:18765`. Also configurable as `computer_use.bridge_url`. |
+| `HERMES_COMPUTER_USE_BRIDGE_TOKEN` | Bearer token shared by the bridge server and backend client. Store it in `~/.hermes/.env`, not shell history. Also configurable as `computer_use.bridge_token`. |
+| `HERMES_COMPUTER_USE_BRIDGE_TIMEOUT` | Backend-side HTTP timeout in seconds for bridge calls (default `30`). Raise for slow captures over high-latency links. |
+
 ### Microsoft Graph (Teams Meetings)
 
 App-only credentials for the Microsoft Graph REST client used by the upcoming Teams meeting summary pipeline. See [Register a Microsoft Graph application](/guides/microsoft-graph-app-registration) for the Azure portal walkthrough and the exact API permissions required.

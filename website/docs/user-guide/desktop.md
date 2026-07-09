@@ -373,6 +373,12 @@ You can also set the backend URL without the UI via the `HERMES_DESKTOP_REMOTE_U
 The remote gateway host is configured per [profile](./profiles.md), so each profile can point at its own remote backend (or stay on its local one). Switching profiles switches which remote host the app connects to.
 :::
 
+#### Local tools vs remote tools
+
+When Desktop connects to a remote backend, the agent's tools execute on **that backend machine**, not on the computer running the Desktop window. Terminal commands, file access, MCP servers, and tools such as Computer Use all see the remote host's environment.
+
+That means a Mac running Desktop against a VPS backend cannot control the Mac's local apps just because the UI is local. To use Computer Use on the local desktop, run a local backend for that session, or connect the remote backend to a dedicated local tool bridge/worker that executes those actions on the local machine. The built-in bridge path is documented under [Computer Use → Remote Desktop/local-tool bridge](./features/computer-use.md#remote-desktoplocal-tool-bridge).
+
 ### Troubleshooting
 
 - **Sign-in fails with 401 / "Invalid credentials"** — the username or password doesn't match the backend's `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` / `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`. The backend returns the same generic error for an unknown user and a wrong password (no enumeration oracle), so double-check both. Confirm the gate is on with `curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'` — it should report `true` and include `"basic"`.
