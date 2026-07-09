@@ -63,6 +63,9 @@ const PRIVY_ACCESS_COOKIE_VARIANTS = ['__Host-privy-token', '__Secure-privy-toke
 // is the built-in root alias; these names cannot be created as profiles.
 const RESERVED_REMOTE_PROFILES = new Set(['hermes', 'test', 'tmp', 'root', 'sudo'])
 
+/** Where a remote backend accepts this desktop's Computer Use bridge socket. */
+const COMPUTER_USE_BRIDGE_WS_PATH = '/api/tools/computer-use/desktop-bridge/ws'
+
 function normalizeRemoteBaseUrl(rawUrl) {
   let value = String(rawUrl || '').trim()
 
@@ -99,20 +102,28 @@ function normalizeRemoteBaseUrl(rawUrl) {
   return parsed.toString().replace(/\/+$/, '')
 }
 
-function buildGatewayWsUrl(baseUrl, token) {
+function buildWsUrl(baseUrl, path, query) {
   const parsed = new URL(baseUrl)
   const wsScheme = parsed.protocol === 'https:' ? 'wss' : 'ws'
   const prefix = parsed.pathname.replace(/\/+$/, '')
 
-  return `${wsScheme}://${parsed.host}${prefix}/api/ws?token=${encodeURIComponent(token)}`
+  return `${wsScheme}://${parsed.host}${prefix}${path}?${query}`
+}
+
+function buildGatewayWsUrl(baseUrl, token) {
+  return buildWsUrl(baseUrl, '/api/ws', `token=${encodeURIComponent(token)}`)
 }
 
 function buildGatewayWsUrlWithTicket(baseUrl, ticket) {
-  const parsed = new URL(baseUrl)
-  const wsScheme = parsed.protocol === 'https:' ? 'wss' : 'ws'
-  const prefix = parsed.pathname.replace(/\/+$/, '')
+  return buildWsUrl(baseUrl, '/api/ws', `ticket=${encodeURIComponent(ticket)}`)
+}
 
-  return `${wsScheme}://${parsed.host}${prefix}/api/ws?ticket=${encodeURIComponent(ticket)}`
+function buildComputerUseBridgeWsUrl(baseUrl, token) {
+  return buildWsUrl(baseUrl, COMPUTER_USE_BRIDGE_WS_PATH, `token=${encodeURIComponent(token)}`)
+}
+
+function buildComputerUseBridgeWsUrlWithTicket(baseUrl, ticket) {
+  return buildWsUrl(baseUrl, COMPUTER_USE_BRIDGE_WS_PATH, `ticket=${encodeURIComponent(ticket)}`)
 }
 
 /** True only when a gateway explicitly rejected the current OAuth session. */
@@ -177,9 +188,9 @@ async function gatewayWsUrlIpcResult(resolveWsUrl: () => Promise<string>) {
  * @param {{ mintTicket: (baseUrl: string) => Promise<string> }} deps
  * @returns {Promise<string|null>}
  */
-async function resolveTestWsUrl(baseUrl, authMode, token, deps: any = {}) {
+async function resolveTestWsUrl(baseUrl, authMode, token, deps = {}) {
   if (authMode === 'oauth') {
-    const mintTicket = deps.mintTicket
+    const mintTicket = deps && deps['mintTicket']
 
     if (typeof mintTicket !== 'function') {
       throw new Error('resolveTestWsUrl: a mintTicket function is required in OAuth mode.')
@@ -491,6 +502,7 @@ function profileRemoteOverride(config, profile) {
     url,
     authMode: normAuthMode(entry.authMode),
     token: entry.token,
+    computerUseBridge: entry.computerUseBridge !== false,
     ...(Object.keys(headers).length > 0 ? { headers } : {})
   }
 }
@@ -919,6 +931,8 @@ export {
   apiRequestRegistryConnectionId,
   AT_COOKIE_VARIANTS,
   authModeFromStatus,
+  buildComputerUseBridgeWsUrl,
+  buildComputerUseBridgeWsUrlWithTicket,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   connectionScopeKey,

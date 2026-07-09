@@ -17150,6 +17150,27 @@ async def gateway_ws(ws: WebSocket) -> None:
     await handle_ws(ws)
 
 
+@app.websocket("/api/tools/computer-use/desktop-bridge/ws")
+async def computer_use_desktop_bridge_ws(ws: WebSocket) -> None:
+    """Authenticated reverse channel from Hermes Desktop to this backend.
+
+    Desktop uses this to proxy the backend's normal `computer_use` tool calls to
+    a local loopback bridge on the user's machine, without requiring the backend
+    to dial the user's laptop or a manual SSH reverse tunnel.
+    """
+    if not _ws_auth_ok(ws):
+        await ws.close(code=4401)
+        return
+
+    if not _ws_request_is_allowed(ws):
+        await ws.close(code=4403)
+        return
+
+    from tools.computer_use.desktop_bridge import handle_desktop_bridge_ws
+
+    await handle_desktop_bridge_ws(ws)
+
+
 # ---------------------------------------------------------------------------
 # /api/pub + /api/events — chat-tab event broadcast.
 #

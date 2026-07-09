@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -41,6 +42,7 @@ interface GatewaySettingsState {
   envOverride: boolean
   mode: Mode
   remoteAuthMode: AuthMode
+  remoteComputerUseBridge: boolean
   remoteOauthConnected: boolean
   remoteTokenPreview: string | null
   remoteTokenSet: boolean
@@ -66,6 +68,7 @@ const EMPTY_STATE: GatewaySettingsState = {
   envOverride: false,
   mode: 'local',
   remoteAuthMode: 'token',
+  remoteComputerUseBridge: true,
   remoteOauthConnected: false,
   remoteTokenPreview: null,
   remoteTokenSet: false,
@@ -420,6 +423,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   const payload = (allowPlainTextToken?: boolean) => ({
     mode: state.mode,
     remoteAuthMode: authMode,
+    remoteComputerUseBridge: state.remoteComputerUseBridge,
     remoteToken: authMode === 'token' ? remoteToken.trim() || undefined : undefined,
     remoteUrl: trimmedUrl,
     sshHost: state.sshHost.trim(),
@@ -544,6 +548,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
       const saved = await window.hermesDesktop.saveConnectionConfig({
         mode: state.mode,
         remoteAuthMode: 'oauth',
+        remoteComputerUseBridge: state.remoteComputerUseBridge,
         remoteUrl: trimmedUrl
       })
 
@@ -979,6 +984,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
       const result = await window.hermesDesktop.testConnectionConfig({
         mode: 'remote',
         remoteAuthMode: authMode,
+        remoteComputerUseBridge: state.remoteComputerUseBridge,
         remoteToken: authMode === 'token' ? remoteToken.trim() || undefined : undefined,
         remoteUrl: trimmedUrl
       })
@@ -1328,6 +1334,20 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
               ) : null}
             </>
           ) : null}
+
+          <ListRow
+            action={
+              <Checkbox
+                checked={state.remoteComputerUseBridge}
+                disabled={state.envOverride}
+                onCheckedChange={checked =>
+                  setState(current => ({ ...current, remoteComputerUseBridge: checked === true }))
+                }
+              />
+            }
+            description={g.remoteComputerUseBridgeDesc}
+            title={g.remoteComputerUseBridgeTitle}
+          />
         </div>
       ) : null}
 
