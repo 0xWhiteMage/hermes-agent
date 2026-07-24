@@ -241,11 +241,10 @@ export function useStatusbarItems({
       branch && copy.branch(branch)
     ]
       .filter(Boolean)
-      .join(' · ')
+      .join('\n')
 
     return {
       className: !applying && behind > 0 ? 'text-primary hover:text-primary' : undefined,
-      detail: appVersion && sha && !applying && !remote ? sha : undefined,
       hidden: !appVersion && !sha,
       icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
       id: 'version-client',
@@ -298,7 +297,7 @@ export function useStatusbarItems({
       backendVersion && copy.backendVersion(backendVersion)
     ]
       .filter(Boolean)
-      .join(' · ')
+      .join('\n')
 
     return {
       className: !applying && updateAvailable ? 'text-primary hover:text-primary' : undefined,
