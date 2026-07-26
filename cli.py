@@ -9607,6 +9607,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_journey_command(cmd_original)
         elif canonical == "background":
             self._handle_background_command(cmd_original)
+        elif canonical == "side":
+            self._handle_side_command(cmd_original)
         elif canonical == "queue":
             # Extract prompt after "/queue " or "/q "
             parts = cmd_original.split(None, 1)

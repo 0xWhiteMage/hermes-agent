@@ -11345,11 +11345,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _cmd_def_inner and _cmd_def_inner.name == "side":
                 return await self._handle_side_command(event)
 
-            # /sidereturn is kept for backwards compatibility but is a no-op
-            # in OpenClaw-style /side.
-            if _cmd_def_inner and _cmd_def_inner.name == "sidereturn":
-                return await self._handle_sidereturn_command(event)
-
             # /kanban must bypass the guard. It writes to a profile-agnostic
             # DB (kanban.db), not to the running agent's state. In fact
             # /kanban unblock is often the only way to free a worker that
@@ -11928,9 +11923,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "side":
             return await self._handle_side_command(event)
-
-        if canonical == "sidereturn":
-            return await self._handle_sidereturn_command(event)
 
         if canonical == "queue":
             queue_payload = event.get_command_args().strip()

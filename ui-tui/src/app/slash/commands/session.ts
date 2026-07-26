@@ -101,6 +101,27 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    help: 'ask an ephemeral side question (main history untouched)',
+    name: 'side',
+    run: (arg, ctx) => {
+      if (!arg) {
+        return ctx.transcript.sys('/side <question>')
+      }
+
+      ctx.gateway.rpc<BackgroundStartResponse>('prompt.side', { session_id: ctx.sid, text: arg }).then(
+        ctx.guarded<BackgroundStartResponse>(r => {
+          if (!r.task_id) {
+            return
+          }
+
+          patchUiState(state => ({ ...state, bgTasks: new Set(state.bgTasks).add(r.task_id!) }))
+          ctx.transcript.sys(`side question ${r.task_id} started`)
+        })
+      )
+    }
+  },
+
+  {
     help: 'change or show model',
     name: 'model',
     run: (arg, ctx) => {

@@ -1646,12 +1646,51 @@ class CLICommandsMixin:
         from cli import save_config_value
         save_config_value(f"{subsystem}.write_approval", bool(enabled))
 
-    def _handle_background_command(self, cmd: str):
+    def _handle_side_command(self, cmd: str):
+        """Handle /side <question> — ephemeral side question with current context.
+
+        Composes a throwaway prompt from a read-only snapshot of the current
+        conversation history and runs it through the background-task
+        machinery. The main session's conversation history is never mutated —
+        the answer arrives as command output, not as a conversation turn.
+        """
+        from cli import _cprint
+        from hermes_cli.side_question import compose_side_prompt
+
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            _cprint("  Usage: /side <question>")
+            _cprint("  Example: /side what does that ECONNRESET error usually mean?")
+            _cprint("  Answers using the current conversation as read-only context;")
+            _cprint("  your main session history is untouched.")
+            return
+
+        question = parts[1].strip()
+        history = list(getattr(self, "conversation_history", None) or [])
+        side_prompt = compose_side_prompt(question, history)
+        self._handle_background_command(
+            cmd,
+            prompt_override=side_prompt,
+            display_prompt=question,
+            task_label="Side question",
+        )
+
+    def _handle_background_command(
+        self,
+        cmd: str,
+        prompt_override: str | None = None,
+        display_prompt: str | None = None,
+        task_label: str = "Background task",
+    ):
         """Handle /background <prompt> — run a prompt in a separate background session.
 
         Spawns a new AIAgent in a background thread with its own session.
         When it completes, prints the result to the CLI without modifying
         the active session's conversation history.
+
+        ``prompt_override`` replaces the parsed prompt sent to the agent
+        (used by /side to wrap the question in parent-history context) and
+        ``display_prompt`` overrides what's shown to the user.
         """
         from cli import AIAgent, ChatConsole, _accent_hex, _cprint, _maybe_remap_for_light_mode, _render_final_assistant_content, set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
         parts = cmd.strip().split(maxsplit=1)
@@ -1661,7 +1700,8 @@ class CLICommandsMixin:
             _cprint("  The task runs in a separate session and results display here when done.")
             return
 
-        prompt = parts[1].strip()
+        prompt = prompt_override if prompt_override is not None else parts[1].strip()
+        shown = display_prompt if display_prompt is not None else prompt
         self._background_task_counter += 1
         task_num = self._background_task_counter
         task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
@@ -1671,7 +1711,7 @@ class CLICommandsMixin:
             _cprint("  (>_<) Cannot start background task: no valid credentials.")
             return
 
-        _cprint(f"  🔄 Background task #{task_num} started: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"")
+        _cprint(f"  🔄 {task_label} #{task_num} started: \"{shown[:60]}{'...' if len(shown) > 60 else ''}\"")
         _cprint(f"  Task ID: {task_id}")
         _cprint("  You can continue chatting — results will appear when done.\n")
 
@@ -1742,8 +1782,8 @@ class CLICommandsMixin:
                     time.sleep(0.05)  # brief pause for refresh
                 print()
                 ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
-                _cprint(f"  ✅ Background task #{task_num} complete")
-                _cprint(f"  Prompt: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"")
+                _cprint(f"  ✅ {task_label} #{task_num} complete")
+                _cprint(f"  Prompt: \"{shown[:60]}{'...' if len(shown) > 60 else ''}\"")
                 ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
                 if response:
                     try:

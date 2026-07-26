@@ -12932,6 +12932,67 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"task_id": task_id})
 
 
+@method("prompt.side")
+def _(rid, params: dict) -> dict:
+    """/side <question> — ephemeral side question with current context.
+
+    Snapshots the parent session's history (read-only) into a throwaway
+    prompt and runs it like a background task. The parent session's history
+    is never mutated; the answer arrives as a background.complete event.
+    """
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    text, parent = params.get("text", ""), params.get("session_id", "")
+    if not text:
+        return _err(rid, 4012, "text required")
+    task_id = f"side_{uuid.uuid4().hex[:6]}"
+
+    from hermes_cli.side_question import compose_side_prompt
+
+    try:
+        with session["history_lock"]:
+            parent_history = list(session.get("history", []) or [])
+    except Exception:
+        parent_history = list(session.get("history", []) or [])
+    side_prompt = compose_side_prompt(text, parent_history)
+
+    def run():
+        session_tokens = _set_session_context(task_id, cwd=_session_cwd(session))
+        try:
+            from run_agent import AIAgent
+
+            result = AIAgent(
+                **_background_agent_kwargs(session["agent"], task_id)
+            ).run_conversation(
+                user_message=side_prompt,
+                task_id=task_id,
+            )
+            _emit(
+                "background.complete",
+                parent,
+                {
+                    "task_id": task_id,
+                    "text": (
+                        result.get("final_response", str(result))
+                        if isinstance(result, dict)
+                        else str(result)
+                    ),
+                },
+            )
+        except Exception as e:
+            _emit(
+                "background.complete",
+                parent,
+                {"task_id": task_id, "text": f"error: {e}"},
+            )
+        finally:
+            _clear_session_context(session_tokens)
+
+    threading.Thread(target=run, daemon=True).start()
+    return _ok(rid, {"task_id": task_id})
+
+
 @method("preview.restart")
 def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
