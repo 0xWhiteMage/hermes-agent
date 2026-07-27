@@ -558,6 +558,104 @@ class TestRenderDeliveryExtra:
         assert result["static"] == 42  # non-string left as-is
 
 
+class TestDiscordWebhookThreadStarter:
+    @pytest.mark.asyncio
+    async def test_creates_templated_starter_before_agent_and_routes_run_to_thread(self):
+        routes = {
+            "betterstack-alerts": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "Investigate {data.attributes.name}",
+                "deliver": "discord",
+                "deliver_extra": {
+                    "chat_id": "1495620631117430905",
+                    "create_thread": True,
+                    "thread_starter": (
+                        "Investigating BetterStack Webhook: "
+                        "{data.attributes.name}"
+                    ),
+                    "thread_name": "BetterStack: {data.attributes.name}",
+                },
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        discord_target = MagicMock()
+        discord_target.send = AsyncMock(
+            return_value=SendResult(
+                success=True,
+                message_id="starter-123",
+                raw_response={"thread_id": "thread-456"},
+            )
+        )
+        runner = MagicMock()
+        runner.adapters = {Platform.DISCORD: discord_target}
+        adapter.gateway_runner = runner
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/webhooks/betterstack-alerts",
+                json={"data": {"attributes": {"name": "API Metrics"}}},
+                headers={"X-Request-ID": "thread-starter-success"},
+            )
+            assert response.status == 202
+
+        discord_target.send.assert_awaited_once_with(
+            "1495620631117430905",
+            "Investigating BetterStack Webhook: API Metrics",
+            metadata={
+                "create_thread": True,
+                "thread_name": "BetterStack: API Metrics",
+            },
+        )
+        adapter.handle_message.assert_called_once()
+        session_delivery = adapter._delivery_info[
+            "webhook:betterstack-alerts:thread-starter-success"
+        ]
+        assert session_delivery["deliver_extra"]["thread_id"] == "thread-456"
+        assert "create_thread" not in session_delivery["deliver_extra"]
+        assert "thread_starter" not in session_delivery["deliver_extra"]
+
+    @pytest.mark.asyncio
+    async def test_thread_creation_failure_does_not_start_agent_and_allows_retry(self):
+        routes = {
+            "alerts": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "Investigate {title}",
+                "deliver": "discord",
+                "deliver_extra": {
+                    "chat_id": "123",
+                    "create_thread": True,
+                    "thread_starter": "Investigating: {title}",
+                },
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        discord_target = MagicMock()
+        discord_target.send = AsyncMock(
+            return_value=SendResult(success=False, error="Missing Access")
+        )
+        runner = MagicMock()
+        runner.adapters = {Platform.DISCORD: discord_target}
+        adapter.gateway_runner = runner
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/webhooks/alerts",
+                json={"title": "Database alert"},
+                headers={"X-Request-ID": "thread-starter-failure"},
+            )
+            assert response.status == 502
+
+        adapter.handle_message.assert_not_called()
+        assert "thread-starter-failure" not in adapter._seen_deliveries
+        assert not adapter._delivery_info
+
+
 # ===================================================================
 # Event filtering
 # ===================================================================
