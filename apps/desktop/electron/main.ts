@@ -144,7 +144,12 @@ import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import * as remoteLifecycle from './remote-lifecycle'
-import { RemoteLivenessTracker, RemoteRevalidationCoordinator, revalidateRemoteConnection } from './remote-liveness'
+import {
+  RemoteLivenessTracker,
+  RemoteRevalidationCoordinator,
+  revalidatePooledRemoteBackends,
+  revalidateRemoteConnection
+} from './remote-liveness'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -7747,7 +7752,14 @@ async function ensureBackend(profile) {
 
   evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
 
-  const entry = { process: null, port: null, token: null, connectionPromise: null, lastActiveAt: Date.now() }
+  const entry = {
+    process: null,
+    port: null,
+    token: null,
+    connectionPromise: null,
+    lastActiveAt: Date.now(),
+    remoteBaseUrl: null
+  }
   entry.connectionPromise = spawnPoolBackend(key, entry).catch(error => {
     backendPool.delete(key)
     throw error
@@ -7843,6 +7855,10 @@ async function spawnPoolBackend(profile, entry) {
 
   if (remote) {
     await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode)
+
+    // Recorded on the entry so revalidation can probe this descriptor without
+    // awaiting connectionPromise, which may still be pending for a sibling.
+    entry.remoteBaseUrl = remote.baseUrl
 
     return {
       ...remote,
@@ -9117,6 +9133,8 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
   const connectionPromise = backendConnectionState.getPromise()
 
   if (!connectionPromise) {
+    await revalidatePool()
+
     return { ok: true, rebuilt: false }
   }
 
@@ -9124,14 +9142,17 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
   // share this primary connection. Coalesce simultaneous requests so one outage
   // produces one failure observation rather than exhausting the whole streak.
   return remoteRevalidation.run(connectionPromise, async () => {
-    const result = await revalidateRemoteConnection({
-      connectionPromise,
-      currentConnectionPromise: () => backendConnectionState.getPromise(),
-      log: rememberLog,
-      probe: fetchPublicJson,
-      resetConnection: resetHermesConnection,
-      tracker: remoteLiveness
-    })
+    const [result] = await Promise.all([
+      revalidateRemoteConnection({
+        connectionPromise,
+        currentConnectionPromise: () => backendConnectionState.getPromise(),
+        log: rememberLog,
+        probe: fetchPublicJson,
+        resetConnection: resetHermesConnection,
+        tracker: remoteLiveness
+      }),
+      revalidatePool()
+    ])
 
     // A rebuilt SSH connection must also tear down its tunnel/master before the
     // renderer re-dials (which only happens after this handler resolves), so the
@@ -9149,6 +9170,19 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
     return result
   })
 })
+
+// Pooled remote descriptors get the same treatment as the primary: they have no
+// child process to signal their host's death, and the renderer's keepalive touch
+// spares them from the idle reaper, so nothing else can retire a dead one.
+function revalidatePool() {
+  return revalidatePooledRemoteBackends({
+    entries: backendPool.entries(),
+    log: rememberLog,
+    probe: fetchPublicJson,
+    stopBackend: stopPoolBackend,
+    tracker: remoteLiveness
+  })
+}
 ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
   touchPoolBackend(profile)
 
