@@ -27,26 +27,33 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 from generate_ingress_vectors import (  # noqa: E402
+    BOT_USER_ID,
+    DISCORD_CORPUS,
+    SLACK_BOT_USER_ID,
+    SLACK_CORPUS,
     TELEGRAM_CORPUS,
     WHATSAPP_CORPUS,
     WA_CONTACTS,
     WA_METADATA,
+    discord_expected,
     generate,
+    slack_expected,
     telegram_expected,
     whatsapp_expected,
 )
 
-PLATFORMS = ("telegram", "whatsapp")
+PLATFORMS = ("discord", "slack", "telegram", "whatsapp")
 
 
 # ── layer 1: generator invariants ────────────────────────────────────────
 
 
 def test_corpus_ids_unique():
-    for corpus in (TELEGRAM_CORPUS, WHATSAPP_CORPUS):
+    for corpus in (TELEGRAM_CORPUS, WHATSAPP_CORPUS, DISCORD_CORPUS, SLACK_CORPUS):
         ids = [vid for vid, _ in corpus]
         assert len(ids) == len(set(ids))
     assert len(TELEGRAM_CORPUS) >= 12 and len(WHATSAPP_CORPUS) >= 12
+    assert len(DISCORD_CORPUS) >= 12 and len(SLACK_CORPUS) >= 10
 
 
 def test_generation_is_deterministic(tmp_path):
@@ -221,3 +228,122 @@ def test_expected_fields_cover_scar_rules():
     assert wa["button-reply"]["body"] == "Approve"
     assert wa["document-with-filename"]["document_filename"] == "notes.txt"
     assert wa["unknown-type-defaults-text"]["message_type"] == "text"
+
+    dc = {vid: discord_expected(p) for vid, p in DISCORD_CORPUS}
+    assert dc["guild-mention-stripped"]["text"] == "summarize this"
+    assert dc["guild-nickname-mention-form"]["mentions_bot"] is True  # <@!id> form
+    assert dc["addressed-command"]["message_type"] == "command"  # strip THEN detect
+    assert dc["voice-note-attachment"]["message_type"] == "voice"
+    assert dc["plain-audio-attachment"]["message_type"] == "audio"
+    assert dc["document-attachment-unknown-type"]["message_type"] == "document"
+    assert dc["forwarded-snapshot-text"]["text"] == "forwarded wisdom"
+    assert dc["reply-inherits-referenced-attachment"]["message_type"] == "document"
+    assert dc["forum-thread-naming"]["chat_name"] == "Eng / reports / bug report"
+    assert dc["thread-message"]["chat_name"] == "Eng / #general / build issue"
+    assert dc["thread-message"]["thread_id"] == "t1"
+    assert dc["display-name-preference"]["user_name"] == "Benjamin"
+    assert dc["bot-authored"]["user_is_bot"] is True
+
+    sl = {vid: slack_expected(p) for vid, p in SLACK_CORPUS}
+    assert sl["thread-root-equals-ts"]["chat_type"] == "channel"  # #15464
+    assert sl["thread-root-equals-ts"]["session_thread_ts"] == "100.7"
+    assert sl["channel-thread-reply"]["chat_type"] == "thread"
+    assert sl["channel-thread-reply"]["session_thread_ts"] == "100.4"
+    assert sl["mpim-is-dm-but-not-one-to-one"]["is_dm"] is True
+    assert sl["mpim-is-dm-but-not-one-to-one"]["is_one_to_one_dm"] is False
+    assert sl["dm-prefix-fallback"]["is_dm"] is True
+    assert sl["channel-mention"]["mentions_bot"] is True
+    assert sl["channel-mention"]["text"] == "do the thing"  # token stripped
+    assert sl["bot-message-subtype"]["user_is_bot"] is True
+    assert sl["bot-id-without-subtype"]["user_is_bot"] is True
+
+
+# ── layer 2 (discord/slack): oracle fidelity ─────────────────────────────
+
+
+def test_discord_core_matches_adapter_helpers():
+    """The adapter's remaining helper entry points (delegate shims + the
+    staticmethod voice check) must agree with the pure core — proving the
+    delegation is real, not parallel logic."""
+    from types import SimpleNamespace
+
+    from plugins.platforms.discord.adapter import DiscordAdapter
+    from plugins.platforms.discord.discord_parse import (
+        AttachmentView,
+        is_voice_message_attachment,
+    )
+
+    cases = [
+        AttachmentView(is_voice_message=True),
+        AttachmentView(is_voice_message=False, duration=1.0, waveform="x"),
+        AttachmentView(duration=2.0, waveform="y"),
+        AttachmentView(duration=2.0),  # waveform missing → not voice
+        AttachmentView(),
+    ]
+    for av in cases:
+        sdk_like = SimpleNamespace(
+            is_voice_message=av.is_voice_message,
+            duration=av.duration,
+            waveform=av.waveform,
+        )
+        assert DiscordAdapter._is_discord_voice_message_attachment(
+            sdk_like
+        ) == is_voice_message_attachment(av), av
+
+
+def test_discord_thread_naming_matches_adapter():
+    """_format_thread_chat_name (now a delegate) ≡ core thread_chat_name
+    across the naming shapes, via SDK-like objects."""
+    from types import SimpleNamespace
+
+    from plugins.platforms.discord.adapter import DiscordAdapter
+
+    adapter = DiscordAdapter.__new__(DiscordAdapter)
+
+    forum_parent = SimpleNamespace(
+        name="reports", guild=SimpleNamespace(name="Eng"), type="forum"
+    )
+    text_parent = SimpleNamespace(
+        name="general", guild=SimpleNamespace(name="Eng"), type="text"
+    )
+
+    def _is_forum(parent):
+        return parent is forum_parent
+
+    adapter._is_forum_parent = _is_forum
+
+    thread_in_forum = SimpleNamespace(
+        id=1, name="bug report", parent=forum_parent, guild=None
+    )
+    thread_in_text = SimpleNamespace(
+        id=2, name="build issue", parent=text_parent, guild=None
+    )
+    orphan = SimpleNamespace(id=3, name="lonely", parent=None, guild=None)
+
+    assert adapter._format_thread_chat_name(thread_in_forum) == "Eng / reports / bug report"
+    assert adapter._format_thread_chat_name(thread_in_text) == "Eng / #general / build issue"
+    assert adapter._format_thread_chat_name(orphan) == "lonely"
+
+
+def test_slack_core_matches_adapter_rules():
+    """The Slack adapter now delegates DM classification + channel scoping
+    to the core; assert the core reproduces the adapter's documented legacy
+    behaviors on the corpus (payload-only rules)."""
+    from plugins.platforms.slack.slack_parse import (
+        slack_is_dm,
+        slack_is_one_to_one_dm,
+        slack_session_thread_ts,
+    )
+
+    for vid, event in SLACK_CORPUS:
+        exp = slack_expected(event)
+        assert slack_is_dm(event) == exp["is_dm"], vid
+        assert slack_is_one_to_one_dm(event) == exp["is_one_to_one_dm"], vid
+        assert slack_session_thread_ts(event) == exp["session_thread_ts"], vid
+
+    # reply_in_thread=false → shared channel session (thread key None) for
+    # top-level channel messages, but genuine thread replies keep their key.
+    top = dict(SLACK_CORPUS[3][1])  # channel-top-level
+    reply = dict(SLACK_CORPUS[4][1])  # channel-thread-reply
+    assert slack_session_thread_ts(top, reply_in_thread=False) is None
+    assert slack_session_thread_ts(reply, reply_in_thread=False) == "100.4"

@@ -12,17 +12,23 @@ vitest runner asserts the CONNECTOR normalizers (telegram.ts / whatsapp.ts
 (dropped categories, wrong thread routing, mangled reply context) breaks a
 test instead of silently eating messages.
 
-Platform scope (deliberate):
+Platform scope:
   telegram  raw Bot API update dicts → thread routing (#3206/#22423 rules),
             chat-type normalization, reply context w/ partial quotes,
             source identity.
   whatsapp  Cloud API message objects → type mapping, body extraction,
             reply context (id + is_own), media identification, the
             group-shape refusal.
-  discord/slack: DEFERRED — their native inbound paths are discord.py /
-  Bolt EVENT-OBJECT consumers (SDK state, not payload functions); an
-  honest oracle needs the same pure-core extraction done here for
-  telegram/whatsapp. Recorded in the parity report.
+  discord   SDK-view IR dicts (layer 2 — see discord_parse.py's layer
+            model) → chat-type classification, mention stripping,
+            forwarded-snapshot folding, attachment→type classification,
+            reply references, thread naming. Layer 1 (payload→SDK object)
+            is the documented SDK-equivalence axiom: discord.py and the
+            connector's raw MESSAGE_CREATE handling are assumed to resolve
+            the same view fields.
+  slack     Events API message events → DM/MPIM classification, thread_ts
+            session scoping (#15421/#15464), mention detection, bot-message
+            classification.
 
 Field vocabulary is the WIRE MessageEvent's (chat_id, chat_type, thread_id,
 user_id, message_id, text, reply_to_*, message_type/media) — the shared
@@ -222,6 +228,176 @@ WHATSAPP_CORPUS: List[tuple] = [
 ]
 
 
+# ── discord corpus: SDK-view IR dicts (layer 2) ──────────────────────────
+
+BOT_USER_ID = "424242"
+
+DISCORD_CORPUS: List[tuple] = [
+    (
+        "dm-plain-text",
+        {"id": "1001", "content": "hello", "channel_id": "d1", "channel_kind": "dm",
+         "author": {"id": "777", "username": "ben", "display_name": "Ben"}},
+    ),
+    (
+        "guild-mention-stripped",
+        {"id": "1002", "content": f"<@{BOT_USER_ID}> summarize this", "channel_id": "c1",
+         "channel_name": "general", "channel_kind": "guildText", "guild_id": "g1",
+         "guild_name": "Eng", "author": {"id": "777", "username": "ben"},
+         "mentions": [{"id": BOT_USER_ID}]},
+    ),
+    (
+        "guild-nickname-mention-form",
+        {"id": "1003", "content": f"<@!{BOT_USER_ID}> hi", "channel_id": "c1",
+         "channel_name": "general", "channel_kind": "guildText", "guild_id": "g1",
+         "author": {"id": "777", "username": "ben"}, "mentions": []},
+    ),
+    (
+        "addressed-command",
+        {"id": "1004", "content": f"<@{BOT_USER_ID}> /new", "channel_id": "c1",
+         "channel_kind": "guildText", "guild_id": "g1",
+         "author": {"id": "777", "username": "ben"}, "mentions": [{"id": BOT_USER_ID}]},
+    ),
+    (
+        "thread-message",
+        {"id": "1005", "content": "in thread", "channel_id": "t1",
+         "channel_name": "build issue", "channel_kind": "thread", "guild_id": "g1",
+         "guild_name": "Eng", "parent_channel_id": "c1", "parent_channel_name": "general",
+         "author": {"id": "777", "username": "ben"}},
+    ),
+    (
+        "forum-thread-naming",
+        {"id": "1006", "content": "forum post", "channel_id": "t2",
+         "channel_name": "bug report", "channel_kind": "thread", "guild_id": "g1",
+         "guild_name": "Eng", "parent_channel_id": "f1", "parent_channel_name": "reports",
+         "parent_is_forum": True, "author": {"id": "777", "username": "ben"}},
+    ),
+    (
+        "image-attachment",
+        {"id": "1007", "content": "look", "channel_id": "c1", "channel_kind": "guildText",
+         "guild_id": "g1", "author": {"id": "777", "username": "ben"},
+         "attachments": [{"content_type": "image/png", "filename": "a.png",
+                          "url": "https://cdn.discordapp.com/a.png"}]},
+    ),
+    (
+        "voice-note-attachment",
+        {"id": "1008", "content": "", "channel_id": "d1", "channel_kind": "dm",
+         "author": {"id": "777", "username": "ben"},
+         "attachments": [{"content_type": "audio/ogg", "is_voice_message": True,
+                          "duration": 3.2, "waveform": "AAA="}]},
+    ),
+    (
+        "plain-audio-attachment",
+        {"id": "1009", "content": "", "channel_id": "d1", "channel_kind": "dm",
+         "author": {"id": "777", "username": "ben"},
+         "attachments": [{"content_type": "audio/mpeg", "filename": "song.mp3"}]},
+    ),
+    (
+        "document-attachment-unknown-type",
+        {"id": "1010", "content": "", "channel_id": "d1", "channel_kind": "dm",
+         "author": {"id": "777", "username": "ben"},
+         "attachments": [{"filename": "data.bin"}]},  # no content_type ⇒ DOCUMENT
+    ),
+    (
+        "forwarded-snapshot-text",
+        {"id": "1011", "content": "", "channel_id": "d1", "channel_kind": "dm",
+         "author": {"id": "777", "username": "ben"},
+         "message_snapshots": [{"content": "forwarded wisdom"}]},
+    ),
+    (
+        "reply-with-reference",
+        {"id": "1012", "content": "re", "channel_id": "c1", "channel_kind": "guildText",
+         "guild_id": "g1", "author": {"id": "777", "username": "ben"},
+         "referenced_message": {"id": "999", "attachments": []}},
+    ),
+    (
+        "reply-inherits-referenced-attachment",
+        {"id": "1013", "content": "what is this file?", "channel_id": "c1",
+         "channel_kind": "guildText", "guild_id": "g1",
+         "author": {"id": "777", "username": "ben"},
+         "referenced_message": {"id": "999",
+                                "attachments": [{"content_type": "application/pdf",
+                                                 "filename": "spec.pdf"}]}},
+    ),
+    (
+        "bot-authored",
+        {"id": "1014", "content": "bot says", "channel_id": "c1",
+         "channel_kind": "guildText", "guild_id": "g1",
+         "author": {"id": "999", "username": "otherbot", "bot": True}},
+    ),
+    (
+        "display-name-preference",
+        {"id": "1015", "content": "hi", "channel_id": "d1", "channel_kind": "dm",
+         "author": {"id": "777", "username": "ben", "display_name": "Benjamin"}},
+    ),
+]
+
+# ── slack corpus: Events API message events ──────────────────────────────
+
+SLACK_BOT_USER_ID = "U0BOT"
+
+SLACK_CORPUS: List[tuple] = [
+    (
+        "dm-plain-text",
+        {"channel": "D111", "channel_type": "im", "ts": "100.1", "user": "U777",
+         "team": "T1", "text": "hello"},
+    ),
+    (
+        "dm-prefix-fallback",
+        {"channel": "D222", "ts": "100.2", "user": "U777", "text": "no channel_type"},
+    ),
+    (
+        "mpim-is-dm-but-not-one-to-one",
+        {"channel": "G333", "channel_type": "mpim", "ts": "100.3", "user": "U777",
+         "team": "T1", "text": "group dm"},
+    ),
+    (
+        "channel-top-level",
+        {"channel": "C444", "channel_type": "channel", "ts": "100.4", "user": "U777",
+         "team": "T1", "text": "top level"},
+    ),
+    (
+        "channel-thread-reply",
+        {"channel": "C444", "channel_type": "channel", "ts": "100.6", "user": "U777",
+         "team": "T1", "text": "in thread", "thread_ts": "100.4"},
+    ),
+    (
+        # #15464: thread_ts == ts is a thread-ROOT shape, not a reply.
+        "thread-root-equals-ts",
+        {"channel": "C444", "channel_type": "channel", "ts": "100.7", "user": "U777",
+         "team": "T1", "text": "root shape", "thread_ts": "100.7"},
+    ),
+    (
+        "channel-mention",
+        {"channel": "C444", "channel_type": "channel", "ts": "100.8", "user": "U777",
+         "team": "T1", "text": f"<@{SLACK_BOT_USER_ID}> do the thing"},
+    ),
+    (
+        "dm-thread-reply",
+        {"channel": "D111", "channel_type": "im", "ts": "100.9", "user": "U777",
+         "text": "dm threaded", "thread_ts": "100.1"},
+    ),
+    (
+        "bot-message-subtype",
+        {"channel": "C444", "channel_type": "channel", "ts": "101.0",
+         "subtype": "bot_message", "bot_id": "B99", "text": "integration says"},
+    ),
+    (
+        "bot-id-without-subtype",
+        {"channel": "C444", "channel_type": "channel", "ts": "101.1", "bot_id": "B99",
+         "text": "workflow post"},
+    ),
+    (
+        "private-group-channel",
+        {"channel": "G555", "channel_type": "group", "ts": "101.2", "user": "U777",
+         "team": "T1", "text": "private channel"},
+    ),
+    (
+        "cjk-emoji-text",
+        {"channel": "C444", "channel_type": "channel", "ts": "101.3", "user": "U777",
+         "team": "T1", "text": "中文 — test 🎉 (100%)"},
+    ),
+]
+
 # ── expected-field derivation via the pure cores ─────────────────────────
 
 
@@ -267,6 +443,52 @@ def whatsapp_expected(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def discord_expected(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from plugins.platforms.discord.discord_parse import (
+        parse_discord_message,
+        view_from_dict,
+    )
+
+    p = parse_discord_message(view_from_dict(payload), BOT_USER_ID)
+    return {
+        "chat_type": p.chat_type,
+        "chat_id": p.chat_id,
+        "chat_name": p.chat_name,
+        "thread_id": p.thread_id,
+        "parent_chat_id": p.parent_chat_id,
+        "guild_id": p.guild_id,
+        "user_id": p.user_id,
+        "user_name": p.user_name,
+        "user_is_bot": p.user_is_bot,
+        "message_id": p.message_id,
+        "text": p.text,
+        "message_type": p.message_type.value
+        if hasattr(p.message_type, "value")
+        else str(p.message_type),
+        "reply_to_message_id": p.reply_to_message_id,
+        "mentions_bot": p.mentions_bot,
+    }
+
+
+def slack_expected(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from plugins.platforms.slack.slack_parse import parse_slack_event
+
+    p = parse_slack_event(payload, SLACK_BOT_USER_ID)
+    return {
+        "chat_type": p.chat_type,
+        "chat_id": p.chat_id,
+        "is_dm": p.is_dm,
+        "is_one_to_one_dm": p.is_one_to_one_dm,
+        "session_thread_ts": p.session_thread_ts,
+        "user_id": p.user_id,
+        "team_id": p.team_id,
+        "message_id": p.message_id,
+        "text": p.text,
+        "mentions_bot": p.mentions_bot,
+        "user_is_bot": p.user_is_bot,
+    }
+
+
 def _oracle_commit() -> str:
     try:
         return subprocess.run(
@@ -286,6 +508,10 @@ def generate(out_dir: Path) -> Dict[str, int]:
                      {"contacts": None, "metadata": None}),
         "whatsapp": (WHATSAPP_CORPUS, whatsapp_expected,
                      {"contacts": WA_CONTACTS, "metadata": WA_METADATA}),
+        "discord": (DISCORD_CORPUS, discord_expected,
+                    {"bot_user_id": BOT_USER_ID}),
+        "slack": (SLACK_CORPUS, slack_expected,
+                  {"bot_user_id": SLACK_BOT_USER_ID}),
     }
     for platform, (corpus, derive, ctx) in sorted(corpora.items()):
         vectors = []
