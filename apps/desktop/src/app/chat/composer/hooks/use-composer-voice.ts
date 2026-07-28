@@ -10,6 +10,7 @@ import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $messages } from '@/store/session'
 import { $autoSpeakReplies, setAutoSpeakReplies } from '@/store/voice-prefs'
+import { resumeWakeAfterVoice } from '@/store/wake-word'
 
 import type { ComposerTarget } from '../focus'
 import { onComposerVoiceToggleRequest } from '../focus'
@@ -158,10 +159,10 @@ export function useComposerVoice({
     }
 
     wakePausedRef.current = false
-    void $gateway
-      .get()
-      ?.request('wake.resume', {})
-      .catch(() => undefined)
+    // Reconcile, don't just resume: the wake word is a persistent setting, so
+    // ending a voice chat must re-arm the listener whenever config says
+    // enabled — including when the raw resume loses the mic-release race.
+    void resumeWakeAfterVoice()
   }, [])
 
   // The ref is a request token (did WE issue wake.pause?), not an atom mirror —
