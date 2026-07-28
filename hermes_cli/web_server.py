@@ -1273,6 +1273,7 @@ class CustomEndpointUpdate(BaseModel):
     context_length: Optional[int] = None
     discover_models: bool = True
     make_default: bool = False
+    ssh_tunnel: Optional[Dict[str, Any]] = None
     models: Optional[List[str]] = None
 
 
@@ -7659,6 +7660,7 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
                 "models": models,
                 "context_length": raw_entry.get("context_length"),
                 "discover_models": bool(raw_entry.get("discover_models", True)),
+                "ssh_tunnel": raw_entry.get("ssh_tunnel") if isinstance(raw_entry.get("ssh_tunnel"), dict) else None,
                 "has_api_key": has_api_key,
                 "api_key_preview": api_key_preview,
                 "is_current": endpoint_id == current_provider,
@@ -7675,6 +7677,7 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
             "models": [current_model] if current_model else [],
             "context_length": model_cfg.get("context_length"),
             "discover_models": True,
+            "ssh_tunnel": model_cfg.get("ssh_tunnel") if isinstance(model_cfg.get("ssh_tunnel"), dict) else None,
             "has_api_key": has_api_key,
             "api_key_preview": api_key_preview,
             "is_current": True,
@@ -7751,6 +7754,16 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
         "model": model,
         "discover_models": bool(body.discover_models),
     })
+    if body.ssh_tunnel:
+        try:
+            from hermes_cli.ssh_tunnel import SshTunnelConfig
+
+            SshTunnelConfig.from_dict(body.ssh_tunnel)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        entry["ssh_tunnel"] = dict(body.ssh_tunnel)
+    elif body.ssh_tunnel == {}:
+        entry.pop("ssh_tunnel", None)
     # Same for the model map: merge rather than replace, so existing models
     # keep their context lengths. ``body.models`` is the catalogue the panel's
     # Test button already discovered — without it only the one hand-typed
@@ -7900,6 +7913,13 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
     base_url = (body.base_url or "").strip().rstrip("/")
     if not base_url:
         return {"ok": False, "reachable": True, "message": "Enter an endpoint URL first.", "models": []}
+
+    try:
+        from hermes_cli.ssh_tunnel import resolve_ssh_tunnel_url
+
+        base_url = resolve_ssh_tunnel_url(base_url, body.ssh_tunnel)
+    except (RuntimeError, ValueError) as exc:
+        return {"ok": False, "reachable": False, "message": str(exc), "models": []}
 
     url = base_url + "/models"
     headers = {"Accept": "application/json"}

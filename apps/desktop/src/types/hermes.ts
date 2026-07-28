@@ -161,6 +161,14 @@ export interface CustomEndpoint {
   models: string[]
   name: string
   source?: string
+  ssh_tunnel?: null | SshTunnelConfig
+}
+
+export interface SshTunnelConfig {
+  host: string
+  key_path?: string
+  port?: number
+  user?: string
 }
 
 export interface CustomEndpointsResponse {
@@ -184,6 +192,7 @@ export interface CustomEndpointUpdate {
   model: string
   models?: string[]
   name: string
+  ssh_tunnel?: Record<string, never> | SshTunnelConfig
 }
 
 export interface CustomEndpointValidationResponse {

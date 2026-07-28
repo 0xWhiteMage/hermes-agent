@@ -2084,6 +2084,29 @@ def test_named_custom_runtime_propagates_extra_body_direct_path(monkeypatch):
     }
 
 
+def test_named_custom_runtime_uses_managed_ssh_tunnel(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "remote-vllm")
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda _p: {
+            "name": "remote-vllm",
+            "base_url": "http://127.0.0.1:30090/v1",
+            "api_key": "test-key",
+            "ssh_tunnel": {"host": "gpu.example", "key_path": "/tmp/key"},
+        },
+    )
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "hermes_cli.ssh_tunnel.resolve_ssh_tunnel_url",
+        lambda base_url, tunnel: "http://127.0.0.1:49152/v1",
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="remote-vllm")
+
+    assert resolved["base_url"] == "http://127.0.0.1:49152/v1"
+
+
 def test_named_custom_runtime_propagates_model_pool_path(monkeypatch):
     """Model should propagate even when credential pool handles credentials."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")

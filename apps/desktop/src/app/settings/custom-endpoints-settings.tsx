@@ -32,6 +32,10 @@ interface EndpointForm {
   makeDefault: boolean
   model: string
   name: string
+  sshHost: string
+  sshKeyPath: string
+  sshPort: string
+  sshUser: string
 }
 
 const EMPTY_FORM: EndpointForm = {
@@ -42,7 +46,11 @@ const EMPTY_FORM: EndpointForm = {
   id: '',
   makeDefault: true,
   model: '',
-  name: ''
+  name: '',
+  sshHost: '',
+  sshKeyPath: '',
+  sshPort: '',
+  sshUser: ''
 }
 
 function formFromEndpoint(endpoint: CustomEndpoint): EndpointForm {
@@ -54,7 +62,11 @@ function formFromEndpoint(endpoint: CustomEndpoint): EndpointForm {
     id: endpoint.id,
     makeDefault: Boolean(endpoint.is_current),
     model: endpoint.model,
-    name: endpoint.name
+    name: endpoint.name,
+    sshHost: endpoint.ssh_tunnel?.host ?? '',
+    sshKeyPath: endpoint.ssh_tunnel?.key_path ?? '',
+    sshPort: endpoint.ssh_tunnel?.port ? String(endpoint.ssh_tunnel.port) : '',
+    sshUser: endpoint.ssh_tunnel?.user ?? ''
   }
 }
 
@@ -70,7 +82,15 @@ function toPayload(form: EndpointForm, models?: string[]): CustomEndpointUpdate 
     context_length: Number.isFinite(contextLength) && contextLength > 0 ? contextLength : undefined,
     discover_models: form.discoverModels,
     make_default: form.makeDefault,
-    models: models?.length ? models : undefined
+    models: models?.length ? models : undefined,
+    ssh_tunnel: form.sshHost.trim()
+      ? {
+          host: form.sshHost.trim(),
+          key_path: form.sshKeyPath.trim() || undefined,
+          port: Number.parseInt(form.sshPort, 10) || undefined,
+          user: form.sshUser.trim() || undefined
+        }
+      : {}
   }
 }
 
@@ -320,6 +340,46 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                 value={form.baseUrl}
               />
             </label>
+            <div className="grid gap-3 rounded-md border border-border/40 p-3">
+              <div className="text-xs text-muted-foreground">
+                SSH tunnel (optional) — the endpoint URL is resolved from the remote host; Hermes chooses a private local port.
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="grid gap-1.5 text-xs text-muted-foreground">
+                  SSH host
+                  <Input
+                    onChange={event => setForm(current => ({ ...current, sshHost: event.target.value }))}
+                    placeholder="user@host or host alias"
+                    value={form.sshHost}
+                  />
+                </label>
+                <label className="grid gap-1.5 text-xs text-muted-foreground">
+                  SSH user
+                  <Input
+                    onChange={event => setForm(current => ({ ...current, sshUser: event.target.value }))}
+                    placeholder="from SSH config"
+                    value={form.sshUser}
+                  />
+                </label>
+                <label className="grid gap-1.5 text-xs text-muted-foreground">
+                  Identity file
+                  <Input
+                    onChange={event => setForm(current => ({ ...current, sshKeyPath: event.target.value }))}
+                    placeholder="~/.ssh/id_ed25519"
+                    value={form.sshKeyPath}
+                  />
+                </label>
+                <label className="grid gap-1.5 text-xs text-muted-foreground">
+                  SSH port
+                  <Input
+                    inputMode="numeric"
+                    onChange={event => setForm(current => ({ ...current, sshPort: event.target.value }))}
+                    placeholder="22"
+                    value={form.sshPort}
+                  />
+                </label>
+              </div>
+            </div>
             <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_12rem]">
               <label className="grid gap-1.5 text-xs text-muted-foreground">
                 Default Model

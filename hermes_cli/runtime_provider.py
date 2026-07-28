@@ -63,6 +63,15 @@ def _normalize_custom_provider_name(value: str) -> str:
     return value.strip().lower().replace(" ", "-")
 
 
+def _apply_ssh_tunnel(runtime: Dict[str, Any], ssh_tunnel: Any) -> Dict[str, Any]:
+    """Rewrite an SSH-backed custom endpoint to its managed loopback URL."""
+    if ssh_tunnel:
+        from hermes_cli.ssh_tunnel import resolve_ssh_tunnel_url
+
+        runtime["base_url"] = resolve_ssh_tunnel_url(runtime["base_url"], ssh_tunnel)
+    return runtime
+
+
 def _loopback_hostname(host: str) -> bool:
     h = (host or "").lower().rstrip(".")
     return h in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
@@ -719,6 +728,8 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                     if api_mode:
                         result["api_mode"] = api_mode
+                    if isinstance(entry.get("ssh_tunnel"), dict):
+                        result["ssh_tunnel"] = dict(entry["ssh_tunnel"])
                     _lift_max_output_tokens(entry, result)
                     return result
             # Also check the 'name' field if present
@@ -742,6 +753,8 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
                             result["api_mode"] = api_mode
+                        if isinstance(entry.get("ssh_tunnel"), dict):
+                            result["ssh_tunnel"] = dict(entry["ssh_tunnel"])
                         _lift_max_output_tokens(entry, result)
                         return result
 
@@ -1050,7 +1063,7 @@ def _resolve_named_custom_runtime(
         pool_result = _try_resolve_from_custom_pool(base_url, "custom", None)
         if pool_result:
             pool_result["source"] = "direct-alias"
-            return pool_result
+            return _apply_ssh_tunnel(pool_result, _get_model_config().get("ssh_tunnel"))
         _da_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
         _da_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
         api_key_candidates = [
@@ -1067,7 +1080,7 @@ def _resolve_named_custom_runtime(
             (c for c in api_key_candidates if has_usable_secret(c)),
             "",
         ) or "no-key-required"
-        return {
+        result = {
             "provider": "custom",
             "api_mode": _detect_api_mode_for_url(base_url) or "chat_completions",
             "base_url": base_url,
@@ -1075,6 +1088,7 @@ def _resolve_named_custom_runtime(
             "source": "direct-alias",
             "requested_provider": requested_provider,
         }
+        return _apply_ssh_tunnel(result, _get_model_config().get("ssh_tunnel"))
 
     custom_provider = _get_named_custom_provider(requested_provider)
     if not custom_provider:
@@ -1108,7 +1122,7 @@ def _resolve_named_custom_runtime(
         # credentials. NEVER log the values.
         if custom_provider.get("extra_headers"):
             pool_result["extra_headers"] = dict(custom_provider["extra_headers"])
-        return pool_result
+        return _apply_ssh_tunnel(pool_result, custom_provider.get("ssh_tunnel"))
 
     _cp_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
     _cp_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
@@ -1148,7 +1162,7 @@ def _resolve_named_custom_runtime(
     request_overrides = _custom_provider_request_overrides(custom_provider)
     if request_overrides:
         result["request_overrides"] = request_overrides
-    return result
+    return _apply_ssh_tunnel(result, custom_provider.get("ssh_tunnel"))
 
 
 def _resolve_openrouter_runtime(
@@ -1275,12 +1289,12 @@ def _resolve_openrouter_runtime(
             provider_name=requested_provider if requested_norm != "custom" else None,
         )
         if pool_result:
-            return pool_result
+            return _apply_ssh_tunnel(pool_result, model_cfg.get("ssh_tunnel"))
 
     if effective_provider == "custom" and not api_key and not _is_openrouter_url:
         api_key = "no-key-required"
 
-    return {
+    result = {
         "provider": effective_provider,
         "api_mode": _resolve_plain_custom_api_mode(model_cfg, base_url)
         if effective_provider == "custom"
@@ -1291,6 +1305,7 @@ def _resolve_openrouter_runtime(
         "api_key": api_key,
         "source": source,
     }
+    return _apply_ssh_tunnel(result, model_cfg.get("ssh_tunnel"))
 
 
 def _resolve_azure_foundry_runtime(
