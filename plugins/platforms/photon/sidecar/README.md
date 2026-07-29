@@ -21,7 +21,11 @@ npm install
 ```
 
 The Hermes plugin's `hermes photon setup` command runs `npm install`
-here automatically.
+automatically. When the plugin directory is read-only (Docker/Podman
+images, immutable install trees), deps resolve through
+`sidecar_paths.resolve_sidecar_dir()`: an explicit `PHOTON_SIDECAR_DIR`
+override → writable-in-place → a baked image copy → a mirror under
+`~/.hermes/photon/sidecar` (created and installed on demand).
 
 ## Run standalone
 

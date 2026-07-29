@@ -73,7 +73,12 @@ The setup, in order:
    user with that number already exists, so re-running is safe.
 5. **Prints your assigned iMessage line** — the number you text to reach
    your agent.
-6. **Runs `npm install`** inside the plugin's sidecar directory.
+6. **Runs `npm install`** for the sidecar. On writable source checkouts this
+   installs into the plugin's own `sidecar/` directory; on read-only or
+   immutable installs (Docker/Podman images, hosted deployments) the deps
+   resolve to a baked image copy or are mirrored under
+   `~/.hermes/photon/sidecar` automatically. Set `PHOTON_SIDECAR_DIR` to
+   override the location explicitly.
 
 Runtime credentials are written to `~/.hermes/.env`
 (`PHOTON_PROJECT_ID` = the Spectrum project id, `PHOTON_PROJECT_SECRET`),
