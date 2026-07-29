@@ -98,7 +98,11 @@ def _save_manifest_cache(cache_path: Path, tools_dir: Path, module_names: List[s
             "module_names": module_names,
             "mtimes": _collect_tool_file_mtimes(tools_dir),
         }
-        cache_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        # Atomic replace so a concurrent reader (gateway + CLI + cron can all
+        # cold-start at once) never sees a torn/partial JSON file.
+        tmp_path = cache_path.with_name(cache_path.name + f".tmp{os.getpid()}")
+        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp_path, cache_path)
     except Exception:
         logger.debug("Failed to save tool manifest cache", exc_info=True)
 
@@ -112,6 +116,12 @@ def _load_manifest_cache(cache_path: Path, tools_dir: Path) -> Optional[List[str
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
     if not isinstance(data, dict) or data.get("version") != 1:
+        return None
+    # A shared HERMES_HOME can be used by several checkouts (main clone +
+    # worktrees). The manifest is only valid for the tools dir it was built
+    # from — otherwise identical mtimes across copies could serve a stale
+    # module list from a different tree.
+    if data.get("tools_dir") != str(tools_dir):
         return None
     cached_mtimes = data.get("mtimes", {})
     current_mtimes = _collect_tool_file_mtimes(tools_dir)

@@ -64,6 +64,19 @@ class TestManifestCache:
         assert loaded is not None
         assert loaded == ["tools.alpha", "tools.beta"]
 
+    def test_cache_miss_when_tools_dir_differs(self, tool_dir, cache_path, tmp_path):
+        """A manifest built for one checkout must not serve another checkout."""
+        module = _load_registry_module()
+        module._save_manifest_cache(cache_path, tools_dir=tool_dir, module_names=["tools.alpha", "tools.beta"])
+        other = tmp_path / "other" / "tools"
+        other.mkdir(parents=True)
+        # Mirror the exact files/mtimes so only tools_dir differs.
+        import shutil
+        for p in tool_dir.glob("*.py"):
+            dest = other / p.name
+            shutil.copy2(p, dest)
+        assert module._load_manifest_cache(cache_path, tools_dir=other) is None
+
     def test_cache_miss_when_file_missing(self, tool_dir, cache_path):
         module = _load_registry_module()
         assert module._load_manifest_cache(cache_path, tools_dir=tool_dir) is None
