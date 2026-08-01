@@ -43,6 +43,8 @@ from hermes_constants import (
 __all__ = [
     "is_ebadengine",
     "required_npm_range",
+    "actual_node_version",
+    "actual_npm_version",
     "managed_npm_prefix",
     "upgrade_managed_npm",
     "maybe_repair_npm_engine",
@@ -115,6 +117,18 @@ def actual_npm_version(output: str) -> str | None:
             continue
         if isinstance(parsed, dict) and parsed.get("npm"):
             return str(parsed["npm"]).strip()
+    return None
+
+
+def actual_node_version(output: str) -> str | None:
+    """Return the Node version npm reported as ``Actual`` in *output*."""
+    for match in _ACTUAL_RE.finditer(output or ""):
+        try:
+            parsed = json.loads(match.group(1))
+        except ValueError:
+            continue
+        if isinstance(parsed, dict) and parsed.get("node"):
+            return str(parsed["node"]).strip().removeprefix("v")
     return None
 
 
@@ -244,14 +258,31 @@ def _probe_version(npm: str) -> str | None:
     return (result.stdout or "").strip() or None
 
 
-def _print_manual_fix(npm: str, npm_range: str, actual: str | None) -> None:
-    have = f"npm {actual} " if actual else "This npm "
+def _print_manual_fix(
+    npm: str,
+    npm_range: str,
+    actual_npm: str | None,
+    actual_node: str | None,
+) -> None:
+    current = ", ".join(
+        part
+        for part in (
+            f"Node {actual_node}" if actual_node else None,
+            f"npm {actual_npm}" if actual_npm else None,
+        )
+        if part
+    )
     print(
-        f"\n✗ {have}does not satisfy the range this project requires: {npm_range}\n"
-        f"  Resolved npm: {npm}\n"
-        "  Hermes could not provision its own Node.js runtime and never\n"
-        "  modifies a system/nvm/brew/Nix npm. Upgrade yours yourself with:\n"
-        f'      npm install -g npm@"{npm_range}"',
+        "\n✗ This Node/npm toolchain does not satisfy the project's engine requirements.\n"
+        + (f"  Current toolchain: {current}\n" if current else "")
+        + f"  Required npm: {npm_range}\n"
+        + f"  Resolved npm: {npm}\n"
+        + "  Hermes could not provision its own Node.js runtime and never\n"
+        + "  modifies a system/nvm/brew/Nix npm. Upgrade yours yourself with:\n"
+        + f'      npm install -g npm@"{npm_range}"\n'
+        + "  If Node/npm are coupled by their version manager, select a\n"
+        + "  compatible Node/npm pair instead, then re-run `hermes update`.\n"
+        + "  Do not disable engine-strict; npm releases do not support every Node major.",
         file=sys.stderr,
     )
 
@@ -335,5 +366,10 @@ def maybe_repair_npm_engine(
         return managed
 
     if not quiet and npm_range:
-        _print_manual_fix(npm, npm_range, actual_npm_version(output))
+        _print_manual_fix(
+            npm,
+            npm_range,
+            actual_npm_version(output),
+            actual_node_version(output),
+        )
     return None
