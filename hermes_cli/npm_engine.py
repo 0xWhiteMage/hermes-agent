@@ -273,28 +273,28 @@ def _print_manual_fix(
         )
         if part
     )
-    install_cmd = f"npm install -g {shlex.quote(f'npm@{npm_range}')}"
+    install_cmd = _manual_install_command(npm_range, windows=os.name == "nt")
     print(
         "\n✗ This Node/npm toolchain does not satisfy the project's engine requirements.\n"
         + (f"  Current toolchain: {current}\n" if current else "")
         + f"  Required npm: {npm_range}\n"
         + f"  Resolved npm: {npm}\n"
-<<<<<<< HEAD
         + "  Hermes could not provision its own Node.js runtime and never\n"
         + "  modifies a system/nvm/brew/Nix npm. Upgrade yours yourself with:\n"
-        + f'      npm install -g npm@"{npm_range}"\n'
+        + f"      {install_cmd}\n"
         + "  If Node/npm are coupled by their version manager, select a\n"
         + "  compatible Node/npm pair instead, then re-run `hermes update`.\n"
-=======
-        + "  Hermes only upgrades npm inside its own managed Node install, so this\n"
-        + "  one is left alone. Install a compatible npm release yourself with:\n"
-        + f"      {install_cmd}\n"
-        + "  If Node/npm are coupled by their version manager, select "
-        + "a compatible Node/npm pair instead. Then re-run the original command.\n"
->>>>>>> da24aa4154 (fix(npm): keep compatible remediation actionable)
         + "  Do not disable engine-strict; npm releases do not support every Node major.",
         file=sys.stderr,
     )
+
+
+def _manual_install_command(npm_range: str, *, windows: bool) -> str:
+    """Render the copy/paste remediation for the user's command shell."""
+    argv = ["npm", "install", "-g", f"npm@{npm_range}"]
+    if windows:
+        return subprocess.list2cmdline(argv)
+    return shlex.join(argv)
 
 
 def _provision_managed_npm(npm_range: str | None, *, quiet: bool = False) -> str | None:

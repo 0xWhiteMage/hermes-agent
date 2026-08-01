@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli.npm_engine import (
+    _manual_install_command,
     actual_node_version,
     actual_npm_version,
     is_ebadengine,
@@ -91,6 +92,21 @@ class TestDetection:
             "npm error notsup Required: {not json}\n"
         )
         assert required_npm_range(broken) is None
+
+    @pytest.mark.parametrize(
+        ("windows", "expected"),
+        [
+            (False, "npm install -g 'npm@<11.10.0 || >=12.0.0'"),
+            (True, 'npm install -g "npm@<11.10.0 || >=12.0.0"'),
+        ],
+    )
+    def test_manual_install_command_quotes_range_for_target_shell(
+        self, windows, expected
+    ):
+        assert (
+            _manual_install_command("<11.10.0 || >=12.0.0", windows=windows)
+            == expected
+        )
 
 
 class TestManagedDetection:
@@ -255,28 +271,15 @@ class TestRepairDecision:
             str(system_npm), NODE25_EBADENGINE_OUTPUT
         )
 
-<<<<<<< HEAD
-        # A foreign npm stays untouched. The guidance names the actual
-        # Node/npm pair, gives the exact upgrade command, and warns about
-        # version managers that couple Node and npm.
-        err = capsys.readouterr().err
-        assert "Current toolchain: Node 25.9.0, npm 11.12.1" in err
-        assert "Required npm: <11.10.0 || >=12.0.0" in err
-        assert 'npm install -g npm@"<11.10.0 || >=12.0.0"' in err
-        assert "compatible Node/npm pair" in err
-        assert "re-run `hermes update`" in err
-=======
         # A foreign npm stays untouched. The guidance reports the current pair,
         # preserves an actionable, shell-safe range command (npm resolves a
         # Node-compatible release), and also covers coupled Node/npm managers.
         err = capsys.readouterr().err
         assert "Current toolchain: Node 25.9.0, npm 11.12.1" in err
         assert "Required npm: <11.10.0 || >=12.0.0" in err
-        assert "Install a compatible npm release" in err
         assert "npm install -g 'npm@<11.10.0 || >=12.0.0'" in err
-        assert "select a compatible Node/npm pair instead" in err
-        assert "re-run the original command" in err
->>>>>>> da24aa4154 (fix(npm): keep compatible remediation actionable)
+        assert "compatible Node/npm pair" in err
+        assert "re-run `hermes update`" in err
 
     def test_non_engine_failure_never_repairs(self, managed_npm, monkeypatch):
         def explode(cmd, **kwargs):  # pragma: no cover - must not be reached
