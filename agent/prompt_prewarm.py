@@ -5,11 +5,14 @@ The first API call of a fresh session ingests the entire uncached prefix
 10-20s of first-message latency on Anthropic-cached routes. Every later call
 rides the prompt cache and drops to TTFT + generation.
 
-``prewarm_prompt_cache`` issues one minimal, non-streaming request (same
-tools, same system prompt, ``max_tokens=1``) whose only purpose is the
-provider-side cache write at the injected ``cache_control`` breakpoints.
-The first real user turn then *reads* the prefix cache instead of writing
-it cold.
+``prewarm_prompt_cache`` issues one minimal, non-streaming request — same
+tools, same system prompt, same thinking/effort/max_tokens (byte-parity
+with the first real turn; the provider's cache key covers the rendered
+request configuration, so ANY divergence risks warming the wrong prefix),
+with a trivial trailing user message engineered for a few-token reply —
+whose only purpose is the provider-side cache write at the injected
+``cache_control`` breakpoints. The first real user turn then *reads* the
+prefix cache instead of writing it cold.
 
 Cost note: the cache write (1.25x input for the 5m TTL) is paid by the
 first real call today anyway — prewarming only moves it earlier. The extra
@@ -81,7 +84,10 @@ def prewarm_prompt_cache(agent) -> bool:
         api_messages = apply_anthropic_cache_control(
             [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": "ping"},
+                # Engineered for minimal output: adaptive thinking skips
+                # reasoning on trivial prompts, so the throwaway completion
+                # costs a handful of output tokens (observed: 4).
+                {"role": "user", "content": "Reply with only the word: ok"},
             ],
             cache_ttl=getattr(agent, "_cache_ttl", "5m") or "5m",
             native_anthropic=getattr(agent, "_use_native_cache_layout", False),
@@ -91,26 +97,45 @@ def prewarm_prompt_cache(agent) -> bool:
         )
 
         api_kwargs = agent._build_api_kwargs(api_messages)
-        # Cheapest possible generation: the request exists only for its
-        # prompt-ingestion side effect. Both output-cap spellings are
-        # forced so no provider default (or profile-injected cap) makes
-        # the throwaway completion generate real output.
-        if "max_completion_tokens" in api_kwargs:
-            api_kwargs["max_completion_tokens"] = 1
-        else:
-            api_kwargs["max_tokens"] = 1
         api_kwargs.pop("stream", None)
-        # Extended thinking demands max_tokens > budget_tokens, which a
-        # 1-token request violates (400). Strip thinking/reasoning knobs:
-        # per Anthropic caching semantics, thinking-parameter changes only
-        # invalidate message-level cache blocks — the system-prompt and
-        # tools cache blocks (the entire point of the prewarm) survive.
-        api_kwargs.pop("thinking", None)
-        api_kwargs.pop("reasoning_effort", None)
-        extra_body = api_kwargs.get("extra_body")
-        if isinstance(extra_body, dict):
-            extra_body.pop("reasoning", None)
-            extra_body.pop("thinking", None)
+        # ── Byte-parity with the FIRST REAL TURN is the whole game ──────
+        # The provider's cache key covers the rendered request prefix, and
+        # on Claude 4.6+/5-series the thinking configuration and resolved
+        # effort are rendered into the prompt (per Anthropic's caching
+        # docs, a thinking/effort change can invalidate the SYSTEM and
+        # TOOLS breakpoints too). Empirically the rendered configuration
+        # also incorporates ``max_tokens``: an A/B against the live nous /
+        # claude-fable-5 route showed two byte-identical requests hit the
+        # cache, while changing ONLY max_tokens (1 vs 128000) missed it
+        # entirely. So — unlike the usual throwaway-request idiom — this
+        # request must NOT cap max_tokens or strip thinking. Everything
+        # except the trailing user message stays exactly as
+        # ``_build_api_kwargs`` produced it, i.e. exactly what the first
+        # real turn will send. Output cost is bounded by the trivial
+        # prompt above, not by an output cap.
+        #
+        # One exception: MANUAL extended thinking (``thinking.type ==
+        # "enabled"`` with ``budget_tokens``, legacy pre-4.6 models). There
+        # the model ALWAYS burns thinking tokens — even on a trivial prompt
+        # — which would make the prewarm cost real money in output. Strip
+        # the thinking knobs and cap output to 1 token instead: legacy
+        # manual-mode models are exactly the models whose system/tools
+        # cache blocks are documented to survive thinking-parameter
+        # changes, so the strip is cache-safe there (and only there).
+        _thinking = api_kwargs.get("thinking")
+        _manual_thinking = (
+            isinstance(_thinking, dict) and _thinking.get("type") == "enabled"
+        )
+        if _manual_thinking:
+            api_kwargs.pop("thinking", None)
+            # Manual-mode kwargs also force temperature=1 and inflate
+            # max_tokens past the budget (build_kwargs) — undo both so the
+            # request stays a 1-token no-op.
+            api_kwargs.pop("temperature", None)
+            if "max_completion_tokens" in api_kwargs:
+                api_kwargs["max_completion_tokens"] = 1
+            else:
+                api_kwargs["max_tokens"] = 1
 
         from agent.chat_completion_helpers import _dispatch_nonstreaming_api_request
 

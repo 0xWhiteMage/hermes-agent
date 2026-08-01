@@ -102,14 +102,23 @@ class TestPrewarmRequest:
         assert all("cache_control" in p for p in system_content)
         assert messages[1]["role"] == "user"
 
-    def test_output_capped_to_one_token_and_non_streaming(self):
+    def test_request_shape_matches_real_turn_and_non_streaming(self):
+        """The provider cache key covers the rendered request configuration
+        — live A/B showed changing ONLY max_tokens (1 vs 128000) misses the
+        cache entirely. So the prewarm must send build_api_kwargs' output
+        untouched (no output cap), minus streaming."""
         agent = _make_agent()
         prewarm_prompt_cache(agent)
         kwargs = agent._request_client.chat.completions.create.call_args.kwargs
-        assert kwargs["max_tokens"] == 1
+        assert kwargs["max_tokens"] == 8192  # exactly what _build_api_kwargs produced
         assert "stream" not in kwargs
 
-    def test_thinking_and_reasoning_knobs_stripped(self):
+    def test_manual_thinking_stripped_with_its_side_effects(self):
+        """Manual extended thinking (budget_tokens) forces max_tokens >
+        budget — impossible at 1 token — so it is stripped, along with the
+        temperature=1 and inflated max_tokens that build_kwargs couples to
+        it. Cache-safe: manual-mode (legacy) models preserve system/tools
+        cache blocks across thinking-parameter changes."""
         agent = _make_agent()
 
         def _build_api_kwargs(api_messages):
@@ -118,6 +127,33 @@ class TestPrewarmRequest:
                 "messages": api_messages,
                 "max_tokens": 8192,
                 "thinking": {"type": "enabled", "budget_tokens": 4096},
+                "temperature": 1,
+                "extra_body": {"keep": 1},
+            }
+
+        agent._build_api_kwargs = MagicMock(side_effect=_build_api_kwargs)
+        assert prewarm_prompt_cache(agent) is True
+        kwargs = agent._request_client.chat.completions.create.call_args.kwargs
+        assert "thinking" not in kwargs
+        assert "temperature" not in kwargs
+        assert kwargs["max_tokens"] == 1
+        assert kwargs["extra_body"]["keep"] == 1
+
+    def test_adaptive_thinking_and_effort_preserved(self):
+        """On Claude 4.6+/5-series the thinking config and resolved effort
+        are rendered into the prompt; a mismatch can invalidate the very
+        system/tools cache blocks the prewarm exists to warm. Adaptive
+        thinking has no budget/max_tokens coupling, so it must ride along
+        byte-identical to the real turn."""
+        agent = _make_agent()
+
+        def _build_api_kwargs(api_messages):
+            return {
+                "model": agent.model,
+                "messages": api_messages,
+                "max_tokens": 8192,
+                "thinking": {"type": "adaptive", "display": "summarized"},
+                "output_config": {"effort": "high"},
                 "reasoning_effort": "high",
                 "extra_body": {"reasoning": {"effort": "high"}, "keep": 1},
             }
@@ -125,10 +161,13 @@ class TestPrewarmRequest:
         agent._build_api_kwargs = MagicMock(side_effect=_build_api_kwargs)
         assert prewarm_prompt_cache(agent) is True
         kwargs = agent._request_client.chat.completions.create.call_args.kwargs
-        assert "thinking" not in kwargs
-        assert "reasoning_effort" not in kwargs
-        assert "reasoning" not in kwargs["extra_body"]
-        assert kwargs["extra_body"]["keep"] == 1
+        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert kwargs["output_config"] == {"effort": "high"}
+        assert kwargs["reasoning_effort"] == "high"
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
+        # max_tokens untouched too — the full request is byte-identical to
+        # the real turn's, trailing user message aside.
+        assert kwargs["max_tokens"] == 8192
 
     def test_builds_prompt_when_not_cached(self):
         agent = _make_agent()
