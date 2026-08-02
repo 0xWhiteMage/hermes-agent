@@ -10,7 +10,7 @@
   makeWrapper,
   callPackage,
   python312,
-  nodejs_26,
+  nodejs_22,
   electron,
   ripgrep,
   git,
@@ -39,7 +39,7 @@
   extraDependencyGroups ? [ ],
 }:
 let
-  nodejs = nodejs_26;
+  nodejs = nodejs_22;
   mkHermesVenv =
     extraDependencyGroups:
     callPackage ./python.nix {

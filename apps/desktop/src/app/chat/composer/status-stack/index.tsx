@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { type ReactNode, useEffect, useMemo } from 'react'
-import { useNavigate } from 'react-router'
+import { useNavigate } from 'react-router-dom'
 
 import { blurComposerInput } from '@/app/chat/composer/focus'
 import { AGENTS_ROUTE } from '@/app/routes'
