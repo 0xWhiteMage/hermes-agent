@@ -5,7 +5,12 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tip } from '@/components/ui/tooltip'
-import type { DesktopAuthProvider, DesktopCloudAgent, DesktopCloudOrg, DesktopConnectionProbeResult } from '@/global'
+import type {
+  DesktopAuthProvider,
+  DesktopCloudAgent,
+  DesktopCloudOrg,
+  DesktopConnectionProbeResult
+} from '@/global'
 import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import {
@@ -19,11 +24,14 @@ import {
   LogIn,
   Monitor,
   RefreshCw,
+  Star,
+  StarFilled,
   Terminal
 } from '@/lib/icons'
 import { coerceRemoteUrlScheme } from '@/lib/remote-url'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
+import { $starredCloudAgentIds, refreshCloudAgentStars, setCloudAgentStarred } from '@/store/gateway-switcher'
 import { notify, notifyError } from '@/store/notifications'
 import { $profiles, refreshActiveProfile } from '@/store/profile'
 
@@ -164,6 +172,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   const cloudConnectSeq = useRef(0)
   const contextSeq = useRef(0)
   const [connectedCloudUrl, setConnectedCloudUrl] = useState('')
+  const starredCloudAgentIds = useStore($starredCloudAgentIds)
 
   const acceptSavedConfig = (config: GatewaySettingsState) => {
     setState(config)
@@ -204,6 +213,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
 
   useEffect(() => {
     void refreshActiveProfile()
+    void refreshCloudAgentStars().catch(() => undefined)
   }, [])
 
   // Auth-mode probe: as the user types a remote URL we ask the gateway (via
@@ -441,6 +451,10 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     sshKeyPath: state.sshKeyPath.trim() || undefined,
     sshRemoteHermesPath: state.sshRemoteHermesPath.trim()
   })
+
+  const toggleCloudAgentStar = (agent: DesktopCloudAgent) => {
+    void setCloudAgentStarred(agent.id, !starredCloudAgentIds.includes(agent.id)).catch(() => undefined)
+  }
 
   const save = async (apply: boolean) => {
     const seq = ++saveSeq.current
@@ -1193,6 +1207,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
                   <div className="grid gap-1">
                     {cloudAgents.map(agent => {
                       const connected = isConnectedAgent(agent)
+                      const starred = starredCloudAgentIds.includes(agent.id)
 
                       return (
                         <div
@@ -1201,25 +1216,35 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
                         >
                           <ListRow
                             action={
-                              connected ? (
-                                <Pill tone="primary">
-                                  <Check className="mr-1 inline size-3" />
-                                  {g.cloudConnectedPill}
-                                </Pill>
-                              ) : (
+                              <div className="flex items-center gap-1">
                                 <Button
-                                  disabled={!agent.dashboardUrl || cloudConnectingId !== null}
-                                  onClick={() => void connectCloudAgent(agent)}
-                                  size="sm"
+                                  aria-label={starred ? `Unstar ${agent.name}` : `Star ${agent.name}`}
+                                  onClick={() => toggleCloudAgentStar(agent)}
+                                  size="icon-sm"
+                                  variant="ghost"
                                 >
-                                  {cloudConnectingId === agent.id ? <Loader2 className="animate-spin" /> : null}
-                                  {agent.dashboardUrl
-                                    ? cloudConnectingId === agent.id
-                                      ? g.cloudConnecting
-                                      : g.cloudConnect
-                                    : g.cloudAgentProvisioning}
+                                  {starred ? <StarFilled className="text-primary" /> : <Star />}
                                 </Button>
-                              )
+                                {connected ? (
+                                  <Pill tone="primary">
+                                    <Check className="mr-1 inline size-3" />
+                                    {g.cloudConnectedPill}
+                                  </Pill>
+                                ) : (
+                                  <Button
+                                    disabled={!agent.dashboardUrl || cloudConnectingId !== null}
+                                    onClick={() => void connectCloudAgent(agent)}
+                                    size="sm"
+                                  >
+                                    {cloudConnectingId === agent.id ? <Loader2 className="animate-spin" /> : null}
+                                    {agent.dashboardUrl
+                                      ? cloudConnectingId === agent.id
+                                        ? g.cloudConnecting
+                                        : g.cloudConnect
+                                      : g.cloudAgentProvisioning}
+                                  </Button>
+                                )}
+                              </div>
                             }
                             description={g.cloudStatusLabel(agent.dashboardGatewayState)}
                             title={agent.name}

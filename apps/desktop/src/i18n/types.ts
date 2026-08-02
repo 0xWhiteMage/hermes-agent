@@ -1302,6 +1302,19 @@ export interface Translations {
     showAllProfiles: string
     switchToProfile: (name: string) => string
     manageProfiles: string
+    gatewaySwitcher: string
+    gatewayLocalHeading: string
+    gatewayThisDevice: string
+    gatewayRemoteHeading: string
+    gatewaySshHeading: string
+    switchToGateway: (name: string) => string
+    cloudAgents: string
+    cloudAgentsEmpty: string
+    cloudAgentsLoading: string
+    cloudAgentsRefresh: string
+    switchToCloudAgent: (name: string) => string
+    starCloudAgent: (name: string) => string
+    unstarCloudAgent: (name: string) => string
     actions: string
     color: string
     colorFor: string
@@ -2022,6 +2035,12 @@ export interface Translations {
       recentActivity: string
       viewAllLogs: string
       messagingPlatforms: string
+      favorites: string
+      noFavorites: string
+      manageFavorites: string
+      useFavorite: (name: string) => string
+      activeFavorite: string
+      switchingFavorite: string
     }
     approvalMode: {
       title: string
