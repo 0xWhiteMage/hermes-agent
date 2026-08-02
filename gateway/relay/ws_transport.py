@@ -234,6 +234,14 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         # ``Platform.RELAY``). Stamped here, never read off the wire.
         delivered_via_upstream_relay=True,
     )
+    logger.info(
+        "relay inbound src keys: has_prospective=%s prospective=%s chat_type=%s thread_id=%s scope_id=%s",
+        "prospective_thread_id" in src,
+        src.get("prospective_thread_id"),
+        src.get("chat_type"),
+        src.get("thread_id"),
+        src.get("scope_id"),
+    )
     try:
         msg_type = MessageType(raw.get("message_type", "text"))
     except ValueError:
