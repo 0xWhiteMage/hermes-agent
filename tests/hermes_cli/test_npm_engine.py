@@ -204,7 +204,7 @@ class TestRepairDecision:
 
         import hermes_cli.npm_engine as npm_engine
 
-        def fake_bootstrap():
+        def fake_bootstrap(force=False):
             managed.parent.mkdir(parents=True, exist_ok=True)
             managed.write_text("#!/bin/sh\n", encoding="utf-8")
             managed.chmod(0o755)
@@ -240,7 +240,7 @@ class TestRepairDecision:
         import hermes_cli.npm_engine as npm_engine
 
         monkeypatch.setattr(
-            npm_engine, "bootstrap_hermes_managed_node", lambda: None
+            npm_engine, "bootstrap_hermes_managed_node", lambda force=False: None
         )
         assert not maybe_repair_npm_engine(str(system_npm), EBADENGINE_OUTPUT)
 
@@ -276,7 +276,7 @@ class TestRepairDecision:
 
         import hermes_cli.npm_engine as npm_engine
 
-        def fake_bootstrap():
+        def fake_bootstrap(force=False):
             managed.parent.mkdir(parents=True, exist_ok=True)
             managed.write_text("#!/bin/sh\n", encoding="utf-8")
             managed.chmod(0o755)
@@ -302,18 +302,64 @@ class TestRepairDecision:
     def test_node_only_mismatch_on_managed_npm_does_not_upgrade(
         self, managed_npm, monkeypatch
     ):
-        """Upgrading a managed npm cannot fix a managed-Node mismatch."""
+        """Upgrading a managed npm cannot fix a managed-Node mismatch (when
+        the managed Node already meets the target major, there is nothing a
+        re-provision would change either)."""
         node_only = (
             "npm error code EBADENGINE\n"
             'npm error notsup Required: {"node":">=20.0.0"}\n'
             'npm error notsup Actual:   {"npm":"10.9.8","node":"v18.0.0"}\n'
         )
 
+        import hermes_cli.npm_engine as npm_engine
+
         def explode(cmd, **kwargs):  # pragma: no cover - must not be reached
             raise AssertionError("npm upgrade cannot fix a Node mismatch")
 
         monkeypatch.setattr(subprocess, "run", explode)
+        monkeypatch.setattr(
+            npm_engine, "managed_node_meets_target", lambda: True
+        )
         assert not maybe_repair_npm_engine(str(managed_npm), node_only, quiet=True)
+
+    def test_outdated_managed_node_is_reprovisioned(
+        self, managed_npm, monkeypatch
+    ):
+        """After a repo Node-floor bump (22 -> 26), a HEALTHY managed tree
+        fails EBADENGINE on the node constraint. heal only fires on broken
+        trees, so the repair must force a re-provision at the new target —
+        an npm-only upgrade would loop failing forever."""
+        node_bump = (
+            "npm error code EBADENGINE\n"
+            'npm error notsup Required: {"node":">=26.0.0","npm":">=12.0.0"}\n'
+            'npm error notsup Actual:   {"npm":"12.0.2","node":"v22.23.2"}\n'
+        )
+
+        import hermes_cli.npm_engine as npm_engine
+
+        provisions = []
+        monkeypatch.setattr(
+            npm_engine, "managed_node_meets_target", lambda: False
+        )
+        monkeypatch.setattr(
+            npm_engine,
+            "_provision_managed_npm",
+            lambda rng, *, quiet=False, force=False: provisions.append(
+                (rng, force)
+            )
+            or str(managed_npm),
+        )
+
+        def explode(cmd, **kwargs):  # pragma: no cover - must not be reached
+            raise AssertionError("must re-provision, not npm-upgrade in place")
+
+        monkeypatch.setattr(subprocess, "run", explode)
+
+        repaired = maybe_repair_npm_engine(str(managed_npm), node_bump, quiet=True)
+        assert repaired == str(managed_npm)
+        # force=True: the existing healthy-but-outdated tree must be replaced,
+        # not reused by the bootstrap's healthy-tree shortcut.
+        assert provisions == [(">=12.0.0", True)]
 
 
 class TestRepoRangeIsSatisfiable:

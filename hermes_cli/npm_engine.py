@@ -37,6 +37,7 @@ from pathlib import Path
 from hermes_constants import (
     bootstrap_hermes_managed_node,
     get_hermes_home,
+    managed_node_meets_target,
     with_hermes_node_path,
 )
 
@@ -256,24 +257,28 @@ def _print_manual_fix(npm: str, npm_range: str, actual: str | None) -> None:
     )
 
 
-def _provision_managed_npm(npm_range: str | None, *, quiet: bool = False) -> str | None:
+def _provision_managed_npm(
+    npm_range: str | None, *, quiet: bool = False, force: bool = False
+) -> str | None:
     """Provision a Hermes-managed Node tree and return a satisfying npm.
 
-    Installs the managed tree under ``$HERMES_HOME/node`` (reusing a healthy
-    one when present), then upgrades its bundled npm to *npm_range* — a fresh
-    Node LTS bundles an npm that may itself be outside the repo's range, so
-    without the upgrade the caller's single retry would fail the same way.
-    Falls back to the checkout's own ``engines.npm`` when npm did not state a
-    range (a Node-only mismatch), so the managed npm ends up in range either
-    way. Returns the managed npm path, or ``None`` when provisioning failed.
+    Installs the managed tree under ``$HERMES_HOME/node`` (reusing a healthy,
+    current-major one when present), then upgrades its bundled npm to
+    *npm_range* — a fresh Node bundles an npm that may itself be outside the
+    repo's range, so without the upgrade the caller's single retry would fail
+    the same way. Falls back to the checkout's own ``engines.npm`` when npm
+    did not state a range (a Node-only mismatch), so the managed npm ends up
+    in range either way. *force* re-provisions even over a healthy tree (used
+    when the managed Node's major itself is what failed the engine check).
+    Returns the managed npm path, or ``None`` when provisioning failed.
     """
     if not quiet:
         print(
             "→ Provisioning a Hermes-managed Node.js runtime "
-            "(the resolved npm belongs to your system and is left alone)…",
+            "(your own Node/npm install is left alone)…",
             flush=True,
         )
-    managed_npm = bootstrap_hermes_managed_node()
+    managed_npm = bootstrap_hermes_managed_node(force=force)
     if not managed_npm:
         if not quiet:
             print("  ✗ Managed Node.js provisioning failed", file=sys.stderr)
@@ -319,8 +324,19 @@ def maybe_repair_npm_engine(
     prefix = managed_npm_prefix(npm)
 
     if prefix is not None:
-        # Hermes owns this npm — upgrade it in place. Only an npm-range
-        # failure is fixable this way; a Node mismatch needs a Node upgrade.
+        # Hermes owns this npm. An npm-range failure gets an in-place npm
+        # upgrade — but only when the managed NODE itself is still current.
+        # After a repo-wide Node floor bump (e.g. 22 -> 26), a healthy managed
+        # tree fails EBADENGINE on the *node* constraint; no npm upgrade can
+        # fix that, and heal only fires on broken trees. Re-provision the
+        # managed tree at the current target major instead.
+        if managed_node_meets_target() is False:
+            managed = _provision_managed_npm(npm_range, quiet=quiet, force=True)
+            if managed:
+                return managed
+            if not quiet and npm_range:
+                _print_manual_fix(npm, npm_range, actual_npm_version(output))
+            return None
         if not npm_range:
             return None
         if upgrade_managed_npm(npm, npm_range, prefix=prefix, quiet=quiet):

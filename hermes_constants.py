@@ -476,7 +476,46 @@ def _bootstrap_managed_node_posix() -> bool:
     return result.returncode == 0
 
 
-def bootstrap_hermes_managed_node() -> str | None:
+def _probe_node_major(node: str | None) -> int | None:
+    """Return the major version of the Node binary at *node*, or ``None``."""
+    if not node:
+        return None
+
+    import re
+    import subprocess
+
+    try:
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
+        result = subprocess.run(
+            [node, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            env=with_hermes_node_path(),
+            creationflags=windows_hide_flags(),
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    match = re.match(r"v?(\d+)\.", (result.stdout or "").strip())
+    return int(match.group(1)) if match else None
+
+
+def managed_node_meets_target() -> bool | None:
+    """Whether the managed Node tree's major is at least the current target.
+
+    Returns ``None`` when there is no runnable managed Node to probe, so
+    callers can distinguish "no tree" from "outdated tree".
+    """
+    major = _probe_node_major(find_hermes_node_executable("node"))
+    if major is None:
+        return None
+    return major >= _HERMES_NODE_TARGET_MAJOR
+
+
+def bootstrap_hermes_managed_node(force: bool = False) -> str | None:
     """Install a Hermes-managed Node tree and return its npm path.
 
     Used when the only Node/npm on the machine belongs to the user (system,
@@ -486,12 +525,21 @@ def bootstrap_hermes_managed_node() -> str | None:
     creates) and works with that.
 
     Returns the managed npm executable path on success, ``None`` on failure.
-    No-ops (returning the existing npm) when a healthy managed tree is already
-    present.
+    Reuses an existing managed tree only when it is healthy AND its Node major
+    is at least ``_HERMES_NODE_TARGET_MAJOR`` — a runnable-but-outdated tree
+    (e.g. Node 22 from an older install after the repo moved to Node 26) is
+    re-provisioned in place, since ``heal`` only fires on broken trees and
+    would otherwise keep handing back a Node the repo no longer accepts.
+    *force* skips the reuse check entirely.
     """
-    existing = find_hermes_node_executable("npm")
-    if existing:
-        return existing
+    if not force:
+        existing = find_hermes_node_executable("npm")
+        if existing:
+            major = _probe_node_major(find_hermes_node_executable("node"))
+            if major is not None and major >= _HERMES_NODE_TARGET_MAJOR:
+                return existing
+            # Healthy but outdated (or unprobeable) tree — fall through and
+            # replace it with the current target major.
 
     if sys.platform == "win32":
         ok = _heal_managed_node_windows()
