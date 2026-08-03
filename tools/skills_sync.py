@@ -54,6 +54,20 @@ from utils import atomic_replace
 logger = logging.getLogger(__name__)
 
 
+def _is_owner_writable(path: Path) -> bool:
+    """True when ``path`` already carries the owner-write bit.
+
+    Cheap pre-check (one ``stat``) letting callers skip a recursive repair
+    sweep on the overwhelmingly common already-writable case. A missing or
+    unreadable path reports ``True`` — there is nothing this module can
+    usefully repair, and the copy/rmtree paths already handle those errors.
+    """
+    try:
+        return bool(os.stat(path).st_mode & stat.S_IWUSR)
+    except OSError:
+        return True
+
+
 def _ensure_owner_writable(path: Path) -> None:
     """Add the owner-write bit on ``path`` without dropping any other mode bits.
 
@@ -916,6 +930,21 @@ def sync_skills(quiet: bool = False) -> dict:
             # still protects local edits before any overwrite.
             if origin_hash and bundled_hash == origin_hash:
                 skipped += 1
+                # Migration for installs predating the writable-copy fix: the
+                # user copy may still carry read-only bits inherited from a
+                # Nix-store source. This fast path (#72622) deliberately skips
+                # hashing the copy, so it is the branch such an install lands
+                # on every sync — without a repair here the skill stays
+                # unwritable forever.
+                #
+                # Gate on the skill root's own mode so the steady-state path
+                # stays O(1): copytree propagates source modes to directories
+                # too, so an unrepaired copy always has a read-only root, and a
+                # repaired one never re-walks. #72622 removed recursive I/O
+                # from this branch on purpose; don't put it back for the 99%
+                # case that has nothing to fix.
+                if not _is_owner_writable(dest):
+                    _make_tree_owner_writable(dest)
                 continue
 
             user_hash = _dir_hash(dest)
