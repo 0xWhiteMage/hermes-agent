@@ -747,7 +747,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             if function_name == _ts.TOOL_CALL_NAME:
                 _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
                 if not _err and _underlying:
-                    if _underlying in _tool_search_scoped_names(agent):
+                    if (_underlying in _tool_search_scoped_names(agent)
+                            or _ts.is_provider_tool_name(_underlying)):
                         # Probe-validate before unwrapping (ironclaw#5149):
                         # missing required args return the parameter schema
                         # instead of dispatching into an opaque failure.
@@ -1438,7 +1439,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             if function_name == _ts.TOOL_CALL_NAME:
                 _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
                 if not _err and _underlying:
-                    if _underlying in _tool_search_scoped_names(agent):
+                    if (_underlying in _tool_search_scoped_names(agent)
+                            or _ts.is_provider_tool_name(_underlying)):
                         # Probe-validate before unwrapping (ironclaw#5149):
                         # missing required args return the parameter schema
                         # instead of dispatching into an opaque failure.
@@ -1728,7 +1730,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             _spinner_result = None
             try:
                 def _execute(next_args: dict) -> Any:
-                    return _ra().handle_function_call(
+                    _result = _ra().handle_function_call(
                         function_name,
                         next_args,
                         effective_task_id,
@@ -1748,7 +1750,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                         tool_request_middleware_trace=list(middleware_trace),
                         enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                         disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                        context_id=getattr(agent, "_tool_provider_context_id", None),
                     )
+                    try:
+                        from tools.tool_search import capture_context_id
+                        capture_context_id(agent, _result)
+                    except Exception:
+                        pass
+                    return _result
 
                 (
                     function_result,
@@ -1806,7 +1815,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         else:
             try:
                 def _execute(next_args: dict) -> Any:
-                    return _ra().handle_function_call(
+                    _result = _ra().handle_function_call(
                         function_name,
                         next_args,
                         effective_task_id,
@@ -1826,7 +1835,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                         tool_request_middleware_trace=list(middleware_trace),
                         enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                         disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                        context_id=getattr(agent, "_tool_provider_context_id", None),
                     )
+                    try:
+                        from tools.tool_search import capture_context_id
+                        capture_context_id(agent, _result)
+                    except Exception:
+                        pass
+                    return _result
 
                 (
                     function_result,

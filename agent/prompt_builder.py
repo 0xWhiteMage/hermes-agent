@@ -1873,7 +1873,10 @@ def build_skills_system_prompt(
     return result
 
 
-def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -> str:
+def build_nous_subscription_prompt(
+    valid_tool_names: "set[str] | None" = None,
+    connected_toolkits: "list[str] | None" = None,
+) -> str:
     """Build a compact Nous subscription capability block for the system prompt."""
     try:
         from hermes_cli.nous_subscription import get_nous_subscription_features
@@ -1903,9 +1906,11 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
         "terminal",
         "process",
         "execute_code",
+        "tool_search",
+        "app_connections",
     }
 
-    if valid_names and not (valid_names & relevant_tool_names):
+    if valid_names and not (valid_names & relevant_tool_names) and connected_toolkits is None:
         return ""
 
     features = get_nous_subscription_features()
@@ -1928,6 +1933,17 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
         "Current capability status:",
     ]
     lines.extend(_status_line(feature) for feature in features.items())
+    if connected_toolkits is not None:
+        if connected_toolkits:
+            lines.append(
+                f"- External app tools: connected — {', '.join(sorted(connected_toolkits))} "
+                "(via tool_search; more via app_connections)"
+            )
+        else:
+            lines.append(
+                "- External app tools: available via tool_search; connect accounts "
+                "with app_connections"
+            )
     lines.extend(
         [
             "When a Nous-managed feature is active, do not ask the user for Firecrawl, FAL, OpenAI TTS, OpenAI Whisper, or Browser-Use API keys.",

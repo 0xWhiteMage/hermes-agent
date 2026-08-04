@@ -183,6 +183,24 @@ def load_config() -> ToolSearchConfig:
         return ToolSearchConfig.from_raw(None)
 
 
+def _tool_provider_gateway_config():
+    """Resolve tool-provider gateway config, or None when not entitled/unavailable.
+
+    Mirrors the ``managed_nous_tools_enabled()`` gate other managed-vendor tools
+    use; the actual origin+token resolution happens in tool_provider_gateway.py.
+    Never raises.
+    """
+    try:
+        from tools.tool_backend_helpers import managed_nous_tools_enabled
+        if not managed_nous_tools_enabled():
+            return None
+        from tools.tool_provider_gateway import resolve_tool_provider_gateway
+        return resolve_tool_provider_gateway()
+    except Exception:
+        logger.debug("tool-provider gateway config resolution failed", exc_info=True)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Tool classification
 # ---------------------------------------------------------------------------
@@ -225,6 +243,36 @@ def is_deferrable_tool_name(name: str) -> bool:
         return True
     except Exception:
         return False
+
+
+_PROVIDER_SLUG_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$")
+
+
+def is_provider_tool_name(name: str) -> bool:
+    """Heuristic: does ``name`` look like a tool-provider gateway slug?
+
+    Gateway slugs (Composio today) are SCREAMING_SNAKE_CASE, e.g.
+    'GOOGLECALENDAR_EVENTS_LIST' (see the wire contract's ``ToolRef.slug``).
+    Every Hermes-native tool name (core, plugin, MCP) is lower_snake_case, so
+    this pattern does not collide with a locally registered tool in practice;
+    a real local registry entry always wins if one exists (checked below).
+
+    This is a ROUTING hint only, not a security boundary — the gateway itself
+    is the authority (an unentitled or wrong-toolkit call gets a clean
+    TOOLKIT_NOT_ENABLED / TOOL_NOT_FOUND refusal server-side regardless of
+    whether this heuristic fired).
+    """
+    if not name or not _PROVIDER_SLUG_RE.match(name):
+        return False
+    if name in BRIDGE_TOOL_NAMES:
+        return False
+    try:
+        from tools.registry import registry
+        if registry.get_entry(name) is not None:
+            return False
+    except Exception:
+        pass
+    return True
 
 
 def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -795,11 +843,12 @@ def assemble_tool_defs(
                 if (td.get("function") or {}).get("name") not in BRIDGE_TOOL_NAMES]
 
     visible, deferrable = classify_tools(incoming)
-    if not deferrable:
+    gateway_entitled = config.enabled != "off" and _tool_provider_gateway_config() is not None
+    if not deferrable and not gateway_entitled:
         return AssemblyResult(tool_defs=incoming, activated=False)
 
     deferrable_tokens = estimate_tokens_from_schemas(deferrable)
-    if not should_activate(config, deferrable_tokens, context_length):
+    if not should_activate(config, deferrable_tokens, context_length) and not gateway_entitled:
         return AssemblyResult(
             tool_defs=incoming,
             activated=False,
@@ -884,7 +933,8 @@ def _available_source_summary(catalog: List[CatalogEntry]) -> List[Dict[str, Any
 def dispatch_tool_search(args: Dict[str, Any],
                          *,
                          current_tool_defs: List[Dict[str, Any]],
-                         config: Optional[ToolSearchConfig] = None) -> str:
+                         config: Optional[ToolSearchConfig] = None,
+                         context_id: Optional[str] = None) -> str:
     """Execute the ``tool_search`` bridge tool. Returns a JSON string."""
     if config is None:
         config = load_config()
@@ -914,33 +964,153 @@ def dispatch_tool_search(args: Dict[str, Any],
             "service name plus a concrete action or object before concluding "
             "the capability is unavailable."
         )
+
+    gw_config = _tool_provider_gateway_config()
+    if gw_config is not None:
+        result["context_id"] = context_id
+        try:
+            from model_tools import _run_async
+            from tools.tool_provider_gateway import (
+                search as _gw_search,
+                ToolProviderGatewayError,
+                ToolProviderTransportError,
+            )
+
+            gw_response = _run_async(
+                _gw_search(gw_config, [query], context_id=context_id, model=None)
+            )
+            gateway_hits: List[Dict[str, Any]] = []
+            for tool_ref in gw_response.all_tools()[:limit]:
+                hit: Dict[str, Any] = {
+                    "name": tool_ref.slug,
+                    "source": "provider",
+                    "source_name": tool_ref.toolkit,
+                    "description": (tool_ref.description or "")[:400],
+                    "connected": tool_ref.connected,
+                }
+                if tool_ref.input_schema is not None:
+                    hit["input_schema"] = tool_ref.input_schema
+                gateway_hits.append(hit)
+            result["matches"].extend(gateway_hits)
+            result["app_connections"] = [
+                {
+                    "toolkit": connection.get("toolkit", ""),
+                    "connected": bool(connection.get("connected")),
+                }
+                for connection in gw_response.connections
+            ]
+            result["total_available"] = len(catalog) + len(gateway_hits)
+            result["context_id"] = gw_response.context_id or context_id
+        except (ToolProviderGatewayError, ToolProviderTransportError) as exc:
+            reason = getattr(exc, "message", None) or str(exc)
+            result["gateway_notice"] = (
+                f"External app-tool search unavailable this turn: {reason}"
+            )
+        except Exception as exc:
+            logger.debug("external app-tool search failed", exc_info=True)
+            result["gateway_notice"] = (
+                f"External app-tool search unavailable this turn: {exc}"
+            )
     return json.dumps(result, ensure_ascii=False)
 
 
 def dispatch_tool_describe(args: Dict[str, Any],
                            *,
-                           current_tool_defs: List[Dict[str, Any]]) -> str:
+                           current_tool_defs: List[Dict[str, Any]],
+                           context_id: Optional[str] = None) -> str:
     """Execute the ``tool_describe`` bridge tool. Returns a JSON string."""
     name = str(args.get("name") or "").strip()
     if not name:
         return tool_error("name is required")
-    if not is_deferrable_tool_name(name):
+    locally_deferrable = is_deferrable_tool_name(name)
+    if locally_deferrable:
+        _, deferrable = classify_tools(current_tool_defs)
+        for td in deferrable:
+            fn = td.get("function") or {}
+            if fn.get("name") == name:
+                return json.dumps({
+                    "name": name,
+                    "description": fn.get("description", ""),
+                    "parameters": fn.get("parameters", {}),
+                }, ensure_ascii=False)
+
+    gw_config = _tool_provider_gateway_config()
+    if gw_config is not None:
+        try:
+            from model_tools import _run_async
+            from tools.tool_provider_gateway import schemas as _gw_schemas
+
+            schemas = _run_async(_gw_schemas(gw_config, [name], context_id=context_id))
+            if len(schemas) == 1:
+                schema = schemas[0]
+                return json.dumps({
+                    "name": schema.slug,
+                    "description": schema.description,
+                    "parameters": schema.input_schema,
+                    "toolkit": schema.toolkit,
+                }, ensure_ascii=False)
+        except Exception:
+            logger.debug("provider tool schema lookup failed for %s", name, exc_info=True)
+    elif not locally_deferrable:
         return tool_error(
             f"'{name}' is not a deferrable tool. If you see it in the tools list "
             "already, call it directly; otherwise check the spelling against tool_search."
         )
-    _, deferrable = classify_tools(current_tool_defs)
-    for td in deferrable:
-        fn = td.get("function") or {}
-        if fn.get("name") == name:
-            return json.dumps({
-                "name": name,
-                "description": fn.get("description", ""),
-                "parameters": fn.get("parameters", {}),
-            }, ensure_ascii=False)
     return tool_error(
         f"'{name}' is not currently available. Re-run tool_search to refresh."
     )
+
+
+def dispatch_provider_tool_call(
+    name: str,
+    arguments: Dict[str, Any],
+    *,
+    context_id: Optional[str] = None,
+) -> str:
+    """Execute a tool-provider gateway slug via /v1/execute. Returns a JSON string.
+
+    Called from model_tools.handle_function_call once a name has been
+    identified as a provider slug (see is_provider_tool_name). Never raises.
+    """
+    gw_config = _tool_provider_gateway_config()
+    if gw_config is None:
+        return tool_error(
+            f"'{name}' looks like an external app tool, but the tool-provider "
+            "gateway is not available right now (sign-in or subscription may be required)."
+        )
+    try:
+        from model_tools import _run_async
+        from tools.tool_provider_gateway import (
+            execute as _gw_execute,
+            ToolProviderGatewayError,
+            ToolProviderTransportError,
+        )
+        response = _run_async(_gw_execute(
+            gw_config, [{"slug": name, "arguments": arguments}], context_id=context_id,
+        ))
+    except ToolProviderGatewayError as exc:
+        return tool_error(f"{name}: {exc.message}", code=exc.code)
+    except ToolProviderTransportError as exc:
+        return tool_error(f"Could not reach the external app-tool gateway: {exc}")
+    except Exception as exc:
+        logger.warning("provider tool_call dispatch failed for %s: %s", name, exc)
+        return tool_error(f"Unexpected error calling '{name}': {exc}")
+
+    if not response.results:
+        return tool_error(
+            f"'{name}' returned no result from the gateway.",
+            context_id=response.context_id,
+        )
+    result = response.results[0]
+    payload: Dict[str, Any] = {
+        "success": bool(result.successful),
+        "context_id": response.context_id,
+    }
+    if result.successful:
+        payload["data"] = result.data
+    else:
+        payload["error"] = result.error or "the tool call failed"
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
@@ -953,7 +1123,9 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
     tools the session may legitimately reach through ``tool_call``. Used as a
     scoping gate by both the ``model_tools`` bridge dispatch and the
     ``tool_executor`` unwrap so a restricted-toolset session can never invoke
-    an out-of-scope tool via the bridge.
+    an out-of-scope local tool via the bridge. Provider gateway slugs are not
+    present in ``tool_defs`` and are admitted separately by callers through
+    :func:`is_provider_tool_name`.
     """
     names: set[str] = set()
     for td in tool_defs:
@@ -1041,12 +1213,37 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
             return None, {}, f"tool_call 'arguments' is not valid JSON: {e}"
     if not isinstance(raw_args, dict):
         return None, {}, "tool_call 'arguments' must be an object"
-    if not is_deferrable_tool_name(name):
+    if not is_deferrable_tool_name(name) and not is_provider_tool_name(name):
         return None, {}, (
             f"'{name}' is not a deferrable tool. If it appears in the model-facing tools "
             "list already, call it directly instead of via tool_call."
         )
     return name, raw_args, None
+
+
+def capture_context_id(agent, result_json: str) -> None:
+    """Best-effort: persist a freshly-minted tool-provider context_id onto the agent session.
+
+    ``result_json`` is a raw tool-result string that MAY be JSON with a
+    top-level "context_id" key (dispatch_tool_search / dispatch_provider_tool_call
+    both include one when the gateway leg ran). No-op for any other shape —
+    cheap substring pre-check avoids a json.loads() on every single tool result.
+    Never raises.
+    """
+    if not isinstance(result_json, str) or '"context_id"' not in result_json:
+        return
+    try:
+        payload = json.loads(result_json)
+    except Exception:
+        return
+    if not isinstance(payload, dict):
+        return
+    new_id = payload.get("context_id")
+    if isinstance(new_id, str) and new_id:
+        try:
+            agent._tool_provider_context_id = new_id
+        except Exception:
+            pass
 
 
 __all__ = [
@@ -1059,6 +1256,7 @@ __all__ = [
     "AssemblyResult",
     "load_config",
     "is_deferrable_tool_name",
+    "is_provider_tool_name",
     "classify_tools",
     "estimate_tokens_from_schemas",
     "should_activate",
@@ -1072,7 +1270,9 @@ __all__ = [
     "is_bridge_tool",
     "dispatch_tool_search",
     "dispatch_tool_describe",
+    "dispatch_provider_tool_call",
     "resolve_underlying_call",
     "scoped_deferrable_names",
     "validate_deferred_call_args",
+    "capture_context_id",
 ]

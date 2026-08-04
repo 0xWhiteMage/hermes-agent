@@ -1099,6 +1099,7 @@ def handle_function_call(
     task_id: Optional[str] = None,
     tool_call_id: Optional[str] = None,
     session_id: Optional[str] = None,
+    context_id: Optional[str] = None,
     turn_id: Optional[str] = None,
     api_request_id: Optional[str] = None,
     user_task: Optional[str] = None,
@@ -1117,6 +1118,9 @@ def handle_function_call(
         function_name: Name of the function to call.
         function_args: Arguments for the function.
         task_id: Unique identifier for terminal/browser session isolation.
+        context_id: Opaque tool-provider-gateway correlation id for this
+                    session; passed through to bridge dispatch and
+                    provider-tool calls.
         user_task: The user's original task (for browser_snapshot context).
         enabled_tools: Tool names enabled for this session.  When provided,
                        execute_code uses this list to determine which sandbox
@@ -1175,10 +1179,12 @@ def handle_function_call(
             current_defs = []
         if function_name == _ts_mod.TOOL_SEARCH_NAME:
             return _ts_mod.dispatch_tool_search(function_args or {},
-                                                current_tool_defs=current_defs)
+                                                current_tool_defs=current_defs,
+                                                context_id=context_id)
         if function_name == _ts_mod.TOOL_DESCRIBE_NAME:
             return _ts_mod.dispatch_tool_describe(function_args or {},
-                                                  current_tool_defs=current_defs)
+                                                  current_tool_defs=current_defs,
+                                                  context_id=context_id)
         if function_name == _ts_mod.TOOL_CALL_NAME:
             underlying_name, underlying_args, err = _ts_mod.resolve_underlying_call(function_args or {})
             if err or not underlying_name:
@@ -1190,10 +1196,17 @@ def handle_function_call(
             # restricted session can never invoke an out-of-scope tool through
             # the bridge even if the catalog scoping above regressed.
             _scoped_deferrable = _ts_mod.scoped_deferrable_names(current_defs)
-            if underlying_name not in _scoped_deferrable:
+            if (underlying_name not in _scoped_deferrable
+                    and not _ts_mod.is_provider_tool_name(underlying_name)):
                 return tool_error(
                     f"'{underlying_name}' is not available in this session. "
                     "Use tool_search to find tools you can call."
+                )
+            if _ts_mod.is_provider_tool_name(underlying_name):
+                return _ts_mod.dispatch_provider_tool_call(
+                    underlying_name,
+                    underlying_args,
+                    context_id=context_id,
                 )
             # Probe-validate against the deferred tool's schema (ironclaw#5149):
             # a blind call missing required arguments returns the parameter
@@ -1209,6 +1222,7 @@ def handle_function_call(
                 task_id=task_id,
                 tool_call_id=tool_call_id,
                 session_id=session_id,
+                context_id=context_id,
                 user_task=user_task,
                 enabled_tools=enabled_tools,
                 skip_pre_tool_call_hook=skip_pre_tool_call_hook,
@@ -1343,6 +1357,13 @@ def handle_function_call(
                         task_id=task_id,
                         session_id=session_id,
                         enabled_tools=sandbox_enabled,
+                    )
+            elif _ts_mod is not None and _ts_mod.is_provider_tool_name(function_name):
+                def _dispatch(next_args: Dict[str, Any]) -> Any:
+                    return _ts_mod.dispatch_provider_tool_call(
+                        function_name,
+                        next_args,
+                        context_id=context_id,
                     )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:

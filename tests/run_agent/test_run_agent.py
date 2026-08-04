@@ -938,7 +938,11 @@ class TestBuildSystemPrompt:
             assert False, "Expected a 'Conversation started:' line in the system prompt"
 
     def test_includes_nous_subscription_prompt(self, agent, monkeypatch):
-        monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")
+        monkeypatch.setattr(
+            run_agent,
+            "build_nous_subscription_prompt",
+            lambda tool_names, connected_toolkits=None: "NOUS SUBSCRIPTION BLOCK",
+        )
         prompt = agent._build_system_prompt()
         assert "NOUS SUBSCRIPTION BLOCK" in prompt
 
@@ -1900,6 +1904,7 @@ class TestConcurrentToolExecution:
                 skip_tool_request_middleware=True,
                 enabled_toolsets=agent.enabled_toolsets,
                 disabled_toolsets=agent.disabled_toolsets,
+                context_id=None,
                 tool_request_middleware_trace=[],
             )
             assert result == "result"
@@ -6046,4 +6051,3 @@ class TestMemoryContextSanitization:
         assert "memory-context" not in result.lower()
         assert "stale observation" not in result
         assert "how is the honcho working" in result
-

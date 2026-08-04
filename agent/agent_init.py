@@ -1459,6 +1459,48 @@ def init_agent(
         KANBAN_GUIDANCE if "kanban_show" in agent.valid_tool_names else ""
     )
 
+    # Tool-provider bridge session state (composio-bridge prototype):
+    # context_id is an opaque correlation token for /v1/search + /v1/execute
+    # calls in THIS session (see tools/tool_search.py::capture_context_id,
+    # which updates this attribute after each bridge/provider tool call).
+    # None until the first gateway call mints one. Connected-toolkit status is
+    # resolved ONCE here (a single cheap /v1/connections "status" call) rather
+    # than per-turn, matching the kanban-guidance pattern above — session-
+    # static state must not be re-fetched mid-conversation (cache safety).
+    agent._tool_provider_context_id = None
+    agent._tool_provider_connected_toolkits = None
+    try:
+        from tools.tool_backend_helpers import managed_nous_tools_enabled
+
+        if managed_nous_tools_enabled():
+            from tools.tool_provider_gateway import (
+                connections as _tp_connections,
+                resolve_tool_provider_gateway,
+            )
+
+            gw_config = resolve_tool_provider_gateway()
+            if gw_config is not None:
+                from model_tools import _run_async
+
+                # NOTE: the wire contract requires a `toolkits` list; there is
+                # no "give me everything" query shape yet. Passing an empty
+                # list is a deliberate best-effort probe for the prototype —
+                # if the live gateway treats that as "all enabled toolkits"
+                # this returns real connection state, and if it treats it as
+                # "nothing requested" this degrades to an empty list, which
+                # is a safe/inert result (the injected prompt line just says
+                # nothing is connected yet). Never let this block agent init.
+                conns = _run_async(
+                    _tp_connections(gw_config, [], "status", context_id=None)
+                )
+                agent._tool_provider_connected_toolkits = [
+                    c.toolkit for c in conns if c.status == "connected"
+                ]
+    except Exception:
+        logger.debug(
+            "Tool-provider connection status probe failed at init", exc_info=True
+        )
+
     # Check tool requirements
     if agent.tools and not agent.quiet_mode:
         requirements = _ra().check_toolset_requirements()

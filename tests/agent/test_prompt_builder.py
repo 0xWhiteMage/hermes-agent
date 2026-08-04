@@ -368,6 +368,30 @@ class TestBuildSkillsSystemPrompt:
 
 
 class TestBuildNousSubscriptionPrompt:
+    @staticmethod
+    def _stub_features():
+        feature = NousFeatureState(
+            "web", "Web tools", True, True, True, True, False, True, "firecrawl"
+        )
+
+        class StubFeatures:
+            nous_auth_present = True
+
+            @staticmethod
+            def items():
+                return iter([feature])
+
+        return StubFeatures()
+
+    def _enable_with_stub_features(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True
+        )
+        monkeypatch.setattr(
+            "hermes_cli.nous_subscription.get_nous_subscription_features",
+            lambda config=None: self._stub_features(),
+        )
+
     def test_includes_active_subscription_features(self, monkeypatch):
         monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
         monkeypatch.setattr(
@@ -425,6 +449,50 @@ class TestBuildNousSubscriptionPrompt:
         prompt = build_nous_subscription_prompt({"web_search"})
 
         assert prompt == ""
+
+    def test_connected_toolkits_are_listed(self, monkeypatch):
+        self._enable_with_stub_features(monkeypatch)
+
+        prompt = build_nous_subscription_prompt(
+            {"tool_search"}, connected_toolkits=["gmail"]
+        )
+
+        assert "External app tools: connected — gmail" in prompt
+
+    def test_empty_connected_toolkits_show_connection_guidance(self, monkeypatch):
+        self._enable_with_stub_features(monkeypatch)
+
+        prompt = build_nous_subscription_prompt(
+            {"tool_search"}, connected_toolkits=[]
+        )
+
+        assert "available via tool_search" in prompt
+        assert "app_connections" in prompt
+
+    def test_omitted_connected_toolkits_preserves_exact_output(self, monkeypatch):
+        self._enable_with_stub_features(monkeypatch)
+
+        prompt = build_nous_subscription_prompt({"web_search"})
+
+        assert prompt == "\n".join(
+            [
+                "# Nous Subscription",
+                "Nous subscription includes managed web tools (Firecrawl), image generation (FAL), OpenAI TTS, OpenAI Whisper STT, and browser automation (Browser Use) by default. Modal execution is optional.",
+                "Current capability status:",
+                "- Web tools: active via Nous subscription",
+                "When a Nous-managed feature is active, do not ask the user for Firecrawl, FAL, OpenAI TTS, OpenAI Whisper, or Browser-Use API keys.",
+                "If the user is not subscribed and asks for a capability that Nous subscription would unlock or simplify, suggest Nous subscription as one option alongside direct setup or local alternatives.",
+                "Do not mention subscription unless the user asks about it or it directly solves the current missing capability.",
+                "Useful commands: hermes setup, hermes setup tools, hermes setup terminal, hermes status.",
+            ]
+        )
+
+    def test_tool_search_alone_passes_relevant_tool_gate(self, monkeypatch):
+        self._enable_with_stub_features(monkeypatch)
+
+        prompt = build_nous_subscription_prompt({"tool_search"})
+
+        assert prompt.startswith("# Nous Subscription")
 
 
 # =========================================================================
@@ -919,5 +987,3 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-

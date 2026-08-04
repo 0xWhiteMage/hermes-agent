@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from types import SimpleNamespace
 from typing import List, Dict, Any
 
 import pytest
@@ -574,3 +575,339 @@ class TestDeferredCallSchemaProbe:
         ))
         assert result.get("ok") is True
         assert result.get("doc") == "abc"
+
+
+# ---------------------------------------------------------------------------
+# Managed external app-tool provider bridge (Stage 2).
+# ---------------------------------------------------------------------------
+
+
+class TestProviderToolNaming:
+    def test_provider_slug_heuristic(self):
+        from tools.tool_search import is_provider_tool_name
+
+        assert is_provider_tool_name("GOOGLECALENDAR_EVENTS_LIST")
+        assert is_provider_tool_name("GMAIL_SEND_EMAIL")
+        assert not is_provider_tool_name("read_file")
+        assert not is_provider_tool_name("tool_search")
+        assert not is_provider_tool_name("")
+
+    def test_registered_all_caps_tool_wins_over_provider_heuristic(self, monkeypatch):
+        from tools.registry import registry
+        from tools.tool_search import is_provider_tool_name
+
+        original_get_entry = registry.get_entry
+        monkeypatch.setattr(
+            registry,
+            "get_entry",
+            lambda name: object() if name == "LOCAL_CAPS_TOOL" else original_get_entry(name),
+        )
+        assert not is_provider_tool_name("LOCAL_CAPS_TOOL")
+
+    def test_resolve_underlying_call_accepts_provider_slug(self):
+        from tools.tool_search import (
+            is_provider_tool_name,
+            resolve_underlying_call,
+            scoped_deferrable_names,
+        )
+
+        name, args, err = resolve_underlying_call({
+            "name": "GOOGLECALENDAR_EVENTS_LIST",
+            "arguments": {"calendar_id": "primary"},
+        })
+        assert (name, args, err) == (
+            "GOOGLECALENDAR_EVENTS_LIST",
+            {"calendar_id": "primary"},
+            None,
+        )
+        # Both executor unwrap blocks admit the same OR condition: local
+        # scoped membership, or this provider-slug routing heuristic.
+        assert name not in scoped_deferrable_names([])
+        assert is_provider_tool_name(name)
+
+
+class TestProviderSearchFanout:
+    @staticmethod
+    def _register_local(name: str) -> Dict[str, Any]:
+        from tools.registry import registry
+
+        tool_def = _td(name, "Search local GitHub issues")
+        registry.register(
+            name=name,
+            handler=lambda args, **kwargs: "{}",
+            schema=tool_def,
+            toolset="mcp-provider-fanout",
+        )
+        return tool_def
+
+    def test_entitled_search_merges_local_and_provider_hits(self, monkeypatch):
+        from tools import tool_provider_gateway as gateway
+        from tools import tool_search
+        from tools.tool_provider_gateway import ProviderSearchResponse, SearchResultGroup, ToolRef
+
+        local_def = self._register_local("provider_fanout_github_search")
+        monkeypatch.setattr(tool_search, "_tool_provider_gateway_config", lambda: object())
+
+        async def fake_search(config, queries, *, context_id=None, model=None):
+            assert queries == ["github search"]
+            assert context_id == "ctx-old"
+            return ProviderSearchResponse(
+                context_id="ctx-new",
+                results=[SearchResultGroup(
+                    use_case="search mail",
+                    tools=[ToolRef(
+                        slug="GMAIL_SEARCH_EMAILS",
+                        toolkit="gmail",
+                        description="Search connected Gmail messages",
+                        connected=True,
+                        input_schema={"type": "object"},
+                    )],
+                )],
+                connections=[{"toolkit": "gmail", "connected": True}],
+            )
+
+        monkeypatch.setattr(gateway, "search", fake_search)
+        result = json.loads(tool_search.dispatch_tool_search(
+            {"query": "github search", "limit": 5},
+            current_tool_defs=[local_def],
+            context_id="ctx-old",
+        ))
+
+        assert result["context_id"] == "ctx-new"
+        assert result["app_connections"] == [{"toolkit": "gmail", "connected": True}]
+        assert result["total_available"] == 2
+        assert any(hit["name"] == "provider_fanout_github_search" for hit in result["matches"])
+        provider_hit = next(hit for hit in result["matches"] if hit["source"] == "provider")
+        assert provider_hit == {
+            "name": "GMAIL_SEARCH_EMAILS",
+            "source": "provider",
+            "source_name": "gmail",
+            "description": "Search connected Gmail messages",
+            "connected": True,
+            "input_schema": {"type": "object"},
+        }
+
+    def test_gateway_error_degrades_to_local_results(self, monkeypatch):
+        from tools import tool_provider_gateway as gateway
+        from tools import tool_search
+        from tools.tool_provider_gateway import ToolProviderTransportError
+
+        local_def = self._register_local("provider_degrade_github_search")
+        monkeypatch.setattr(tool_search, "_tool_provider_gateway_config", lambda: object())
+
+        async def failing_search(*args, **kwargs):
+            raise ToolProviderTransportError("timed out")
+
+        monkeypatch.setattr(gateway, "search", failing_search)
+        result = json.loads(tool_search.dispatch_tool_search(
+            {"query": "github search"},
+            current_tool_defs=[local_def],
+            context_id="ctx-old",
+        ))
+
+        assert [hit["name"] for hit in result["matches"]] == [
+            "provider_degrade_github_search"
+        ]
+        assert "timed out" in result["gateway_notice"]
+        assert result["context_id"] == "ctx-old"
+
+    def test_unentitled_search_preserves_original_result_shape(self, monkeypatch):
+        from tools import tool_search
+
+        local_def = self._register_local("provider_off_github_search")
+        monkeypatch.setattr(tool_search, "_tool_provider_gateway_config", lambda: None)
+        result = json.loads(tool_search.dispatch_tool_search(
+            {"query": "github search"},
+            current_tool_defs=[local_def],
+            context_id="must-not-appear",
+        ))
+
+        assert set(result) == {"query", "total_available", "matches"}
+        assert result["matches"][0]["name"] == "provider_off_github_search"
+
+    def test_provider_schema_fallback(self, monkeypatch):
+        from tools import tool_provider_gateway as gateway
+        from tools import tool_search
+        from tools.tool_provider_gateway import ProviderSchema
+
+        monkeypatch.setattr(tool_search, "_tool_provider_gateway_config", lambda: object())
+
+        async def fake_schemas(config, slugs, *, context_id=None, include_output=False):
+            assert slugs == ["GMAIL_SEND_EMAIL"]
+            assert context_id == "ctx-schema"
+            return [ProviderSchema(
+                slug="GMAIL_SEND_EMAIL",
+                toolkit="gmail",
+                description="Send an email",
+                input_schema={"type": "object", "required": ["to"]},
+            )]
+
+        monkeypatch.setattr(gateway, "schemas", fake_schemas)
+        result = json.loads(tool_search.dispatch_tool_describe(
+            {"name": "GMAIL_SEND_EMAIL"},
+            current_tool_defs=[],
+            context_id="ctx-schema",
+        ))
+        assert result == {
+            "name": "GMAIL_SEND_EMAIL",
+            "description": "Send an email",
+            "parameters": {"type": "object", "required": ["to"]},
+            "toolkit": "gmail",
+        }
+
+
+class TestProviderToolCall:
+    @pytest.mark.parametrize(
+        ("successful", "data", "error"),
+        [
+            (True, {"events": [1]}, None),
+            (False, None, "calendar permission denied"),
+        ],
+    )
+    def test_execute_result_shapes(self, monkeypatch, successful, data, error):
+        from tools import tool_provider_gateway as gateway
+        from tools import tool_search
+        from tools.tool_provider_gateway import ProviderExecuteResponse, ProviderExecuteResult
+
+        monkeypatch.setattr(tool_search, "_tool_provider_gateway_config", lambda: object())
+
+        async def fake_execute(config, tools, *, context_id=None, thought=None):
+            assert tools == [{
+                "slug": "GOOGLECALENDAR_EVENTS_LIST",
+                "arguments": {"calendar_id": "primary"},
+            }]
+            assert context_id == "ctx-execute"
+            return ProviderExecuteResponse(
+                context_id="ctx-result",
+                results=[ProviderExecuteResult(
+                    slug="GOOGLECALENDAR_EVENTS_LIST",
+                    successful=successful,
+                    data=data,
+                    error=error,
+                )],
+            )
+
+        monkeypatch.setattr(gateway, "execute", fake_execute)
+        result = json.loads(tool_search.dispatch_provider_tool_call(
+            "GOOGLECALENDAR_EVENTS_LIST",
+            {"calendar_id": "primary"},
+            context_id="ctx-execute",
+        ))
+        assert result["success"] is successful
+        assert result["context_id"] == "ctx-result"
+        if successful:
+            assert result["data"] == data
+        else:
+            assert result["error"] == error
+
+    def test_gateway_not_entitled_returns_tool_error(self, monkeypatch):
+        from tools import tool_search
+
+        monkeypatch.setattr(tool_search, "_tool_provider_gateway_config", lambda: None)
+        result = json.loads(tool_search.dispatch_provider_tool_call(
+            "GMAIL_SEND_EMAIL", {"to": "user@example.com"}
+        ))
+        assert "error" in result
+
+    def test_structured_gateway_error_surfaces_code(self, monkeypatch):
+        from tools import tool_provider_gateway as gateway
+        from tools import tool_search
+        from tools.tool_provider_gateway import ToolProviderGatewayError
+
+        monkeypatch.setattr(tool_search, "_tool_provider_gateway_config", lambda: object())
+
+        async def failing_execute(*args, **kwargs):
+            raise ToolProviderGatewayError("TOOLKIT_NOT_ENABLED", "Gmail is not enabled")
+
+        monkeypatch.setattr(gateway, "execute", failing_execute)
+        result = json.loads(tool_search.dispatch_provider_tool_call(
+            "GMAIL_SEND_EMAIL", {"to": "user@example.com"}
+        ))
+        assert result["code"] == "TOOLKIT_NOT_ENABLED"
+        assert "Gmail is not enabled" in result["error"]
+
+
+class TestProviderHandleFunctionCallRouting:
+    @pytest.mark.parametrize("direct", [False, True])
+    def test_provider_slug_routes_in_wrapped_and_unwrapped_shapes(self, monkeypatch, direct):
+        import model_tools
+        from tools import tool_search
+        from tools.registry import registry
+
+        calls = []
+        monkeypatch.setattr(
+            tool_search,
+            "is_provider_tool_name",
+            lambda name: name == "GOOGLECALENDAR_EVENTS_LIST",
+        )
+
+        def fake_dispatch(name, arguments, *, context_id=None):
+            calls.append((name, arguments, context_id))
+            return json.dumps({"success": True, "context_id": context_id})
+
+        monkeypatch.setattr(tool_search, "dispatch_provider_tool_call", fake_dispatch)
+        monkeypatch.setattr(
+            registry,
+            "dispatch",
+            lambda *args, **kwargs: pytest.fail("provider slug reached registry.dispatch"),
+        )
+
+        slug = "GOOGLECALENDAR_EVENTS_LIST"
+        arguments = {"calendar_id": "primary"}
+        result = model_tools.handle_function_call(
+            function_name=slug if direct else "tool_call",
+            function_args=arguments if direct else {"name": slug, "arguments": arguments},
+            context_id="ctx-route",
+        )
+        assert json.loads(result)["success"] is True
+        assert calls == [(slug, arguments, "ctx-route")]
+
+
+class TestGatewayOnlyAssembly:
+    @pytest.mark.parametrize(
+        ("gateway_config", "enabled", "activated"),
+        [
+            (object(), "on", True),
+            (None, "on", False),
+            (object(), "off", False),
+        ],
+    )
+    def test_gateway_entitlement_controls_zero_local_catalog_activation(
+        self, monkeypatch, gateway_config, enabled, activated
+    ):
+        from tools import tool_search
+
+        monkeypatch.setattr(
+            tool_search,
+            "_tool_provider_gateway_config",
+            lambda: gateway_config,
+        )
+        result = tool_search.assemble_tool_defs(
+            [_td("terminal", "Run shell")],
+            context_length=200_000,
+            config=tool_search.ToolSearchConfig.from_raw({"enabled": enabled}),
+        )
+        assert result.activated is activated
+        names = {td["function"]["name"] for td in result.tool_defs}
+        if activated:
+            assert tool_search.BRIDGE_TOOL_NAMES <= names
+            assert result.tier == 2
+        else:
+            assert names == {"terminal"}
+
+
+class TestProviderContextCapture:
+    def test_captures_nonempty_context_id(self):
+        from tools.tool_search import capture_context_id
+
+        agent = SimpleNamespace()
+        capture_context_id(agent, json.dumps({"context_id": "abc"}))
+        assert agent._tool_provider_context_id == "abc"
+
+    @pytest.mark.parametrize("result", ["not json", "{}", '{"context_id": ""}'])
+    def test_ignores_unusable_results(self, result):
+        from tools.tool_search import capture_context_id
+
+        agent = SimpleNamespace()
+        capture_context_id(agent, result)
+        assert not hasattr(agent, "_tool_provider_context_id")

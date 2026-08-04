@@ -1678,5 +1678,30 @@ class TestFallbackModelInheritance(unittest.TestCase):
         self.assertIsNone(kwargs["fallback_model"])
 
 
+class TestToolProviderStateInheritance(unittest.TestCase):
+    def test_child_inherits_context_and_connection_snapshot(self):
+        parent = _make_mock_parent(depth=0)
+        parent._tool_provider_context_id = "ctx-1"
+        parent._tool_provider_connected_toolkits = ["gmail"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            child = MagicMock()
+            MockAgent.return_value = child
+            result = _build_child_agent(
+                task_index=0,
+                goal="test tool-provider inheritance",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        self.assertIs(result, child)
+        self.assertEqual(child._tool_provider_context_id, "ctx-1")
+        self.assertEqual(child._tool_provider_connected_toolkits, ["gmail"])
+
+
 if __name__ == "__main__":
     unittest.main()

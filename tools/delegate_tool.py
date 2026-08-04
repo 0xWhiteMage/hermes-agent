@@ -1559,6 +1559,16 @@ def _build_child_agent(
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
+    # Tool-provider bridge state: subagents execute tools in-process through
+    # the same executor as the parent, so they inherit the parent's current
+    # context_id/connection snapshot rather than minting a new one (see
+    # agent/agent_init.py and tools/tool_search.py::capture_context_id).
+    child._tool_provider_context_id = getattr(
+        parent_agent, "_tool_provider_context_id", None
+    )
+    child._tool_provider_connected_toolkits = getattr(
+        parent_agent, "_tool_provider_connected_toolkits", None
+    )
     # Stable sidebar marker: delegate subagent sessions must stay out of
     # session pickers even when a parent delete orphans them (parent_session_id
     # → NULL). Mirrors /branch's ``_branched_from`` pattern — see
