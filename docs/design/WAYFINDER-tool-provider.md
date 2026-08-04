@@ -38,8 +38,10 @@ Never touch real `~/.hermes`. Use:
 - Token TTL is 900s and is baked into the process env at launch — RE-MINT AND RELAUNCH,
   a refreshed auth.json does not help a running process.
 
-Mint command lives in the NAS wayfinder. E2E transcripts from the rehearsal:
-`/tmp/claude-1001/-home-daimon-github/850540eb-b16a-49d8-96d0-6ac86358ab4c/scratchpad/e2e-transcripts/`.
+Mint command lives in the NAS wayfinder. E2E transcripts from the rehearsal are committed at
+`tool-gateway/.worktrees/tool-provider-v1/docs/session-notes/e2e-transcripts/` (historical
+reference only — regenerate fresh transcripts for any new verification; never rely on
+session-scratchpad paths, they die with the session that made them).
 
 ## Demo-day notes (from the rehearsal)
 
