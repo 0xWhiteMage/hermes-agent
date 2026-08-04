@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { KeyRound, Package, Power, Server, Trash2, X, Zap } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -21,7 +21,6 @@ import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent } from "@nous-research/ui/ui/components/card";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
-import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 import {
   buildMcpServerCreate,
@@ -43,13 +42,12 @@ const TRANSPORT_TONE: Record<string, "success" | "warning" | "secondary"> = {
   unknown: "secondary",
 };
 
-export default function McpPage() {
+export function McpServersSection() {
   const [servers, setServers] = useState<McpServer[]>([]);
   const [catalog, setCatalog] = useState<McpCatalogEntry[]>([]);
   const [diagnostics, setDiagnostics] = useState<McpCatalogDiagnostic[]>([]);
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
-  const { setEnd } = usePageHeader();
 
   // Add server modal state
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -293,22 +291,6 @@ export default function McpPage() {
     void runInstall(installEntry, envMap);
   };
 
-  // Put "Add Server" button in page header
-  useLayoutEffect(() => {
-    setEnd(
-      <Button
-        className="uppercase"
-        size="sm"
-        onClick={() => setCreateModalOpen(true)}
-      >
-        Add Server
-      </Button>,
-    );
-    return () => {
-      setEnd(null);
-    };
-  }, [setEnd, loading]);
-
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -323,7 +305,7 @@ export default function McpPage() {
   });
 
   return (
-    <div className="flex flex-col gap-6">
+    <section className="flex flex-col gap-6">
       <Toast toast={toast} />
 
       <DeleteConfirmDialog
@@ -589,7 +571,7 @@ export default function McpPage() {
 
       {/* ── Your MCP servers ── */}
       <div className="flex flex-col gap-3">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <H2
             variant="sm"
             className="flex items-center gap-2 text-muted-foreground"
@@ -597,6 +579,13 @@ export default function McpPage() {
             <Server className="h-4 w-4" />
             Your MCP servers ({servers.length})
           </H2>
+          <Button
+            className="uppercase"
+            size="sm"
+            onClick={() => setCreateModalOpen(true)}
+          >
+            Add Server
+          </Button>
         </div>
 
         {restartNote && <p className="text-xs text-warning">{restartNote}</p>}
@@ -897,6 +886,6 @@ export default function McpPage() {
           );
         })}
       </div>
-    </div>
+    </section>
   );
 }

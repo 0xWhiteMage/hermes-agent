@@ -629,6 +629,10 @@ class ToolsetToggle(BaseModel):
     profile: Optional[str] = None
 
 
+class ToolkitEnabledUpdate(BaseModel):
+    enabled: bool
+
+
 # --- from web_server.py (originally lines 16199-16204) ---
 
 class ToolsetProviderSelect(BaseModel):
@@ -706,4 +710,3 @@ class _PluginProvidersPutBody(BaseModel):
 
 class _PluginVisibilityBody(BaseModel):
     hidden: bool
-

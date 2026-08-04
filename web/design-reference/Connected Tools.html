@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Connected Tools — Nous Portal</title>
+  <link rel="stylesheet" href="kit/portal.css" />
+  <link rel="stylesheet" href="kit/tools.css" />
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="kit/Icons.jsx"></script>
+  <script type="text/babel" src="kit/Primitives.jsx"></script>
+  <script type="text/babel" src="kit/Shell.jsx"></script>
+  <script type="text/babel" src="kit/Toolkits.jsx"></script>
+  <script type="text/babel" src="kit/ToolsPage.jsx"></script>
+  <script type="text/babel" src="kit/ToolsSlideOver.jsx"></script>
+  <script type="text/babel" src="kit/AdminToolkitsPage.jsx"></script>
+  <script type="text/babel" src="kit/tweaks-panel.jsx"></script>
+</head>
+<body class="nous-body">
+
+<div id="root"></div>
+
+<script type="text/babel">
+
+/* ---- Serialise Sets through localStorage. ---- */
+const setKeys = ["enabled", "connected", "catalogEnabled"];
+const directKeys = ["directTools"]; // slug -> Set<toolSlug>
+
+function serialise(state) {
+  const copy = JSON.parse(JSON.stringify(state, (k, v) => {
+    if (v instanceof Set) return { __set: true, items: Array.from(v) };
+    return v;
+  }));
+  return copy;
+}
+function rehydrate(state) {
+  const walk = (obj) => {
+    if (Array.isArray(obj)) return obj.map(walk);
+    if (obj && typeof obj === "object") {
+      if (obj.__set) return new Set(obj.items);
+      const out = {};
+      for (const k of Object.keys(obj)) out[k] = walk(obj[k]);
+      return out;
+    }
+    return obj;
+  };
+  return walk(state);
+}
+
+const INITIAL_LOG = [
+  { kind: "enable", label: "enabled",  slug: "linear",   who: "sid@nousresearch.com", when: "May 24, 09:14" },
+  { kind: "soft",   label: "soft-disabled", slug: "hubspot",  who: "sid@nousresearch.com", when: "May 23, 16:02" },
+  { kind: "nuke",   label: "nuclear-revoked", slug: "salesforce", who: "rob@nousresearch.com", when: "May 21, 11:38" },
+  { kind: "enable", label: "enabled",  slug: "firecrawl", who: "rob@nousresearch.com", when: "May 18, 14:21" },
+];
+
+const defaultState = () => ({
+  // shell
+  isLoggedIn: true,
+  route: "tools",
+  isAdmin: true,        // start with admin on so both routes are exposed
+  env: "development",
+
+  // user-side tool state
+  enabled: new Set(["slack", "github", "linear", "gmail"]),
+  everEnabled: new Set(["slack", "github", "linear", "gmail", "notion"]),  // includes one previously-used
+  connected: new Set(["slack", "github"]),
+  injectionMode: { linear: "direct" },
+  directTools: { linear: new Set(["LINEAR_CREATE_ISSUE", "LINEAR_LIST_ISSUES", "LINEAR_UPDATE_ISSUE", "LINEAR_ADD_COMMENT"]) },
+  autoTools: true,
+  agentAssist: false,
+  starterDismissed: false,
+  previewCollapsed: false,
+  budgetOverride: false,
+
+  // admin-side state (shared between admin + user pages)
+  catalogEnabled: new Set(TOOLKITS.map((t) => t.slug).filter((s) => !["zendesk", "asana", "trello", "confluence", "dropbox", "figma", "monday", "shopify", "salesforce"].includes(s))),
+  adminDisabled: { hubspot: "soft", salesforce: "nuke" },
+  defaults: { autoTools: true, agentAssist: false },
+  starterPack: STARTER_PACK,
+  log: INITIAL_LOG,
+});
+
+const TWEAK_DEFAULS = /*EDITMODE-BEGIN*/{
+  "density": "minimal",
+  "budgetZone": "red",
+  "starterBanner": "auto",
+  "previewSize": "expanded",
+  "showProtoBar": true
+}/*EDITMODE-END*/;
+
+function App() {
+  // initialise from localStorage if available
+  const initialState = React.useMemo(() => {
+    try {
+      const raw = localStorage.getItem("nous-tools-prototype");
+      if (raw) {
+        const obj = JSON.parse(raw);
+        // re-hydrate Set instances
+        return {
+          ...defaultState(),
+          ...rehydrate(obj),
+        };
+      }
+    } catch {}
+    return defaultState();
+  }, []);
+
+  const [state, setState] = React.useState(initialState);
+  const [t, setTweak] = useTweaks(TWEAK_DEFAULS);
+
+  // Apply tweak effects to state where appropriate
+  React.useEffect(() => {
+    setState((s) => ({
+      ...s,
+      previewCollapsed: t.previewSize === "collapsed",
+    }));
+  }, [t.previewSize]);
+
+  React.useEffect(() => {
+    try {
+      localStorage.setItem("nous-tools-prototype", JSON.stringify(serialise(state)));
+    } catch {}
+  }, [state]);
+
+  // Filter the toolkit list to what admin has actually published.
+  // Implemented by passing `catalogEnabled` into the pages.
+  // For the user page: only catalog-enabled toolkits show in "Available";
+  // toolkits the user has enabled stay visible even if removed from catalog
+  // (mirrors real behaviour: gateway has to handle the drift).
+
+  const setAdminState = (fn) => setState((s) => {
+    const next = typeof fn === "function" ? fn(s) : fn;
+    return next;
+  });
+
+  const handleNav = (key) => {
+    if (key === "logout") return;
+    setState((s) => ({ ...s, route: key }));
+  };
+
+  const setIsAdmin = (v) => setState((s) => ({ ...s, isAdmin: v, route: v ? s.route : (s.route.startsWith("admin-") ? "tools" : s.route) }));
+  const setEnv = (v) => setState((s) => ({ ...s, env: v }));
+
+  return (
+    <PortalShell
+      current={state.route}
+      onNavigate={handleNav}
+      isLoggedIn={state.isLoggedIn}
+      isAdmin={state.isAdmin}
+      env={state.env}
+    >
+      {t.showProtoBar !== false ? (
+        <div className="proto-bar">
+          <strong>prototype</strong>
+          <span>·</span>
+          <label>
+            <input type="checkbox" checked={state.isAdmin} onChange={(e) => setIsAdmin(e.target.checked)} />
+            Admin mode
+          </label>
+          <span>·</span>
+          <span>env:</span>
+          <select value={state.env} onChange={(e) => setEnv(e.target.value)}>
+            <option value="development">development</option>
+            <option value="staging">staging</option>
+            <option value="production">production</option>
+          </select>
+          <span className="right-spacer">
+            <button type="button" onClick={() => {
+              localStorage.removeItem("nous-tools-prototype");
+              location.reload();
+            }}>Reset</button>
+          </span>
+        </div>
+      ) : null}
+
+      {state.route === "tools" ? (
+        <ConnectedToolsPage
+          state={{
+            enabled: state.enabled,
+            everEnabled: state.everEnabled,
+            connected: state.connected,
+            injectionMode: state.injectionMode,
+            directTools: state.directTools,
+            autoTools: state.autoTools,
+            agentAssist: state.agentAssist,
+            starterDismissed: state.starterDismissed,
+            previewCollapsed: state.previewCollapsed,
+            budgetOverride: state.budgetOverride,
+            adminDisabled: state.adminDisabled,
+          }}
+          setState={(fn) => setState((s) => typeof fn === "function" ? fn(s) : { ...s, ...fn })}
+          viewport={{
+            density: t.density,
+            budgetZone: t.budgetZone,
+            starterBanner: t.starterBanner === "auto" ? null : t.starterBanner,
+          }}
+        />
+      ) : null}
+
+      {state.route === "admin-toolkits" ? (
+        <AdminToolkitsPage adminState={state} setAdminState={setAdminState} />
+      ) : null}
+
+      {state.route !== "tools" && state.route !== "admin-toolkits" ? (
+        <ScaffoldPage route={state.route} onJump={(k) => setState((s) => ({ ...s, route: k }))} />
+      ) : null}
+
+      {/* Tweaks panel */}
+      <TweaksPanel title="Tweaks">
+        <TweakSection label="View">
+          <TweakRadio
+            label="Card density"
+            value={t.density}
+            options={[
+              { value: "minimal", label: "Minimal" },
+              { value: "medium",  label: "Medium" },
+              { value: "dense",   label: "Dense" },
+            ]}
+            onChange={(v) => setTweak("density", v)}
+          />
+          <TweakRadio
+            label="Agent preview"
+            value={t.previewSize}
+            options={[
+              { value: "expanded",  label: "Expanded" },
+              { value: "collapsed", label: "Collapsed" },
+            ]}
+            onChange={(v) => setTweak("previewSize", v)}
+          />
+          <TweakRadio
+            label="Starter banner"
+            value={t.starterBanner}
+            options={[
+              { value: "auto", label: "Auto" },
+              { value: "hide", label: "Force hide" },
+            ]}
+            onChange={(v) => setTweak("starterBanner", v)}
+          />
+        </TweakSection>
+
+        <TweakSection label="Force budget zone">
+          <TweakSelect
+            label="Token zone"
+            value={t.budgetZone}
+            options={[
+              { value: "auto",  label: "Auto (computed)" },
+              { value: "green", label: "Green — comfortable" },
+              { value: "amber", label: "Amber — warning" },
+              { value: "red",   label: "Red — over-budget" },
+            ]}
+            onChange={(v) => setTweak("budgetZone", v)}
+          />
+        </TweakSection>
+
+        <TweakSection label="Jump to page">
+          <TweakButton
+            label="User · Connected Tools"
+            onClick={() => setState((s) => ({ ...s, route: "tools" }))}
+          />
+          <TweakButton
+            label="Admin · Toolkit Catalog"
+            onClick={() => setState((s) => ({ ...s, isAdmin: true, route: "admin-toolkits" }))}
+          />
+        </TweakSection>
+
+        <TweakSection label="Prototype">
+          <TweakToggle
+            label="Show prototype bar"
+            value={t.showProtoBar !== false}
+            onChange={(v) => setTweak("showProtoBar", v)}
+          />
+          <TweakButton
+            label="Reset prototype state"
+            secondary
+            onClick={() => {
+              localStorage.removeItem("nous-tools-prototype");
+              location.reload();
+            }}
+          />
+        </TweakSection>
+      </TweaksPanel>
+    </PortalShell>
+  );
+}
+
+function ScaffoldPage({ route, onJump }) {
+  const titles = {
+    subscription: "Subscription",
+    "api-keys": "API",
+    usage: "Usage",
+    agents: "Agents",
+    "account-settings": "Account Settings",
+    team: "Team",
+    info: "Info",
+    "api-docs": "API Docs",
+    help: "Help",
+    "admin-users": "Users",
+    "admin-keys": "Keys",
+    "admin-pricing": "Pricing & Models",
+    "admin-rate": "Key Rate Limits",
+  };
+  const isAdmin = route.startsWith("admin-");
+  return (
+    <>
+      <PageHeader title={titles[route] || route} description="Stub page — not part of this prototype." variant={isAdmin ? "admin" : null} />
+      <div className="section-card">
+        <p className="lede" style={{ margin: 0 }}>
+          This prototype focuses on <strong>Connected Tools</strong> and <strong>Toolkit Catalog</strong>.
+          Other Portal pages are stubs.
+        </p>
+        <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
+          <Button kind="primary" size="sm" onClick={() => onJump("tools")}>
+            → Connected Tools (user)
+          </Button>
+          <Button kind="destructive_secondary" size="sm" onClick={() => onJump("admin-toolkits")}>
+            → Toolkit Catalog (admin)
+          </Button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+
+</body>
+</html>

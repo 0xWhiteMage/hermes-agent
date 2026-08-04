@@ -1093,6 +1093,26 @@ export const api = {
       },
     ),
 
+  // ── Admin: Capabilities (toolkits) ──────────────────────────────────
+  getCapabilityToolkits: () =>
+    fetchJSON<{ toolkits: CapabilityToolkit[] }>(
+      "/api/capabilities/toolkits",
+    ),
+  setToolkitEnabled: (slug: string, enabled: boolean) =>
+    fetchJSON<{ slug: string; enabled: boolean; enabledToolkits: string[] }>(
+      `/api/capabilities/toolkits/${encodeURIComponent(slug)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      },
+    ),
+  connectToolkit: (slug: string) =>
+    fetchJSON<{ connect_url: string }>(
+      `/api/capabilities/toolkits/${encodeURIComponent(slug)}/connect`,
+      { method: "POST" },
+    ),
+
   // ── Admin: Pairing ──────────────────────────────────────────────────
   // The mutating endpoints read the profile off the BODY, so the query-param
   // rewrite in withManagementProfile doesn't reach them — send it explicitly
@@ -1472,6 +1492,14 @@ export interface SkillHubScan {
 }
 
 // ── Admin types ───────────────────────────────────────────────────────
+
+export interface CapabilityToolkit {
+  slug: string;
+  name: string;
+  enabled: boolean;
+  connected: boolean;
+  logo: string;
+}
 
 export interface McpServer {
   name: string;

@@ -13681,6 +13681,11 @@ from hermes_cli.web_routers.tools import (  # noqa: E402,F401 — legacy re-expo
 )
 
 
+from hermes_cli.web_routers import capabilities as _capabilities_routes  # noqa: E402
+
+app.include_router(_capabilities_routes.router)
+
+
 
 
 

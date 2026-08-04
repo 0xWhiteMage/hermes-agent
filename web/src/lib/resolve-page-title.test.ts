@@ -29,9 +29,8 @@ describe("resolvePageTitle", () => {
     expect(resolvePageTitle("/env", t, [])).toBe("Keys");
   });
 
-  it("renders initialisms and literal labels correctly", () => {
-    // Regression: the naive capitalize fallback produced "Mcp".
-    expect(resolvePageTitle("/mcp", t, [])).toBe("MCP");
+  it("renders literal labels correctly", () => {
+    expect(resolvePageTitle("/capabilities", t, [])).toBe("Capabilities");
     expect(resolvePageTitle("/system", t, [])).toBe("System");
     expect(resolvePageTitle("/channels", t, [])).toBe("Channels");
     expect(resolvePageTitle("/webhooks", t, [])).toBe("Webhooks");
@@ -51,6 +50,6 @@ describe("resolvePageTitle", () => {
 
   it("treats root as sessions and trailing slashes as equivalent", () => {
     expect(resolvePageTitle("/", t, [])).toBe("Sessions");
-    expect(resolvePageTitle("/mcp/", t, [])).toBe("MCP");
+    expect(resolvePageTitle("/capabilities/", t, [])).toBe("Capabilities");
   });
 });

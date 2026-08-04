@@ -17,10 +17,10 @@ const BUILTIN: Record<string, keyof Translations["app"]["nav"]> = {
 
 // Built-in routes without an i18n nav key. Keep these in sync with the
 // sidebar labels in App.tsx — the naive capitalize fallback below mangles
-// initialisms ("/mcp" → "Mcp") and can't match multi-word labels.
+// initialisms and can't match multi-word labels.
 const BUILTIN_LITERAL: Record<string, string> = {
   "/files": "Files",
-  "/mcp": "MCP",
+  "/capabilities": "Capabilities",
   "/channels": "Channels",
   "/webhooks": "Webhooks",
   "/pairing": "Pairing",
