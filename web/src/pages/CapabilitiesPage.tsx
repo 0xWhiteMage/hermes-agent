@@ -21,19 +21,12 @@ import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { api } from "@/lib/api";
 import type { CapabilityToolkit } from "@/lib/api";
 import {
-  CAPABILITY_CATALOG,
   CAPABILITY_CATEGORIES,
   RECOMMENDED_TOOLS,
+  mergeCapabilityToolkit,
 } from "@/lib/capability-catalog";
+import type { MergedCapabilityToolkit } from "@/lib/capability-catalog";
 import { cn, themedBody } from "@/lib/utils";
-
-const FALLBACK_BRAND = "#64748B";
-
-interface MergedCapabilityToolkit extends CapabilityToolkit {
-  category: string;
-  brand: string;
-  description: string;
-}
 
 type CapabilityView = "catalog" | "admin";
 type AdminStubStatus = "soft" | "revoked";
@@ -54,20 +47,6 @@ const STARTER_TOOLKIT_SLUGS = [
   "notion",
   "googlecalendar",
 ];
-
-const catalogBySlug = new Map(
-  CAPABILITY_CATALOG.map((entry) => [entry.slug, entry]),
-);
-
-function mergeToolkit(toolkit: CapabilityToolkit): MergedCapabilityToolkit {
-  const catalogEntry = catalogBySlug.get(toolkit.slug);
-  return {
-    ...toolkit,
-    category: catalogEntry?.category ?? "Other",
-    brand: catalogEntry?.brand ?? FALLBACK_BRAND,
-    description: catalogEntry?.description ?? "",
-  };
-}
 
 function toolkitInitials(name: string): string {
   return name
@@ -199,7 +178,7 @@ export default function CapabilitiesPage() {
   }, [loading, refreshToolkits, refreshing, setEnd]);
 
   const mergedToolkits = useMemo(
-    () => toolkits.map(mergeToolkit),
+    () => toolkits.map(mergeCapabilityToolkit),
     [toolkits],
   );
 

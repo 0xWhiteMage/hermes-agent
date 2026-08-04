@@ -1499,6 +1499,8 @@ export interface CapabilityToolkit {
   enabled: boolean;
   connected: boolean;
   logo: string;
+  description?: string;
+  category?: string;
 }
 
 export interface McpServer {
