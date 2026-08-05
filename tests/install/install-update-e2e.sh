@@ -246,6 +246,89 @@ require_hermes_works() {
   ok "hermes runs $when"
 }
 
+# The canned reply the shared mock inference server returns for every chat
+# completion. Kept identical to DEFAULT_MOCK_REPLY in
+# scripts/mock-inference-server.mjs so a diff there fails this test loudly
+# rather than the reply silently going unmatched.
+MOCK_REPLY_TEXT='Hello from the mock inference server! The full boot chain is working.'
+
+# `-z`/`--oneshot` is a comparatively recent CLI surface; probe the installed
+# binary rather than assume, same reasoning as update_supports() above.
+oneshot_supported() {
+  in_sandbox "hermes --help 2>&1" | grep -qE -- '(^|[^-])-z\b|--oneshot\b'
+}
+
+# Prove the installed hermes can actually round-trip a chat message, not
+# just print --version. Runs entirely inside ONE sandbox invocation (the
+# mock server, config, and `hermes -z` call all share one bwrap pid
+# namespace) because a background process started by one `in_sandbox` call
+# does not survive past that call -- bwrap tears down its pid namespace,
+# and everything in it, the moment the invocation exits.
+#
+# scripts/mock-inference-server.mjs ships inside the tarred-in repo checkout
+# at /work/repo, so no extra fixture plumbing (--http-root etc.) is needed to
+# reach it -- and it needs nothing beyond the Node the install already
+# provisioned.
+#
+# The sandbox forces HTTP(S)_PROXY at everything (NO_PROXY is deliberately
+# empty for the fake-internet proxy to see all traffic — see
+# stage2-run.sh), which would route our plain localhost HTTP straight into
+# proxy.py. Route around it explicitly rather than depend on the proxy's
+# passthrough behavior for a target it was never designed to see.
+require_hermes_chat_round_trip() {
+  local when="$1"
+  local inner_script
+  inner_script=$(cat <<'INNER'
+set -euo pipefail
+export NO_PROXY='127.0.0.1,localhost'
+export no_proxy="$NO_PROXY"
+unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
+
+port_file="$(mktemp -u /tmp/hermes-e2e-mock-url.XXXXXX)"
+node /work/repo/scripts/mock-inference-server.mjs --port-file "$port_file" >/tmp/mock-server.log 2>&1 &
+mock_pid=$!
+trap 'kill "$mock_pid" 2>/dev/null || true' EXIT
+
+for _ in $(seq 1 100); do
+  [ -s "$port_file" ] && break
+  sleep 0.05
+done
+if [ ! -s "$port_file" ]; then
+  echo 'mock inference server never reported its URL' >&2
+  cat /tmp/mock-server.log >&2 || true
+  exit 1
+fi
+mock_url="$(cat "$port_file")"
+
+mkdir -p "$HOME/.hermes"
+cat > "$HOME/.hermes/config.yaml" <<EOF
+model:
+  default: mock-model
+  provider: mock
+providers:
+  mock:
+    api: ${mock_url}/v1
+    name: Mock
+    api_mode: chat_completions
+    key_env: MOCK_API_KEY
+    models:
+      mock-model: {}
+    context_length: 4096
+EOF
+printf 'MOCK_API_KEY=e2e-mock-key\n' > "$HOME/.hermes/.env"
+
+hermes -z "hi"
+INNER
+)
+  local out
+  out="$(in_sandbox "$inner_script" 2>&1)" \
+    || { printf '%s\n' "$out" >&2; collect_sandbox_logs "chat-$when"; fail "chat round-trip failed $when"; }
+  printf '%s\n' "$out" | sed 's/^/    /'
+  printf '%s\n' "$out" | grep -qF "$MOCK_REPLY_TEXT" \
+    || { collect_sandbox_logs "chat-$when"; fail "chat round-trip $when did not return the mock server's canned reply"; }
+  ok "chat round-trip works $when"
+}
+
 # ── install the earlier Hermes ─────────────────────────────────────────────
 step "installing upstream $INSTALL_REF (real curl | install.sh: uv, Python, Node, venv)"
 install_in_sandbox "install of upstream $INSTALL_REF" "$INSTALL_REF" install
@@ -257,6 +340,11 @@ TARGET="$(sandbox_target)"
   || fail "install landed on the update target ($BASE); base and target must differ"
 ok "installed ${BASE:0:12}; update target is ${TARGET:0:12}"
 require_hermes_works 'after install'
+if oneshot_supported; then
+  require_hermes_chat_round_trip 'after install'
+else
+  echo '  (skipping chat round-trip: this release predates -z/--oneshot)'
+fi
 
 # ── apply exactly one update route ─────────────────────────────────────────
 case "$ROUTE" in
@@ -276,6 +364,7 @@ case "$ROUTE" in
     fi
     require_landed_on_target 'hermes update'
     require_hermes_works 'after hermes update'
+    require_hermes_chat_round_trip 'after hermes update'
     ;;
   installer)
     step 'ROUTE: installer re-run over the existing checkout'
@@ -284,6 +373,7 @@ case "$ROUTE" in
     install_in_sandbox 'installer re-run' '' reinstall
     require_landed_on_target 'installer re-run'
     require_hermes_works 'after installer re-run'
+    require_hermes_chat_round_trip 'after installer re-run'
     ;;
 esac
 
