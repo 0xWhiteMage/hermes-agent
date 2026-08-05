@@ -1,108 +1,66 @@
 /**
- * Minimal OpenAI-compatible mock inference server for E2E tests.
+ * Desktop-specific extensions over the shared mock inference server.
  *
- * Implements just enough of the /v1/* surface for `hermes serve` to resolve a
- * provider, list models, and stream a canned chat completion back to the
- * desktop app — without any real LLM.
+ * The generic OpenAI-compatible core (endpoints, SSE framing, canned-reply
+ * plumbing) lives in `scripts/mock-inference-server.mjs` — a zero-dependency
+ * module shared with `apps/desktop/scripts/dev-mock.mjs` and
+ * `tests/install/install-update-e2e.sh`. This file adds the desktop e2e
+ * suite's scripted multi-turn tool-call sequences on top, via the shared
+ * server's `onCompletionRequest` hook.
  *
- * Endpoints:
- *   GET  /v1/models             → { data: [{ id, ... }] }
- *   POST /v1/chat/completions   → streaming (SSE) or non-streaming response
+ * ## Multi-turn interim script
  *
- * The canned response is a short, deterministic assistant message. Tool-call
- * requests are not simulated — the E2E tests only need the chat surface to
- * prove the full boot → gateway → inference → renderer chain works.
+ * When the user's message contains the trigger keyword, the mock server
+ * walks through a scripted sequence of responses that exercise the
+ * interim-assistant-message fix (#65919) across several patterns:
+ *
+ *   1. text + single tool_call  → should produce an interim message
+ *   2. text + single tool_call  → another interim message
+ *   3. no text + tool_call       → NO interim (no visible text alongside tools)
+ *   4. text + single tool_call  → another interim message
+ *   5. final answer (stop)      → message.complete, different from all interims
+ *
+ * Each "turn" is one API call. The agent executes the tool after each
+ * tool_calls response, then re-calls the API, advancing to the next turn.
  */
 
 import fs from 'node:fs'
-import http from 'node:http'
-import type { ServerResponse } from 'node:http'
 import os from 'node:os'
 import nodePath from 'node:path'
 
+import {
+  DEFAULT_MOCK_REPLY,
+  type ScriptedTurn,
+  type MockServer as SharedMockServer,
+  type MockServerOptions as SharedMockServerOptions,
+  startMockServer as startSharedMockServer,
+} from '../../../scripts/mock-inference-server.mjs'
+
+export type { ScriptedTurn }
+
 /** A canned assistant reply used for every chat completion request. */
-export const MOCK_REPLY = 'Hello from the mock inference server! The full boot chain is working.'
+export const MOCK_REPLY = DEFAULT_MOCK_REPLY
 
 export interface MockServerOptions {
   /** Pause the matching stream after its first token for session-switch E2E coverage. */
   holdFirstStreamForPrompt?: string
-/** Pause the first completion whose request JSON contains this text. */
-holdFirstCompletionContaining?: string
-/** Absolute sandbox path written by the verify-on-stop scripted tool call. */
-verificationWritePath?: string
-/**
- * Sentinel path that ends the E2E_SIDEBAR_CROSS background process.
- *
- * Without it that process is a bare `sleep 5`, which races the agent turn and
- * the 4s auto-dismiss linger — see `createBackgroundReleaseHandle`. Pass a
- * handle's `path` to let the test decide when the process exits.
- */
-backgroundReleasePath?: string
+  /** Pause the first completion whose request JSON contains this text. */
+  holdFirstCompletionContaining?: string
+  /** Absolute sandbox path written by the verify-on-stop scripted tool call. */
+  verificationWritePath?: string
+  /**
+   * Sentinel path that ends the E2E_SIDEBAR_CROSS background process.
+   *
+   * Without it that process is a bare `sleep 5`, which races the agent turn and
+   * the 4s auto-dismiss linger — see `createBackgroundReleaseHandle`. Pass a
+   * handle's `path` to let the test decide when the process exits.
+   */
+  backgroundReleasePath?: string
 }
 
-export interface MockServer {
-  port: number
-  url: string
-  receivedPrompts: string[]
-  waitForHeldStream: () => Promise<void>
-  waitForHeldCompletion: () => Promise<void>
-  releaseHeldStream: () => void
-  heldCompletionCount: () => number
-  close: () => Promise<void>
-}
+export interface MockServer extends SharedMockServer {}
 
-// ─── Multi-turn interim script ─────────────────────────────────────────
-//
-// When the user's message contains the trigger keyword, the mock server
-// walks through a scripted sequence of responses that exercise the
-// interim-assistant-message fix (#65919) across several patterns:
-//
-//   1. text + single tool_call  → should produce an interim message
-//   2. text + single tool_call  → another interim message
-//   3. no text + tool_call       → NO interim (no visible text alongside tools)
-//   4. text + single tool_call  → another interim message
-//   5. final answer (stop)      → message.complete, different from all interims
-//
-// Each "turn" is one API call. The agent executes the tool after each
-// tool_calls response, then re-calls the API, advancing to the next turn.
-
-export interface ScriptedTurn {
-  /** Assistant text content to stream. Empty string = no visible text. */
-  text: string
-  /** Tool calls to emit. Empty array = final turn (finish_reason: stop). */
-  toolCalls?: Array<{
-    name: string
-    args: Record<string, unknown>
-  }>
-}
-
-const INTERIM_SCRIPT: ScriptedTurn[] = [
-  {
-    text: 'Let me start by planning the approach.',
-    toolCalls: [{ name: 'todo', args: { todos: [{ id: '1', content: 'Plan', status: 'in_progress' }] } }],
-  },
-  {
-    text: 'Now checking the details before answering.',
-    toolCalls: [{ name: 'todo', args: { todos: [{ id: '2', content: 'Check details', status: 'in_progress' }] } }],
-  },
-  {
-    // No visible text alongside this tool call — should NOT produce an
-    // interim message. The agent fires _emit_interim_assistant_message
-    // but _interim_assistant_visible_text returns "" so it's a no-op.
-    text: '',
-    toolCalls: [{ name: 'todo', args: { todos: [{ id: '3', content: 'Silent step', status: 'completed' }] } }],
-  },
-  {
-    text: 'Found something interesting worth noting.',
-    toolCalls: [{ name: 'todo', args: { todos: [{ id: '4', content: 'Note finding', status: 'completed' }] } }],
-  },
-  {
-    // Final answer — different from all interim texts.
-    text: 'All done! Here is the complete summary of what I found.',
-  },
-]
-
-/** Per-server request counter so we can walk through the script turns. */
+/** Per-server counter so we can walk through the interim script turns. */
 let _scriptIndex = 0
 
 /** Per-server counter for the sidebar-states script (independent from _scriptIndex). */
@@ -138,6 +96,32 @@ function resetScriptIndex(): void {
 export function receivedUserTexts(): readonly string[] {
   return _receivedUserTexts
 }
+
+const INTERIM_SCRIPT: ScriptedTurn[] = [
+  {
+    text: 'Let me start by planning the approach.',
+    toolCalls: [{ name: 'todo', args: { todos: [{ id: '1', content: 'Plan', status: 'in_progress' }] } }],
+  },
+  {
+    text: 'Now checking the details before answering.',
+    toolCalls: [{ name: 'todo', args: { todos: [{ id: '2', content: 'Check details', status: 'in_progress' }] } }],
+  },
+  {
+    // No visible text alongside this tool call — should NOT produce an
+    // interim message. The agent fires _emit_interim_assistant_message
+    // but _interim_assistant_visible_text returns "" so it's a no-op.
+    text: '',
+    toolCalls: [{ name: 'todo', args: { todos: [{ id: '3', content: 'Silent step', status: 'completed' }] } }],
+  },
+  {
+    text: 'Found something interesting worth noting.',
+    toolCalls: [{ name: 'todo', args: { todos: [{ id: '4', content: 'Note finding', status: 'completed' }] } }],
+  },
+  {
+    // Final answer — different from all interim texts.
+    text: 'All done! Here is the complete summary of what I found.',
+  },
+]
 
 // ─── Sidebar-states script ─────────────────────────────────────────────
 //
@@ -200,10 +184,12 @@ function sidebarCrossBgCommand(releasePath?: string): string {
   if (!releasePath) {
     return 'echo "long bg output" && sleep 5 && echo "finished"'
   }
+
   // Bounded wait (60s): if a test forgets to release (or crashes mid-way),
   // the process still exits instead of hanging the worker until the suite
   // times out.
   const quoted = JSON.stringify(releasePath)
+
   return [
     'echo "long bg output"',
     `for _ in $(seq 1 600); do [ -e ${quoted} ] && break; sleep 0.1; done`,
@@ -270,18 +256,20 @@ export const CORRECTION_SWITCH_TRIGGER = 'E2E_CORRECTION_SWITCH_TRIGGER'
  */
 function verificationStopScript(writePath: string): ScriptedTurn[] {
   return [
-  {
-    text: 'I will make the requested code change.',
-    toolCalls: [{
-      name: 'write_file',
-      args: {
-        path: writePath,
-        content: 'def changed_by_e2e():\n    return "changed"\n',
-      },
-    }],
-  },
-  { text: 'The code edit is complete.' },
-  { text: 'I cannot provide fresh verification evidence for that edit.' },
+    {
+      text: 'I will make the requested code change.',
+      toolCalls: [
+        {
+          name: 'write_file',
+          args: {
+            path: writePath,
+            content: 'def changed_by_e2e():\n    return "changed"\n',
+          },
+        },
+      ],
+    },
+    { text: 'The code edit is complete.' },
+    { text: 'I cannot provide fresh verification evidence for that edit.' },
   ]
 }
 
@@ -322,439 +310,86 @@ function includesBlockingClarifyTrigger(value: unknown): boolean {
  * @returns a handle with `port`, `url`, received user prompts, and `close()`.
  */
 export function startMockServer(options: MockServerOptions = {}): Promise<MockServer> {
-  return new Promise((resolve, reject) => {
-    const receivedPrompts: string[] = []
-    let resolveHeldStreamStarted: (() => void) | null = null
-    let releaseHeldStream: (() => void) | null = null
-    let heldCompletionCount = 0
-    const heldStreamStarted = new Promise<void>(resolveHeld => {
-      resolveHeldStreamStarted = resolveHeld
-    })
-    const heldStreamReleased = new Promise<void>(resolveRelease => {
-      releaseHeldStream = resolveRelease
-    })
-    const server = http.createServer((req, res) => {
-      // CORS headers — the Electron renderer doesn't need them, but they
-      // don't hurt and make the server usable from a browser context too.
-      res.setHeader('Access-Control-Allow-Origin', '*')
-      res.setHeader('Access-Control-Allow-Headers', '*')
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+  return startSharedMockServer({
+    holdFirstStreamForPrompt: options.holdFirstStreamForPrompt,
+    holdFirstCompletionContaining: options.holdFirstCompletionContaining,
+    onCompletionRequest: (parsed): ScriptedTurn | null | undefined => {
+      const messages: any[] = Array.isArray(parsed.messages) ? parsed.messages : []
+      const lastUserMsg = [...messages].reverse().find((m) => m?.role === 'user')
+      const userText = typeof lastUserMsg?.content === 'string' ? lastUserMsg.content : ''
 
-      if (req.method === 'OPTIONS') {
-        res.writeHead(204)
-        res.end()
-        return
+      if (userText) {
+        _receivedUserTexts.push(userText)
       }
 
-      // GET /v1/models — return a single fake model.
-      if (req.method === 'GET' && req.url === '/v1/models') {
-        res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(
-          JSON.stringify({
-            object: 'list',
-            data: [
-              {
-                id: 'mock-model',
-                object: 'model',
-                created: 0,
-                owned_by: 'mock',
-              },
-            ],
-          }),
-        )
-        return
-      }
+      // Trigger keywords are chosen so normal chat tests (which send
+      // "Hello, can you hear me?" etc.) never hit any scripted path.
+      const isInterimTrigger = userText.includes('E2E_INTERIM_TRIGGER')
+      const isSidebarTrigger = userText.includes('E2E_SIDEBAR_TRIGGER')
+      const isSidebarCrossTrigger = userText.includes('E2E_SIDEBAR_CROSS')
+      const isQueueStopTrigger = userText.includes('E2E_QUEUE_STOP_TRIGGER')
 
-      // POST /v1/chat/completions — return a canned response.
-      if (req.method === 'POST' && req.url?.startsWith('/v1/chat/completions')) {
-        let body = ''
-
-        req.on('data', (chunk: Buffer) => {
-          body += chunk.toString()
-        })
-
-        req.on('end', () => {
-          let parsed: any = {}
-
-          try {
-            parsed = JSON.parse(body)
-          } catch {
-            // malformed JSON — treat as non-streaming with defaults
-          }
-
-          const lastUserMessage = [...(parsed.messages ?? [])]
-            .reverse()
-            .find((message: { role?: unknown }) => message?.role === 'user')
-
-          if (typeof lastUserMessage?.content === 'string') {
-            receivedPrompts.push(lastUserMessage.content)
-          }
-
-          const stream = parsed.stream === true
-          const model = parsed.model || 'mock-model'
-          const holdThisCompletion = Boolean(
-            options.holdFirstCompletionContaining &&
-            heldCompletionCount === 0 &&
-            JSON.stringify(parsed).includes(options.holdFirstCompletionContaining),
-          )
-
-          // Detect the interim-message test trigger: the user's message
-          // contains a specific keyword. The mock walks through the
-          // INTERIM_SCRIPT turns in sequence.
-          //
-          // The trigger keyword is chosen so normal chat tests (which send
-          // "Hello, can you hear me?" etc.) never hit this path.
-          const messages: any[] = Array.isArray(parsed.messages) ? parsed.messages : []
-          const lastUserMsg = [...messages].reverse().find(m => m?.role === 'user')
-          const userText = typeof lastUserMsg?.content === 'string' ? lastUserMsg.content : ''
-          if (userText) {
-            _receivedUserTexts.push(userText)
-          }
-          const isInterimTrigger = userText.includes('E2E_INTERIM_TRIGGER')
-          const isSidebarTrigger = userText.includes('E2E_SIDEBAR_TRIGGER')
-          const isSidebarCrossTrigger = userText.includes('E2E_SIDEBAR_CROSS')
-          const isQueueStopTrigger = userText.includes('E2E_QUEUE_STOP_TRIGGER')
-          const isVerificationStopTrigger = messages.some(
-            message => typeof message?.content === 'string' && message.content.includes(VERIFICATION_STOP_TRIGGER),
-          )
-          const isCorrectionSwitchTrigger = messages.some(
-            message => typeof message?.content === 'string' && message.content.includes(CORRECTION_SWITCH_TRIGGER),
-          )
-
-          if (includesBlockingClarifyTrigger(parsed.messages)) {
-            if (stream) {
-              streamScriptedTurn(res, model, BLOCKING_CLARIFY_TURN)
-            } else {
-              nonStreamingScriptedTurn(res, model, BLOCKING_CLARIFY_TURN)
-            }
-            return
-          }
-
-          if (isQueueStopTrigger) {
-            const turn = QUEUE_STOP_SCRIPT[_queueStopIndex] ?? QUEUE_STOP_SCRIPT[QUEUE_STOP_SCRIPT.length - 1]
-            _queueStopIndex++
-            if (stream) {
-              streamScriptedTurn(res, model, turn)
-            } else {
-              nonStreamingScriptedTurn(res, model, turn)
-            }
-            return
-          }
-
-          if (isVerificationStopTrigger) {
-            const script = verificationStopScript(options.verificationWritePath ?? 'e2e-verification-target.py')
-            const turn = script[_verificationStopIndex] ?? script[script.length - 1]
-            _verificationStopIndex++
-            if (stream) {
-              streamScriptedTurn(res, model, turn)
-            } else {
-              nonStreamingScriptedTurn(res, model, turn)
-            }
-            return
-          }
-
-          if (isCorrectionSwitchTrigger) {
-            const turn = CORRECTION_SWITCH_SCRIPT[_correctionSwitchIndex] ?? CORRECTION_SWITCH_SCRIPT[CORRECTION_SWITCH_SCRIPT.length - 1]
-            _correctionSwitchIndex++
-            if (stream) {
-              streamScriptedTurn(res, model, turn)
-            } else {
-              nonStreamingScriptedTurn(res, model, turn)
-            }
-            return
-          }
-
-          if (isSidebarCrossTrigger) {
-            const script = sidebarCrossScript(options.backgroundReleasePath)
-            const turn = script[_sidebarCrossIndex] ?? script[script.length - 1]
-            _sidebarCrossIndex++
-
-            if (stream) {
-              streamScriptedTurn(res, model, turn)
-            } else {
-              nonStreamingScriptedTurn(res, model, turn)
-            }
-            return
-          }
-
-          if (isSidebarTrigger) {
-            const turn = SIDEBAR_SCRIPT[_sidebarScriptIndex] ?? SIDEBAR_SCRIPT[SIDEBAR_SCRIPT.length - 1]
-            _sidebarScriptIndex++
-
-            if (stream) {
-              streamScriptedTurn(res, model, turn)
-            } else {
-              nonStreamingScriptedTurn(res, model, turn)
-            }
-            return
-          }
-
-          if (isInterimTrigger) {
-            const turn = INTERIM_SCRIPT[_scriptIndex] ?? INTERIM_SCRIPT[INTERIM_SCRIPT.length - 1]
-            _scriptIndex++
-            if (stream) {
-              streamScriptedTurn(res, model, turn)
-            } else {
-              nonStreamingScriptedTurn(res, model, turn)
-            }
-            return
-          }
-
-          if (stream) {
-            const holdThisStream = Boolean(
-              options.holdFirstStreamForPrompt && typeof lastUserMessage?.content === 'string' &&
-                lastUserMessage.content.includes(options.holdFirstStreamForPrompt),
-            )
-            streamTextResponse(res, model, MOCK_REPLY, holdThisStream || holdThisCompletion ? () => {
-              if (holdThisCompletion) {
-                heldCompletionCount++
-              }
-              resolveHeldStreamStarted?.()
-              return heldStreamReleased
-            } : undefined)
-          } else {
-            if (holdThisCompletion) {
-              heldCompletionCount++
-              resolveHeldStreamStarted?.()
-              void heldStreamReleased.then(() => nonStreamingTextResponse(res, model, MOCK_REPLY))
-            } else {
-              nonStreamingTextResponse(res, model, MOCK_REPLY)
-            }
-          }
-        })
-
-        req.on('error', () => {
-          res.writeHead(400)
-          res.end('Bad request')
-        })
-        return
-      }
-
-      // Fallback — 404 for anything else
-      res.writeHead(404, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: 'Not found' }))
-    })
-
-    server.on('error', reject)
-
-    server.listen(0, '127.0.0.1', () => {
-      const addr = server.address()
-      if (addr === null || typeof addr === 'string') {
-        reject(new Error('Failed to get server address'))
-        return
-      }
-
-      const port = addr.port
-      const url = `http://127.0.0.1:${port}`
-
-      resolve({
-        port,
-        url,
-        receivedPrompts,
-        waitForHeldStream: () => heldStreamStarted,
-        waitForHeldCompletion: () => heldStreamStarted,
-        releaseHeldStream: () => releaseHeldStream?.(),
-        heldCompletionCount: () => heldCompletionCount,
-        close: () =>
-          new Promise((resolveClose, rejectClose) => {
-            server.close((err) => {
-              if (err) {
-                rejectClose(err)
-              } else {
-                resolveClose()
-              }
-            })
-          }),
-      })
-    })
-  })
-}
-
-// ─── Response helpers ──────────────────────────────────────────────────
-
-/** SSE chunk shape for a streaming chat completion. */
-function sseChunk(model: string, delta: Record<string, unknown>, finishReason: string | null = null): string {
-  return `data: ${JSON.stringify({
-    id: 'mock-completion',
-    object: 'chat.completion.chunk',
-    created: 0,
-    model,
-    choices: [{ index: 0, delta, finish_reason: finishReason }],
-  })}\n\n`
-}
-
-/**
- * Stream a plain text response (no tool calls) as SSE, finishing with
- * `finish_reason: "stop"`. This is the default canned-reply path.
- */
-function streamTextResponse(
-  res: ServerResponse,
-  model: string,
-  text: string,
-  waitForRelease?: () => Promise<void>,
-): void {
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-  })
-
-  const words = text.split(' ')
-  let i = 0
-
-  const sendChunk = (): void => {
-    if (i >= words.length) {
-      res.write(sseChunk(model, {}, 'stop'))
-      res.write('data: [DONE]\n\n')
-      res.end()
-      return
-    }
-
-    const word = i === 0 ? words[i] : ' ' + words[i]
-    res.write(sseChunk(model, { content: word }))
-    i++
-    if (waitForRelease && i === 1) {
-      waitForRelease().then(() => setTimeout(sendChunk, 20))
-      return
-    }
-    setTimeout(sendChunk, 20)
-  }
-
-  sendChunk()
-}
-
-/** Non-streaming plain text response. */
-function nonStreamingTextResponse(res: ServerResponse, model: string, text: string): void {
-  res.writeHead(200, { 'Content-Type': 'application/json' })
-  res.end(
-    JSON.stringify({
-      id: 'mock-completion',
-      object: 'chat.completion',
-      created: 0,
-      model,
-      choices: [
-        {
-          index: 0,
-          message: { role: 'assistant', content: text },
-          finish_reason: 'stop',
-        },
-      ],
-      usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
-    }),
-  )
-}
-
-/**
- * Stream a single scripted turn: first the text content (word by word),
- * then a chunk carrying the tool_calls (if any), with the appropriate
- * finish_reason.
- *
- * If the turn has no text and no tool calls, it's an empty final response.
- * If it has text but no tool calls, it's a final answer (finish_reason: stop).
- * If it has tool calls (with or without text), finish_reason is "tool_calls".
- */
-function streamScriptedTurn(
-  res: ServerResponse,
-  model: string,
-  turn: ScriptedTurn,
-): void {
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-  })
-
-  const hasToolCalls = turn.toolCalls && turn.toolCalls.length > 0
-  const finishReason = hasToolCalls ? 'tool_calls' : 'stop'
-
-  // If there's no text to stream, go straight to the tool_calls / finish.
-  if (!turn.text) {
-    if (hasToolCalls) {
-      res.write(
-        sseChunk(model, {
-          tool_calls: turn.toolCalls!.map((tc, idx) => ({
-            index: idx,
-            id: `call_e2e_${_scriptIndex}_${idx}`,
-            type: 'function',
-            function: { name: tc.name, arguments: JSON.stringify(tc.args) },
-          })),
-        }, finishReason),
+      const isVerificationStopTrigger = messages.some(
+        (message) => typeof message?.content === 'string' && message.content.includes(VERIFICATION_STOP_TRIGGER),
       )
-    } else {
-      res.write(sseChunk(model, {}, finishReason))
-    }
-    res.write('data: [DONE]\n\n')
-    res.end()
-    return
-  }
 
-  // Stream the text word by word, then emit tool_calls if present.
-  const words = turn.text.split(' ')
-  let i = 0
+      const isCorrectionSwitchTrigger = messages.some(
+        (message) => typeof message?.content === 'string' && message.content.includes(CORRECTION_SWITCH_TRIGGER),
+      )
 
-  const sendChunk = (): void => {
-    if (i >= words.length) {
-      // All text streamed — emit tool_calls if present, then finish.
-      if (hasToolCalls) {
-        res.write(
-          sseChunk(model, {
-            tool_calls: turn.toolCalls!.map((tc, idx) => ({
-              index: idx,
-              id: `call_e2e_${_scriptIndex}_${idx}`,
-              type: 'function',
-              function: { name: tc.name, arguments: JSON.stringify(tc.args) },
-            })),
-          }, finishReason),
-        )
-      } else {
-        res.write(sseChunk(model, {}, finishReason))
+      if (includesBlockingClarifyTrigger(parsed.messages)) {
+        return BLOCKING_CLARIFY_TURN
       }
-      res.write('data: [DONE]\n\n')
-      res.end()
-      return
-    }
 
-    const word = i === 0 ? words[i] : ' ' + words[i]
-    res.write(sseChunk(model, { content: word }))
-    i++
-    setTimeout(sendChunk, 20)
-  }
+      if (isQueueStopTrigger) {
+        const turn = QUEUE_STOP_SCRIPT[_queueStopIndex] ?? QUEUE_STOP_SCRIPT[QUEUE_STOP_SCRIPT.length - 1]
+        _queueStopIndex++
 
-  sendChunk()
-}
+        return turn
+      }
 
-/** Non-streaming version of a scripted turn. */
-function nonStreamingScriptedTurn(
-  res: ServerResponse,
-  model: string,
-  turn: ScriptedTurn,
-): void {
-  const hasToolCalls = turn.toolCalls && turn.toolCalls.length > 0
-  const finishReason = hasToolCalls ? 'tool_calls' : 'stop'
+      if (isVerificationStopTrigger) {
+        const script = verificationStopScript(options.verificationWritePath ?? 'e2e-verification-target.py')
+        const turn = script[_verificationStopIndex] ?? script[script.length - 1]
+        _verificationStopIndex++
 
-  const message: Record<string, unknown> = { role: 'assistant' }
-  if (turn.text) {
-    message.content = turn.text
-  }
-  if (hasToolCalls) {
-    message.tool_calls = turn.toolCalls!.map((tc, idx) => ({
-      id: `call_e2e_${_scriptIndex}_${idx}`,
-      type: 'function',
-      function: { name: tc.name, arguments: JSON.stringify(tc.args) },
-    }))
-  }
+        return turn
+      }
 
-  res.writeHead(200, { 'Content-Type': 'application/json' })
-  res.end(
-    JSON.stringify({
-      id: 'mock-completion',
-      object: 'chat.completion',
-      created: 0,
-      model,
-      choices: [{ index: 0, message, finish_reason: finishReason }],
-      usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
-    }),
-  )
+      if (isCorrectionSwitchTrigger) {
+        const turn =
+          CORRECTION_SWITCH_SCRIPT[_correctionSwitchIndex] ?? CORRECTION_SWITCH_SCRIPT[CORRECTION_SWITCH_SCRIPT.length - 1]
+
+        _correctionSwitchIndex++
+
+        return turn
+      }
+
+      if (isSidebarCrossTrigger) {
+        const script = sidebarCrossScript(options.backgroundReleasePath)
+        const turn = script[_sidebarCrossIndex] ?? script[script.length - 1]
+        _sidebarCrossIndex++
+
+        return turn
+      }
+
+      if (isSidebarTrigger) {
+        const turn = SIDEBAR_SCRIPT[_sidebarScriptIndex] ?? SIDEBAR_SCRIPT[SIDEBAR_SCRIPT.length - 1]
+        _sidebarScriptIndex++
+
+        return turn
+      }
+
+      if (isInterimTrigger) {
+        const turn = INTERIM_SCRIPT[_scriptIndex] ?? INTERIM_SCRIPT[INTERIM_SCRIPT.length - 1]
+        _scriptIndex++
+
+        return turn
+      }
+
+      return null
+    },
+  } satisfies SharedMockServerOptions)
 }
 
 /**
@@ -804,6 +439,7 @@ export function createBackgroundReleaseHandle(): BackgroundReleaseHandle {
     os.tmpdir(),
     `hermes-e2e-bg-release-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
   )
+
   return {
     path,
     release: () => {
@@ -831,9 +467,7 @@ export function createBackgroundReleaseHandle(): BackgroundReleaseHandle {
  */
 export const INTERIM_TEXTS = {
   /** All interim texts that should appear as sealed messages when the flag is ON. */
-  interims: INTERIM_SCRIPT
-    .filter((t) => t.text && t.toolCalls)
-    .map((t) => t.text),
+  interims: INTERIM_SCRIPT.filter((t) => t.text && t.toolCalls).map((t) => t.text),
   /** The final answer text. */
   finalText: INTERIM_SCRIPT[INTERIM_SCRIPT.length - 1].text,
   /** Text that should NOT produce an interim (empty-text tool turn). */
