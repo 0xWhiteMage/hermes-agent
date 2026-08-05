@@ -430,7 +430,16 @@ fi
 # openssl reads a config even for `req -addext`, and its compiled-in path is a
 # symlink into /etc/ssl on Debian/Ubuntu -- which the sandbox replaces. Ship our
 # own and point OPENSSL_CONF at it, both here and inside the sandbox.
-cp "$SANDBOX_ASSETS/openssl.cnf" "$SANDBOX_ROOT/root/certs/openssl.cnf"
+#
+# -f: on a --persistent sandbox this file already exists from a prior run,
+# copied here read-only (SANDBOX_ASSETS is a Nix store path when invoked via
+# the `sandbox` wrapper, and Nix store files are always mode 0444). Plain `cp`
+# opens the destination for writing in place rather than replacing it, so a
+# read-only leftover makes every second-or-later invocation of a persistent
+# sandbox fail with "Permission denied" here -- exactly the update/installer
+# E2E routes, which run a second `install` in the same --persistent root.
+# -f unlinks and recreates the destination instead, sidestepping its mode.
+cp -f "$SANDBOX_ASSETS/openssl.cnf" "$SANDBOX_ROOT/root/certs/openssl.cnf"
 
 if [ ! -f "$SANDBOX_ROOT/root/certs/ca.pem" ]; then
   if ! ca_error="$(OPENSSL_CONF="$SANDBOX_ROOT/root/certs/openssl.cnf" \
@@ -452,7 +461,11 @@ chmod 700 "$SANDBOX_ROOT/root/usr/bin/ssh"
 # The fake-internet proxy and the ssh shim are real files under
 # scripts/sandbox/ rather than heredocs, so they can be linted, syntax-checked
 # and diffed like any other source. Copy them into the sandbox tree.
-cp "$SANDBOX_ASSETS/proxy.py" "$SANDBOX_ROOT/root/proxy.py"
+#
+# -f: same reasoning as the openssl.cnf copy above -- a --persistent sandbox's
+# second-or-later invocation is overwriting a prior run's own (read-only, when
+# SANDBOX_ASSETS is a Nix store path) copy in place.
+cp -f "$SANDBOX_ASSETS/proxy.py" "$SANDBOX_ROOT/root/proxy.py"
 
 if [ -n "$INSTALL_REF" ]; then
   echo "[sandbox] fake main: upstream $INSTALL_REF ($UPSTREAM_COMMIT)" >&2
