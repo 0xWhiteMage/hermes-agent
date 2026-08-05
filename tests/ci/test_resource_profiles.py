@@ -256,3 +256,148 @@ def test_html_no_resource_table_without_profiles():
     t = _timings([_job("tests", 60.0)])
     html = _mod.generate_html(t, None)
     assert "Resource Usage" not in html
+
+
+# ── profile → job matching ───────────────────────────────────────────────
+
+def test_match_pairs_profile_with_its_job():
+    t = _timings([_job("Python tests / Run tests slice 3/8", 60.0)])
+    matched = _mod.match_profiles_to_jobs(t, {"tests-slice-3": _profile("tests-slice-3")})
+    assert matched["Python tests / Run tests slice 3/8"]["label"] == "tests-slice-3"
+
+
+def test_match_is_one_to_one_across_lookalike_slices():
+    """Each slice-N profile lands on slice-N, not on a same-shaped sibling.
+
+    The eight slice labels differ in exactly one token, so a per-profile
+    argmax can collapse several onto one job. Assert the pairing is a
+    bijection and that every pair agrees on its slice number.
+    """
+    names = [f"Python tests / Run tests slice {i}/8" for i in range(1, 9)]
+    t = _timings([_job(n, 60.0) for n in names])
+    profiles = {f"tests-slice-{i}": _profile(f"tests-slice-{i}") for i in range(1, 9)}
+
+    matched = _mod.match_profiles_to_jobs(t, profiles)
+
+    assert len(matched) == len(names)
+    assert set(matched) == set(names)
+    assert len({p["label"] for p in matched.values()}) == len(profiles)
+    for i in range(1, 9):
+        assert matched[f"Python tests / Run tests slice {i}/8"]["label"] == f"tests-slice-{i}"
+
+
+def test_match_rejects_unrelated_job():
+    t = _timings([_job("Docs Site / docs-site-checks", 60.0)])
+    assert _mod.match_profiles_to_jobs(t, {"tests-slice-1": _profile("tests-slice-1")}) == {}
+
+
+def test_match_digit_mismatch_never_pairs():
+    """A digit in the label must appear in the job name — no near-miss pairing."""
+    t = _timings([_job("Python tests / Run tests slice 7/8", 60.0)])
+    assert _mod.match_profiles_to_jobs(t, {"tests-slice-3": _profile("tests-slice-3")}) == {}
+
+
+def test_match_is_order_independent():
+    """Same input in a different dict order yields the same pairing."""
+    names = [f"Python tests / Run tests slice {i}/8" for i in range(1, 5)]
+    t = _timings([_job(n, 60.0) for n in names])
+    fwd = {f"tests-slice-{i}": _profile(f"tests-slice-{i}") for i in range(1, 5)}
+    rev = dict(reversed(list(fwd.items())))
+
+    a = {k: v["label"] for k, v in _mod.match_profiles_to_jobs(t, fwd).items()}
+    b = {k: v["label"] for k, v in _mod.match_profiles_to_jobs(t, rev).items()}
+    assert a == b
+
+
+def test_match_skips_skipped_jobs():
+    t = _timings([_job("Python tests / Run tests slice 1/8", 0.0, conclusion="skipped")])
+    assert _mod.match_profiles_to_jobs(t, {"tests-slice-1": _profile("tests-slice-1")}) == {}
+
+
+# ── sparkline / overlay rendering ────────────────────────────────────────
+
+def _with_series(label: str, cpu, mem, disk) -> dict:
+    p = _profile(label)
+    p["series"] = {"interval_s": 1.0, "points": len(cpu),
+                   "cpu_pct": cpu, "mem_pct": mem, "disk_pct": disk}
+    return p
+
+
+def test_sparkline_inverts_y_so_100_pct_is_at_the_top():
+    """A 100 sample must draw at y=0 and a 0 sample at y=100."""
+    svg = _mod._sparkline_svg([100, 0], "#fff", "cpu")
+    assert "0,0" in svg
+    assert "1,100" in svg
+
+
+def test_sparkline_closes_the_area_along_the_bottom():
+    svg = _mod._sparkline_svg([50, 50, 50], "#fff", "cpu")
+    pts = svg.split('points="')[1].split('"')[0]
+    assert pts.startswith("0,100")
+    assert pts.endswith("2,100")
+
+
+def test_sparkline_viewbox_spans_the_series_indices():
+    svg = _mod._sparkline_svg([10] * 7, "#fff", "cpu")
+    assert 'viewBox="0 0 6 100"' in svg
+    # Non-uniform scaling is what lets one SVG fit any bar width.
+    assert 'preserveAspectRatio="none"' in svg
+
+
+def test_sparkline_stroke_does_not_scale_with_the_viewbox():
+    """Without this the stroke smears under non-uniform scaling."""
+    assert 'vector-effect="non-scaling-stroke"' in _mod._sparkline_svg([1, 2], "#fff", "cpu")
+
+
+def test_sparkline_empty_series_renders_nothing():
+    assert _mod._sparkline_svg([], "#fff", "cpu") == ""
+
+
+def test_overlay_renders_a_layer_per_populated_series():
+    p = _with_series("j", [1, 2], [3, 4], [5, 6])
+    assert _mod._resource_overlay(p, expanded=False).count("<svg") == 3
+
+
+def test_overlay_skips_series_with_no_samples():
+    p = _with_series("j", [1, 2], [], [])
+    assert _mod._resource_overlay(p, expanded=False).count("<svg") == 1
+
+
+def test_overlay_absent_without_series_data():
+    assert _mod._resource_overlay(_profile("j"), expanded=False) == ""
+    assert _mod._resource_overlay(None, expanded=False) == ""
+
+
+def test_overlay_collapsed_and_expanded_are_distinguishable():
+    p = _with_series("j", [1, 2], [3, 4], [5, 6])
+    assert "collapsed" in _mod._resource_overlay(p, expanded=False)
+    assert "expanded" in _mod._resource_overlay(p, expanded=True)
+
+
+def test_gantt_emits_both_overlay_variants_for_a_matched_job():
+    """A profiled job gets the in-bar strip AND the full-height expanded layer."""
+    t = _timings([_job("Python tests / Run tests slice 1/8", 60.0)])
+    profiles = {"tests-slice-1": _with_series("tests-slice-1", [1, 2], [3, 4], [5, 6])}
+
+    html = _mod.generate_html(t, None, profiles)
+
+    assert "res-overlay collapsed" in html
+    assert "res-overlay expanded" in html
+    # The expanded layer is positioned by .res-holder at the job bar's extent.
+    assert "res-holder" in html
+
+
+def test_gantt_has_no_overlay_when_nothing_matches():
+    t = _timings([_job("Docs Site / docs-site-checks", 60.0)])
+    profiles = {"tests-slice-1": _with_series("tests-slice-1", [1, 2], [3, 4], [5, 6])}
+    # Match on the rendered element, not the stylesheet — the CSS block
+    # always mentions the class names.
+    assert 'class="res-overlay' not in _mod.generate_html(t, None, profiles)
+
+
+def test_gantt_overlay_survives_profiles_without_series():
+    """Old artifacts (pre-series) must not break the chart — table only."""
+    t = _timings([_job("Python tests / Run tests slice 1/8", 60.0)])
+    html = _mod.generate_html(t, None, {"tests-slice-1": _profile("tests-slice-1")})
+    assert 'class="res-overlay' not in html
+    assert "Resource Usage" in html

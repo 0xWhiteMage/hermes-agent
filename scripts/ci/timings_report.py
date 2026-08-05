@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import difflib
 import glob
 import json
 import os
@@ -564,6 +565,156 @@ def load_resource_profiles(directory: str) -> dict[str, dict]:
     return profiles
 
 
+def _match_tokens(text: str) -> list[str]:
+    """Lowercase alphanumeric tokens, for fuzzy label/job-name matching."""
+    return [t for t in re.sub(r"[^a-z0-9]+", " ", text.lower()).split() if t]
+
+
+def _match_score(label: str, job_name: str) -> float:
+    """Score how well a profile label matches a job name (0.0-1.0).
+
+    Profile labels are hand-written in the workflow (``tests-slice-3``)
+    while job names come from GitHub (``Python tests / Run tests slice
+    3/8``), so there is no exact key to join on. Three signals, blended:
+
+      * containment — what fraction of the label's tokens the job has.
+        The primary signal, since the label is the shorter string.
+      * Jaccard     — penalises a job name that matches by being huge.
+      * sequence    — orders otherwise-tied candidates by surface shape.
+
+    Digits are a hard gate rather than a weighted term: ``tests-slice-3``
+    and ``tests-slice-8`` differ in exactly one token, and without the
+    gate they score within noise of each other. Any digit token in the
+    label must appear in the job name or the pair scores 0.
+    """
+    lt, jt = _match_tokens(label), _match_tokens(job_name)
+    if not lt or not jt:
+        return 0.0
+    ls, jss = set(lt), set(jt)
+
+    label_digits = {t for t in ls if t.isdigit()}
+    if label_digits and not label_digits <= jss:
+        return 0.0
+
+    containment = len(ls & jss) / len(ls)
+    jaccard = len(ls & jss) / len(ls | jss)
+    seq = difflib.SequenceMatcher(None, " ".join(lt), " ".join(jt)).ratio()
+    return 0.45 * containment + 0.35 * jaccard + 0.20 * seq
+
+
+# Below this score a "best match" is more likely coincidence than a real
+# pairing, so the profile is left unattached rather than overlaid onto an
+# unrelated job's bar. Calibrated against a real run: true pairs scored
+# 0.44-0.90, the best false pair 0.31.
+_MATCH_THRESHOLD = 0.40
+
+
+def match_profiles_to_jobs(timings: dict, profiles: dict[str, dict]) -> dict[str, dict]:
+    """Return {job_name: profile} for profiles confidently matched to a job.
+
+    Greedy best-first over all (profile, job) pairs: the highest-scoring
+    pair is committed, then both sides are removed from contention. This
+    keeps one profile per job and one job per profile even when several
+    labels look alike (the eight ``tests-slice-N`` profiles against the
+    eight ``Run tests slice N/8`` jobs), which a per-profile argmax does
+    not guarantee.
+    """
+    jobs = [j for j in timings.get("jobs", []) if not is_skipped(j)]
+    if not jobs or not profiles:
+        return {}
+
+    scored = []
+    for label, profile in profiles.items():
+        for job in jobs:
+            score = _match_score(label, job.get("name", ""))
+            if score >= _MATCH_THRESHOLD:
+                scored.append((score, label, job.get("name", ""), profile))
+
+    # Sort by score desc; ties broken on names so the result is stable
+    # regardless of dict iteration order.
+    scored.sort(key=lambda t: (-t[0], t[1], t[2]))
+
+    matched: dict[str, dict] = {}
+    used_labels: set[str] = set()
+    for _score, label, job_name, profile in scored:
+        if label in used_labels or job_name in matched:
+            continue
+        used_labels.add(label)
+        matched[job_name] = profile
+    return matched
+
+
+def _sparkline_svg(series: list[int], color: str, klass: str) -> str:
+    """Render a 0-100 series as a filled+stroked SVG sparkline that stretches.
+
+    ``preserveAspectRatio="none"`` plus a viewBox in series-index space
+    lets one SVG scale to any bar width without recomputing points, so
+    the same markup serves both the 3px-tall collapsed strip and the
+    full-height expanded overlay.
+
+    The fill alone is too faint to read once three translucent layers are
+    stacked, so each series also gets a 1px stroked polyline on top. The
+    stroke carries ``vector-effect="non-scaling-stroke"``: without it the
+    non-uniform viewBox scaling (a ~200x180px box showing a 180x100
+    viewBox) stretches the stroke into an unreadable smear.
+    """
+    if not series:
+        return ""
+    n = len(series)
+    width = max(n - 1, 1)
+    # y is inverted: SVG's origin is top-left, but 100% should draw at the top.
+    pts = " ".join(f"{i},{100 - v}" for i, v in enumerate(series))
+    # Close the polygon along the bottom edge so it reads as an area chart.
+    poly = f"0,100 {pts} {width},100"
+    return (
+        f'<svg class="res-spark {klass}" viewBox="0 0 {width} 100" '
+        f'preserveAspectRatio="none" aria-hidden="true">'
+        f'<polygon points="{poly}" fill="{color}"/>'
+        f'<polyline points="{pts}" fill="none" stroke="{color}" '
+        f'stroke-width="1" vector-effect="non-scaling-stroke"/>'
+        f'</svg>'
+    )
+
+
+# Overlay series: (profile series key, color, css class).
+_RES_SERIES = (
+    ("cpu_pct", "#3fb950", "cpu"),    # green
+    ("mem_pct", "#d29922", "mem"),    # amber
+    ("disk_pct", "#f85149", "disk"),  # red
+)
+
+
+def _resource_overlay(profile: dict | None, expanded: bool) -> str:
+    """Render one job's CPU/RAM/disk overlay, or "" if there is no series.
+
+    Callers pass an unmatched job's ``None`` straight through, so this is
+    also the guard for "this job was never profiled". Old artifacts
+    predating the ``series`` field degrade the same way: table only, no
+    overlay. ``expanded`` selects which CSS state the layer renders in.
+    """
+    if not profile:
+        return ""
+    series = profile.get("series") or {}
+    layers = []
+    for key, color, name in _RES_SERIES:
+        values = series.get(key) or []
+        if values:
+            layers.append(_sparkline_svg(values, color, name))
+    if not layers:
+        return ""
+
+    cpu = profile.get("cpu", {})
+    mem = profile.get("memory", {})
+    disk = profile.get("disk", {})
+    tip = (
+        f'CPU avg {cpu.get("avg_usage_pct", 0):.0f}% / peak {cpu.get("peak_usage_pct", 0):.0f}% · '
+        f'RAM peak {mem.get("peak_mb", 0):.0f} MB · '
+        f'disk util avg {disk.get("avg_util_pct", 0):.0f}%'
+    )
+    klass = "res-overlay expanded" if expanded else "res-overlay collapsed"
+    return f'<div class="{klass}" title="{escape(tip)}">{"".join(layers)}</div>'
+
+
 def classify_bottleneck(timings: dict, profiles: dict[str, dict]) -> str:
     """Return a one-line bottleneck classification.
 
@@ -762,8 +913,45 @@ h2 { font-size: 18px; margin: 32px 0 12px; }
 }
 .gantt-group.open .caret { transform: rotate(90deg); }
 .gantt-steps { display: none; }
-.gantt-group.open .gantt-steps { display: block; }
-.gantt-row.step { height: 18px; }
+.gantt-group.open .gantt-steps { display: block; min-height: 26px; }
+
+/* Resource overlay (CPU / RAM / disk sparklines over a job bar), in two
+   states of the same series:
+     .collapsed — a 3px strip inside .gantt-bar.current, clipped to the job's
+                  extent and adding no row height. Enough to spot a saturated
+                  job while scanning.
+     .expanded  — the same curves over the full height of the open group, so
+                  they read against the step rows that caused them.
+   .gantt-steps is the positioning context for the expanded layer, with a
+   min-height so a profiled job with no step detail still shows one.
+   pointer-events:none keeps step tooltips and click-to-expand working
+   through the overlay. */
+.gantt-steps { position: relative; }
+.res-layer {
+  position: absolute; inset: 0; display: flex;
+  pointer-events: none; z-index: 0;
+}
+.res-layer .gantt-label { height: 100%; }
+.res-layer .gantt-track { height: 100%; border-left: none; }
+.res-overlay { position: absolute; left: 0; width: 100%; pointer-events: none; }
+.res-overlay.collapsed { bottom: 0; height: 3px; }
+.res-overlay.expanded { top: 0; height: 100%; }
+.res-spark { position: absolute; inset: 0; width: 100%; height: 100%; }
+/* Area fills so all three read stacked; the stroke on top is what actually
+   makes each curve legible. At 3px the fill needs near-full opacity to
+   register and the stroke would just be noise. */
+.res-spark polygon { fill-opacity: 0.3; }
+.res-spark polyline { opacity: 0.95; }
+.res-overlay.collapsed .res-spark polygon { fill-opacity: 0.9; }
+.res-overlay.collapsed .res-spark polyline { display: none; }
+.res-holder {
+  position: absolute; top: 0; bottom: 0;
+  background: rgba(1,4,9,0.55);
+  border-left: 1px solid #21262d; border-right: 1px solid #21262d;
+  overflow: hidden;
+}
+/* Step bars must stay above the overlay. */
+.gantt-row.step { position: relative; z-index: 1; height: 18px; }
 .gantt-label.step {
   font-size: 11px; color: #8b949e; padding-left: 18px;
   text-align: right; direction: rtl;
@@ -798,6 +986,7 @@ h2 { font-size: 18px; margin: 32px 0 12px; }
 .gantt-tick::before { content: ''; position: absolute; top: -4px; left: 50%; width: 1px; height: 4px; background: #30363d; }
 .legend { display: flex; gap: 16px; margin-top: 8px; font-size: 12px; color: #8b949e; }
 .legend-swatch { display: inline-block; width: 16px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+.legend-sep { color: #30363d; }
 
 /* Tables */
 table { border-collapse: collapse; width: 100%; font-size: 13px; margin-bottom: 16px; }
@@ -826,16 +1015,22 @@ details td, details th { font-size: 12px; }
 """
 
 
-def _gantt_bars(timings: dict, baseline: dict | None) -> str:
+def _gantt_bars(timings: dict, baseline: dict | None,
+                profiles: dict[str, dict] | None = None) -> str:
     """Render the gantt chart HTML.
 
     Both current and baseline timelines are normalized to start at t=0
     (relative to each run's earliest job start). The axis scale spans
     0..max_end across both runs so bars are directly comparable.
+
+    When resource profiles are supplied, each matched job also carries a
+    CPU/RAM/disk overlay: a thin strip inside the collapsed bar, and a
+    full-height readable version once the job is expanded.
     """
     jobs = [j for j in timings.get("jobs", [])
             if j.get("started_at") and j.get("completed_at") and not is_skipped(j)]
     bl_map = {j["name"]: j for j in (baseline or {}).get("jobs", [])}
+    job_profiles = match_profiles_to_jobs(timings, profiles or {})
 
     # Current run: relative offsets from earliest start
     cur_starts = [s for s in (parse_ts(j.get("started_at")) for j in jobs) if s is not None]
@@ -959,9 +1154,29 @@ def _gantt_bars(timings: dict, baseline: dict | None) -> str:
             )
 
         seg_html = "".join(segments)
-        # Only offer expansion when there is step detail to show.
-        expandable = " expandable" if step_rows else ""
-        caret = '<span class="caret">▸</span>' if step_rows else ""
+
+        # Resource overlay. The collapsed strip is a child of the job bar
+        # (clipped to it, adds no row height); the expanded layer is its own
+        # absolutely-positioned track, sized to the bar so the x-axes agree.
+        # See the .res-overlay CSS for how the two states are drawn.
+        profile = job_profiles.get(j["name"])
+        collapsed_overlay = _resource_overlay(profile, expanded=False)
+        expanded_overlay = ""
+        inner = _resource_overlay(profile, expanded=True)
+        if inner:
+            expanded_overlay = (
+                f'<div class="res-layer">'
+                f'<div class="gantt-label"></div>'
+                f'<div class="gantt-track">'
+                f'<div class="res-holder" '
+                f'style="left:{left:.2f}%;width:{width:.2f}%">{inner}</div>'
+                f'</div></div>'
+            )
+
+        # Only offer expansion when there is detail to show.
+        has_detail = bool(step_rows or expanded_overlay)
+        expandable = " expandable" if has_detail else ""
+        caret = '<span class="caret">▸</span>' if has_detail else ""
 
         rows.append(
             f'<div class="gantt-group">'
@@ -972,9 +1187,10 @@ def _gantt_bars(timings: dict, baseline: dict | None) -> str:
             f'{wait_bar}'
             f'<div class="gantt-bar current" '
             f'style="left:{left:.2f}%;width:{width:.2f}%" '
-            f'title="{escape(j["name"])}: {fmt_dur(dur)}{delta_info}">{seg_html}</div>'
+            f'title="{escape(j["name"])}: {fmt_dur(dur)}{delta_info}">'
+            f'{seg_html}{collapsed_overlay}</div>'
             f'</div></div>'
-            f'<div class="gantt-steps">{"".join(step_rows)}</div>'
+            f'<div class="gantt-steps">{expanded_overlay}{"".join(step_rows)}</div>'
             f'</div>'
         )
 
@@ -1003,11 +1219,25 @@ def _gantt_bars(timings: dict, baseline: dict | None) -> str:
     )
     if baseline:
         legend += '<span><span class="legend-swatch" style="border:1px dashed #8b949e"></span>Baseline (main)</span>'
+    if job_profiles:
+        legend += (
+            '<span class="legend-sep">|</span>'
+            '<span><span class="legend-swatch" style="background:#3fb950"></span>CPU %</span>'
+            '<span><span class="legend-swatch" style="background:#d29922"></span>RAM %</span>'
+            '<span><span class="legend-swatch" style="background:#f85149"></span>Disk %</span>'
+        )
     legend += '</div>'
 
+    hint_extra = ""
+    if job_profiles:
+        hint_extra = (
+            'The thin strip along the bottom of a bar is node CPU / RAM / disk '
+            f'utilisation over that job ({len(job_profiles)} profiled); expand for a readable version. '
+        )
     hint = (
         '<div class="gantt-hint">'
         'Bars are segmented by step — hover a segment for its name and duration. '
+        f'{hint_extra}'
         'Click a job to expand its steps. '
         '<button type="button" id="gantt-toggle-all">Expand all</button>'
         '</div>'
@@ -1327,6 +1557,7 @@ def _resource_table(profiles: dict[str, dict]) -> str:
             f'<td class="num">{mem.get("peak_mb", 0):.0f}</td>'
             f'<td class="num">{disk.get("total_mb", 0):.0f}</td>'
             f'<td class="num">{disk.get("avg_ops_per_s", 0):.0f}</td>'
+            f'<td class="num">{disk.get("avg_util_pct", 0):.0f}%</td>'
             f'</tr>'
         )
 
@@ -1336,6 +1567,7 @@ def _resource_table(profiles: dict[str, dict]) -> str:
         '<th class="num">CPU avg</th><th class="num">CPU peak</th>'
         '<th class="num">Mem avg (MB)</th><th class="num">Mem peak (MB)</th>'
         '<th class="num">Disk (MB)</th><th class="num">Disk ops/s</th>'
+        '<th class="num">Disk util</th>'
         '</tr></thead><tbody>' + "".join(rows) + '</tbody></table>'
     )
 
@@ -1395,7 +1627,7 @@ def generate_html(timings: dict, baseline: dict | None = None,
         html += _regressions(timings, baseline)
 
     html += '<h2>Gantt Chart</h2>\n'
-    html += _gantt_bars(timings, baseline)
+    html += _gantt_bars(timings, baseline, profiles)
 
     html += '<h2>Per-Job Comparison</h2>\n'
     html += _job_table(timings, baseline)
