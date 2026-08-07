@@ -1850,6 +1850,12 @@ export interface Translations {
     versionDetailsCommit: string
     versionDetailsSource: string
     versionDetailsDistribution: string
+    versionDetailsDistributionDesktop: string
+    versionDetailsArtifact: string
+    versionDetailsArtifactEmbedded: (tag: string | null) => string
+    versionDetailsArtifactExternal: string
+    versionDetailsRuntime: string
+    versionDetailsRuntimeEmbedded: string
     versionDetailsDirty: string
     versionDetailsDirtyUnknown: string
     connectionRetry: string
