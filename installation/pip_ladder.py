@@ -108,7 +108,7 @@ def pip_install(
     *overrides* is a requirements-style file of security floors, passed
     to uv as ``--overrides`` (unconditional pins that beat the backend
     spec's own caps).
-    """
+"""
     if not specs:
         return LadderResult(True, "", "", "none")
 
