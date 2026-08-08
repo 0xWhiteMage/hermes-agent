@@ -41,15 +41,10 @@ def _pid_alive(pid: Any) -> bool:
     if pid <= 0:
         return False
     try:
-        import os
+        import psutil
 
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
+        return psutil.pid_exists(pid)
+    except Exception:
         return False
 
 
