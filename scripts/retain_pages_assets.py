@@ -144,7 +144,7 @@ def main() -> int:
             manifest_path = prev_tree / MANIFEST_REL
             if manifest_path.is_file():
                 try:
-                    old_manifest = json.loads(manifest_path.read_text())
+                    old_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 except Exception:
                     old_manifest = {}
 
@@ -174,7 +174,8 @@ def main() -> int:
                     copied += 1
 
             (site_dir / MANIFEST_REL).write_text(
-                json.dumps(new_manifest, indent=0, sort_keys=True)
+                json.dumps(new_manifest, indent=0, sort_keys=True),
+                encoding="utf-8",
             )
             log(
                 f"retained {copied} previous asset file(s), "
