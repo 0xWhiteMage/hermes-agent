@@ -105,6 +105,8 @@ def apply_llm_request_middleware(
 def apply_tool_request_middleware(
     tool_name: str,
     args: Dict[str, Any],
+    *,
+    original_args: Optional[Dict[str, Any]] = None,
     **context: Any,
 ) -> RequestMiddlewareResult:
     """Apply registered tool request middleware.
@@ -112,8 +114,8 @@ def apply_tool_request_middleware(
     Middleware may return ``{"args": {...}}`` to replace the effective tool
     arguments before hooks, guardrails, approvals, and execution see them.
     """
-    original_args = _safe_copy(args)
-    current_args = _safe_copy(original_args)
+    original_snapshot = _safe_copy(args if original_args is None else original_args)
+    current_args = _safe_copy(args)
     trace: List[Dict[str, Any]] = []
 
     session_id = str(context.get("session_id") or "")
@@ -134,7 +136,7 @@ def apply_tool_request_middleware(
     if not callbacks:
         return RequestMiddlewareResult(
             payload=args if not trace else current_args,
-            original_payload=args,
+            original_payload=args if original_args is None else original_snapshot,
             changed=bool(trace),
             trace=trace,
         )
@@ -145,7 +147,7 @@ def apply_tool_request_middleware(
         current_args,
         payload_key="args",
         original_key="original_args",
-        original_payload=original_args,
+        original_payload=original_snapshot,
         initial_trace=trace,
         tool_name=tool_name,
         **context,
