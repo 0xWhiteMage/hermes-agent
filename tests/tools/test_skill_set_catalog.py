@@ -19,6 +19,7 @@ import pytest
 from tools.skill_set_catalog import (
     ArchiveSafetyError,
     DigestError,
+    FetchResult,
     SchemaError,
     SkillSetError,
     SkillSetInfo,
@@ -65,14 +66,27 @@ def _zip(files: dict) -> bytes:
     return buf.getvalue()
 
 
-def _serve(pages: dict):
-    """Patch the module HTTP layer with a URL -> bytes dict."""
-    def fake_get(url, *, timeout=30):
-        val = pages.get(url)
+def _serve(pages: dict, *, redirects: "dict | None" = None,
+           content_types: "dict | None" = None):
+    """Patch the module HTTP layer with a URL -> bytes dict.
+
+    ``redirects`` maps requested URL -> final URL (content is looked up at
+    the final URL, and the returned FetchResult carries the final URL, like
+    the real fetcher does after following a redirect chain).
+    ``content_types`` maps final URL -> Content-Type header value.
+    """
+    redirects = redirects or {}
+    content_types = content_types or {}
+
+    def fake_fetch(url, *, timeout=30):
+        final = redirects.get(url, url)
+        val = pages.get(final)
         if val is None:
             return None
-        return val.encode() if isinstance(val, str) else val
-    return patch("tools.skill_set_catalog._http_get_bytes", side_effect=fake_get)
+        content = val.encode() if isinstance(val, str) else val
+        return FetchResult(url=final, content=content,
+                           content_type=content_types.get(final, ""))
+    return patch("tools.skill_set_catalog._http_fetch", side_effect=fake_fetch)
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +385,141 @@ class TestFetchMember:
 
 
 # ---------------------------------------------------------------------------
+# Review follow-ups (agentskills feedback on PR #81875)
+# ---------------------------------------------------------------------------
+
+CDN_INDEX_URL = "https://cdn.example.net/releases/v2/index.json"
+
+
+class TestRedirectBaseResolution:
+    """#254/RFC 3986: relative member URLs resolve against the URL the index
+    was actually retrieved from — i.e. AFTER redirects — not the requested URL."""
+
+    def test_members_resolve_against_post_redirect_location(self):
+        pages = {CDN_INDEX_URL: _index([
+            {"name": "review", "type": "skill-md",
+             "url": "review/SKILL.md", "digest": compute_digest(b"x")},
+        ])}
+        with _serve(pages, redirects={INDEX_URL: CDN_INDEX_URL}):
+            resolved = resolve_skill_set(_info())
+        assert resolved.members[0].url == \
+            "https://cdn.example.net/releases/v2/review/SKILL.md"
+
+    def test_catalog_redirect_rebases_entry_urls(self):
+        moved_catalog = "https://cdn.example.net/meta/catalog.json"
+        pages = {moved_catalog: _catalog([
+            {"displayName": "Backend Dev", "type": SKILL_SET_ENTRY_TYPE,
+             "url": "skills/index.json"},
+        ])}
+        with _serve(pages, redirects={CATALOG_URL: moved_catalog}):
+            sets = discover_skill_sets(CATALOG_URL)
+        assert sets[0].index_url == "https://cdn.example.net/meta/skills/index.json"
+
+
+class TestContentTypeArchiveDetection:
+    """#254: archive format comes from Content-Type first; the URL file
+    extension is only a fallback for absent/generic headers."""
+
+    def _archive_member(self, url, artifact):
+        return _member("packed", "archive", url, compute_digest(artifact))
+
+    def test_content_type_wins_over_missing_extension(self):
+        artifact = _tar_gz({"SKILL.md": SKILL_MD})
+        url = f"{BASE}/download?skill=packed"     # no useful extension
+        m = self._archive_member(url, artifact)
+        with _serve({url: artifact}, content_types={url: "application/gzip"}):
+            bundle = fetch_member(m, set_info=_info())
+        assert "SKILL.md" in bundle.files
+
+    def test_content_type_wins_over_wrong_extension(self):
+        # Server says zip; URL misleadingly ends in .tar.gz. Header wins.
+        artifact = _zip({"SKILL.md": SKILL_MD})
+        url = f"{BASE}/.well-known/agent-skills/skill.tar.gz"
+        m = self._archive_member(url, artifact)
+        with _serve({url: artifact}, content_types={url: "application/zip"}):
+            bundle = fetch_member(m, set_info=_info())
+        assert "SKILL.md" in bundle.files
+
+    def test_generic_content_type_falls_back_to_extension(self):
+        artifact = _tar_gz({"SKILL.md": SKILL_MD})
+        url = f"{BASE}/.well-known/agent-skills/skill.tar.gz"
+        m = self._archive_member(url, artifact)
+        with _serve({url: artifact},
+                    content_types={url: "application/octet-stream"}):
+            bundle = fetch_member(m, set_info=_info())
+        assert "SKILL.md" in bundle.files
+
+    def test_no_header_no_extension_rejected(self):
+        artifact = _tar_gz({"SKILL.md": SKILL_MD})
+        url = f"{BASE}/download?skill=packed"
+        m = self._archive_member(url, artifact)
+        with _serve({url: artifact}):
+            with pytest.raises(ArchiveSafetyError, match="unsupported archive format"):
+                fetch_member(m, set_info=_info())
+
+
+class TestInlineDataEntries:
+    """AI Catalog entries may carry `data` instead of `url`."""
+
+    def test_skill_set_entry_with_inline_index(self):
+        inline_index = {
+            "$schema": SCHEMA,
+            "skills": [
+                {"name": "code-review", "type": "skill-md",
+                 "url": "/.well-known/agent-skills/code-review/SKILL.md",
+                 "digest": compute_digest(SKILL_MD.encode())},
+            ],
+        }
+        pages = {CATALOG_URL: _catalog([
+            {"displayName": "Inline Set", "type": SKILL_SET_ENTRY_TYPE,
+             "data": inline_index,
+             "extensions": {HERMES_SET_EXTENSION: {"command": "inline-set"}}},
+        ])}
+        with _serve(pages):
+            sets = discover_skill_sets(CATALOG_URL)
+            assert len(sets) == 1
+            assert sets[0].inline_index is not None
+            assert sets[0].command == "inline-set"
+            resolved = resolve_skill_set(sets[0])
+        # Relative member URLs resolve against the catalog's location.
+        assert resolved.members[0].url == \
+            f"{BASE}/.well-known/agent-skills/code-review/SKILL.md"
+
+    def test_inline_index_schema_still_gated(self):
+        pages = {CATALOG_URL: _catalog([
+            {"displayName": "Bad Inline", "type": SKILL_SET_ENTRY_TYPE,
+             "data": {"$schema": "https://example.com/nope.json", "skills": []}},
+        ])}
+        with _serve(pages):
+            sets = discover_skill_sets(CATALOG_URL)
+            with pytest.raises(SchemaError):
+                resolve_skill_set(sets[0])
+
+    def test_inline_sub_catalog_followed(self):
+        pages = {CATALOG_URL: _catalog([
+            {"displayName": "Nested", "type": "application/ai-catalog+json",
+             "data": {"specVersion": "1.0", "entries": [
+                 {"displayName": "Backend Dev", "type": SKILL_SET_ENTRY_TYPE,
+                  "url": "/.well-known/agent-skills/index.json"},
+             ]}},
+        ])}
+        with _serve(pages):
+            sets = discover_skill_sets(CATALOG_URL)
+        assert [s.name for s in sets] == ["Backend Dev"]
+        assert sets[0].index_url == INDEX_URL
+
+    def test_entry_with_neither_url_nor_data_skipped(self):
+        pages = {CATALOG_URL: _catalog([
+            {"displayName": "Empty", "type": SKILL_SET_ENTRY_TYPE},
+            {"displayName": "Real", "type": SKILL_SET_ENTRY_TYPE,
+             "url": "/.well-known/agent-skills/index.json"},
+        ])}
+        with _serve(pages):
+            sets = discover_skill_sets(CATALOG_URL)
+        assert [s.name for s in sets] == ["Real"]
+
+
+# ---------------------------------------------------------------------------
 # E2E: publisher script -> real HTTP server -> full client flow
 # ---------------------------------------------------------------------------
 
@@ -425,13 +574,16 @@ class TestEndToEnd:
             origin = f"http://127.0.0.1:{port}"
 
             # Bypass the SSRF guard for the loopback test server only.
-            def local_get(url, *, timeout=30):
+            def local_fetch(url, *, timeout=30):
                 import httpx
-                resp = httpx.get(url, timeout=timeout)
-                return resp.content if resp.status_code == 200 else None
+                resp = httpx.get(url, timeout=timeout, follow_redirects=True)
+                if resp.status_code != 200:
+                    return None
+                return FetchResult(url=str(resp.url), content=resp.content,
+                                   content_type=resp.headers.get("content-type", ""))
 
-            with patch("tools.skill_set_catalog._http_get_bytes",
-                       side_effect=local_get):
+            with patch("tools.skill_set_catalog._http_fetch",
+                       side_effect=local_fetch):
                 sets = discover_skill_sets(catalog_url_for(origin))
                 assert len(sets) == 1
                 info = sets[0]

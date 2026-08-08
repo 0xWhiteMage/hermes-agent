@@ -28,6 +28,14 @@ Implements the design discussed with agentskills.io:
    Clients that don't recognize the extension still install the correct
    set — they only miss the alias/preamble sugar.
 
+Catalog entries may deliver their artifact via ``url`` OR inline ``data``
+(per the AI Catalog spec); both are supported for skill-set entries and
+sub-catalogs. Relative URLs are resolved per RFC 3986 against the URL the
+referencing document was *actually retrieved from* (i.e. after redirects),
+and archive formats are detected from the ``Content-Type`` header first,
+falling back to the URL file extension when the header is absent or
+generic — both per agentskills #254.
+
 Security posture matches the rest of the skills hub: all HTTP goes through
 the SSRF-guarded fetcher, member artifacts are digest-verified (SHA-256,
 required by #254), archive extraction rejects path traversal / absolute
@@ -116,11 +124,14 @@ class SkillSetInfo:
     """A skill set discovered in an AI Catalog (or a bare #254 index)."""
     name: str                       # display name (catalog displayName or derived)
     description: str
-    index_url: str                  # resolved URL of the #254 index.json
+    index_url: str                  # resolved URL of the #254 index.json (or a
+                                    #   synthetic "#inline" marker for data entries)
     identifier: str = ""            # catalog entry identifier (urn:...), if any
     command: str = ""               # io.hermes.skill-set suggested alias
     instruction: str = ""           # io.hermes.skill-set shared preamble
     catalog_url: str = ""           # catalog this was discovered from, if any
+    inline_index: Optional[Dict[str, Any]] = None   # AI Catalog `data` payload
+    base_url: str = ""              # RFC 3986 base for inline-index member URLs
 
 
 @dataclass
@@ -142,24 +153,57 @@ class ResolvedSkillSet:
 
 
 # ---------------------------------------------------------------------------
-# HTTP (indirection point — tests monkeypatch _http_get_bytes)
+# HTTP (indirection point — tests monkeypatch _http_fetch)
 # ---------------------------------------------------------------------------
 
-def _http_get_bytes(url: str, *, timeout: int = 30) -> Optional[bytes]:
-    """SSRF-guarded GET returning raw bytes, or None on any failure."""
+@dataclass
+class FetchResult:
+    """Raw fetch result carrying what URL resolution + format detection need."""
+    url: str            # FINAL URL after redirects (RFC 3986 base for children)
+    content: bytes
+    content_type: str   # Content-Type header value ("" when absent)
+
+
+def _http_fetch(url: str, *, timeout: int = 30) -> Optional[FetchResult]:
+    """SSRF-guarded GET returning content + final URL + Content-Type.
+
+    The final (post-redirect) URL matters: #254 resolves relative member
+    URLs against the URL the index was *actually retrieved from*, so an
+    index that redirects to a CDN must have its members resolved against
+    the CDN location, not the original well-known path.
+    """
     from tools.skills_hub import _guarded_http_get
     resp = _guarded_http_get(url, timeout=timeout)
     if resp is None or resp.status_code != 200:
         return None
-    return resp.content
+    # _guarded_http_get follows redirects manually (follow_redirects=False),
+    # so the response's request URL IS the final hop.
+    try:
+        final_url = str(resp.url) or url
+    except Exception:
+        final_url = url
+    content_type = ""
+    try:
+        content_type = resp.headers.get("content-type", "") or ""
+    except Exception:
+        pass
+    return FetchResult(url=final_url, content=resp.content,
+                       content_type=content_type)
 
 
-def _http_get_json(url: str, *, timeout: int = 20) -> Optional[Any]:
-    raw = _http_get_bytes(url, timeout=timeout)
-    if raw is None:
+def _http_get_bytes(url: str, *, timeout: int = 30) -> Optional[bytes]:
+    """Bytes-only convenience wrapper over :func:`_http_fetch`."""
+    result = _http_fetch(url, timeout=timeout)
+    return None if result is None else result.content
+
+
+def _fetch_json(url: str, *, timeout: int = 20) -> Optional[tuple]:
+    """Fetch and parse JSON. Returns ``(data, final_url)`` or None."""
+    result = _http_fetch(url, timeout=timeout)
+    if result is None:
         return None
     try:
-        return json.loads(raw.decode("utf-8"))
+        return json.loads(result.content.decode("utf-8")), result.url
     except (json.JSONDecodeError, UnicodeDecodeError):
         logger.warning("Skill-set fetch: invalid JSON at %s", url)
         return None
@@ -216,13 +260,24 @@ def _entry_extensions(entry: Dict[str, Any]) -> Dict[str, Any]:
     return ext if isinstance(ext, dict) else {}
 
 
-def discover_skill_sets(catalog_url: str, *, _depth: int = 0) -> List[SkillSetInfo]:
+def discover_skill_sets(catalog_url: str, *, _depth: int = 0,
+                        _inline_catalog: Optional[Dict[str, Any]] = None,
+                        ) -> List[SkillSetInfo]:
     """Fetch an AI Catalog and return every skill-set entry in it.
 
     Follows ``application/ai-catalog+json`` sub-catalog entries one level
     deep (AI Catalog is nestable; the prototype bounds recursion at 1).
+    Entries may carry their payload via ``url`` or inline ``data`` — the
+    AI Catalog spec allows either (exactly one per entry).
     """
-    data = _http_get_json(catalog_url)
+    if _inline_catalog is not None:
+        data: Any = _inline_catalog
+        base_url = catalog_url
+    else:
+        fetched = _fetch_json(catalog_url)
+        if fetched is None:
+            raise SkillSetError(f"Could not fetch AI Catalog at {catalog_url}")
+        data, base_url = fetched
     if not isinstance(data, dict):
         raise SkillSetError(f"Could not fetch AI Catalog at {catalog_url}")
 
@@ -238,27 +293,46 @@ def discover_skill_sets(catalog_url: str, *, _depth: int = 0) -> List[SkillSetIn
             continue
         etype = entry.get("type")
         url = entry.get("url")
-        if not isinstance(url, str) or not url:
+        inline = entry.get("data")
+        has_url = isinstance(url, str) and bool(url)
+        has_data = isinstance(inline, dict)
+        if not has_url and not has_data:
             continue
-        resolved = urljoin(catalog_url, url)
+        # RFC 3986: resolve against the URL the catalog was actually
+        # retrieved from (post-redirect), not the URL we asked for.
+        resolved = urljoin(base_url, url) if has_url else ""
 
         if etype == SKILL_SET_ENTRY_TYPE:
             hermes_ext = _entry_extensions(entry).get(HERMES_SET_EXTENSION)
             hermes_ext = hermes_ext if isinstance(hermes_ext, dict) else {}
+            display = str(
+                entry.get("displayName") or entry.get("identifier")
+                or resolved or "inline skill set"
+            )
             sets.append(SkillSetInfo(
-                name=str(entry.get("displayName") or entry.get("identifier") or resolved),
+                name=display,
                 description=str(entry.get("description") or ""),
-                index_url=resolved,
+                index_url=resolved or f"{base_url}#inline",
                 identifier=str(entry.get("identifier") or ""),
                 command=str(hermes_ext.get("command") or ""),
                 instruction=str(hermes_ext.get("instruction") or ""),
                 catalog_url=catalog_url,
+                inline_index=inline if has_data and not has_url else None,
+                base_url=base_url,
             ))
         elif etype == CATALOG_ENTRY_TYPE and _depth < 1:
             try:
-                sets.extend(discover_skill_sets(resolved, _depth=_depth + 1))
+                if has_url:
+                    sets.extend(discover_skill_sets(resolved, _depth=_depth + 1))
+                else:
+                    # Inline sub-catalog: relative URLs inside it resolve
+                    # against the parent catalog's retrieved location.
+                    sets.extend(discover_skill_sets(
+                        base_url, _depth=_depth + 1, _inline_catalog=inline,
+                    ))
             except SkillSetError as exc:
-                logger.warning("Skipping unreachable sub-catalog %s: %s", resolved, exc)
+                logger.warning("Skipping unreadable sub-catalog %s: %s",
+                               resolved or "(inline)", exc)
 
     return sets
 
@@ -268,8 +342,22 @@ def discover_skill_sets(catalog_url: str, *, _depth: int = 0) -> List[SkillSetIn
 # ---------------------------------------------------------------------------
 
 def resolve_skill_set(info: SkillSetInfo) -> ResolvedSkillSet:
-    """Fetch and validate the #254 index a :class:`SkillSetInfo` points at."""
-    data = _http_get_json(info.index_url)
+    """Fetch and validate the #254 index a :class:`SkillSetInfo` points at.
+
+    Member URLs are resolved per RFC 3986 against the URL the index was
+    *actually retrieved from* — if the index URL redirects (e.g. to a CDN),
+    relative member URLs resolve against the CDN location, per #254.
+    """
+    if info.inline_index is not None:
+        data: Any = info.inline_index
+        # Inline data was transported inside the catalog document, so its
+        # relative URLs resolve against the catalog's retrieved location.
+        member_base = info.base_url or info.catalog_url or info.index_url
+    else:
+        fetched = _fetch_json(info.index_url)
+        if fetched is None:
+            raise SkillSetError(f"Could not fetch skill index at {info.index_url}")
+        data, member_base = fetched
     if not isinstance(data, dict):
         raise SkillSetError(f"Could not fetch skill index at {info.index_url}")
 
@@ -314,7 +402,7 @@ def resolve_skill_set(info: SkillSetInfo) -> ResolvedSkillSet:
             name=name,
             description=str(entry.get("description") or ""),
             type=etype,
-            url=urljoin(info.index_url, url),
+            url=urljoin(member_base, url),
             digest=str(digest or ""),
         ))
 
@@ -436,14 +524,45 @@ def _extract_zip(content: bytes) -> Dict[str, Union[str, bytes]]:
     return files
 
 
-def _archive_format(url: str) -> str:
+#: Content-Type values mapped to archive formats (#254: header wins; the
+#: URL extension is only a fallback for absent/generic headers).
+_ARCHIVE_CONTENT_TYPES = {
+    "application/gzip": "tar.gz",
+    "application/x-gzip": "tar.gz",
+    "application/x-tar+gzip": "tar.gz",
+    "application/zip": "zip",
+    "application/x-zip-compressed": "zip",
+}
+_GENERIC_CONTENT_TYPES = frozenset({
+    "", "application/octet-stream", "binary/octet-stream",
+    "application/binary", "text/plain",
+})
+
+
+def _archive_format(url: str, content_type: str = "") -> str:
+    """Determine archive format: Content-Type header first, then extension.
+
+    Per #254: "Clients should determine the archive format from the
+    server's Content-Type header, falling back to the URL file extension
+    if the header is absent or generic."
+    """
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    if media_type not in _GENERIC_CONTENT_TYPES:
+        fmt = _ARCHIVE_CONTENT_TYPES.get(media_type)
+        if fmt:
+            return fmt
+        # Specific but unknown media type — fall through to the extension
+        # rather than hard-failing on an exotic-but-honest server config.
+        logger.debug("Unrecognized archive Content-Type %r for %s; "
+                     "falling back to URL extension", content_type, url)
     path = urlparse(url).path.lower()
     if path.endswith((".tar.gz", ".tgz")):
         return "tar.gz"
     if path.endswith(".zip"):
         return "zip"
     raise ArchiveSafetyError(
-        f"unsupported archive format for {url} (expected .tar.gz or .zip)"
+        f"unsupported archive format for {url} "
+        f"(Content-Type {content_type or '(none)'!r}; expected .tar.gz or .zip)"
     )
 
 
@@ -457,9 +576,10 @@ def fetch_member(member: SkillSetMember, *, set_info: SkillSetInfo):
 
     skill_name = _validate_skill_name(member.name)
 
-    content = _http_get_bytes(member.url)
-    if content is None:
+    fetched = _http_fetch(member.url)
+    if fetched is None:
         raise SkillSetError(f"{member.name}: could not download {member.url}")
+    content = fetched.content
     if len(content) > MAX_ARCHIVE_BYTES:
         raise ArchiveSafetyError(
             f"{member.name}: artifact is {len(content)} bytes (cap: {MAX_ARCHIVE_BYTES})"
@@ -475,11 +595,10 @@ def fetch_member(member: SkillSetMember, *, set_info: SkillSetInfo):
         except UnicodeDecodeError as exc:
             raise SkillSetError(f"{member.name}: SKILL.md is not valid UTF-8") from exc
     else:
-        files = (
-            _extract_tar_gz(content)
-            if _archive_format(member.url) == "tar.gz"
-            else _extract_zip(content)
-        )
+        # Format detection uses the FINAL (post-redirect) URL for the
+        # extension fallback, and the response Content-Type first.
+        fmt = _archive_format(fetched.url, fetched.content_type)
+        files = _extract_tar_gz(content) if fmt == "tar.gz" else _extract_zip(content)
         if "SKILL.md" not in files:
             # #254: "The archive must contain SKILL.md at the root."
             raise ArchiveSafetyError(
