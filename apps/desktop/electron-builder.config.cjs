@@ -37,8 +37,53 @@ function isMachO(file) {
   return MACHO_MAGICS.has(buf.readUInt32BE(0))
 }
 
+// Windows signing with Azure Trusted Signing. Composed here, not as
+// -c.win.sign.* CLI arguments, for two reasons: the publisherName holds
+// spaces and commas that do not survive cmd.exe argument hops, and
+// additionalMetadata.ExcludeCredentials is an ARRAY, which dot-notation
+// cannot express. This file loads inside the electron-builder process,
+// so the values pass from the environment verbatim.
+//
+// ExcludeCredentials keeps only AzureCliCredential — the one azure/login
+// (OIDC) prepares in CI. The dlib otherwise walks the full
+// DefaultAzureCredential chain, and on GitHub-hosted runners (Azure VMs)
+// the ManagedIdentityCredential probe reaches a live IMDS endpoint that
+// never grants a token — observed as signtool hanging on the arm64
+// runners.
+function windowsSigning() {
+  if (!process.env.AZURE_SIGN_ENDPOINT || !process.env.AZURE_CLIENT_ID) {
+    return {}
+  }
+  return {
+    sign: {
+      type: "azure",
+      endpoint: process.env.AZURE_SIGN_ENDPOINT,
+      codeSigningAccountName: process.env.AZURE_SIGN_ACCOUNT,
+      certificateProfileName: process.env.AZURE_SIGN_PROFILE,
+      publisherName: process.env.AZURE_SIGN_PUBLISHER,
+      additionalMetadata: {
+        ExcludeCredentials: [
+          "EnvironmentCredential",
+          "WorkloadIdentityCredential",
+          "ManagedIdentityCredential",
+          "SharedTokenCacheCredential",
+          "VisualStudioCredential",
+          "VisualStudioCodeCredential",
+          "AzurePowerShellCredential",
+          "AzureDeveloperCliCredential",
+          "InteractiveBrowserCredential",
+        ],
+      },
+    },
+  }
+}
+
 module.exports = {
   ...build,
+  win: {
+    ...build.win,
+    ...windowsSigning(),
+  },
   mac: {
     ...build.mac,
     sign: {
