@@ -146,14 +146,56 @@ def test_keep_marker_exempts_table():
     assert mod.plan(py, lock, now=NOW) == []
 
 
-def test_non_inline_table_form_is_loud():
+_SECTION_PYPROJECT = (
+    "[project]\nname = \"fixture\"\nversion = \"0.0.0\"\n\n"
+    "[tool.uv]\nexclude-newer = \"14 days\"\n\n"
+    "# temporary exceptions\n"
+    "[tool.uv.exclude-newer-package]\nh2 = false\nvercel = \"2026-08-01T00:00:00Z\"\n"
+)
+
+
+def test_section_form_planned_same_as_inline():
+    """The [tool.uv.exclude-newer-package] table form is read as plain
+    TOML and planned identically to the inline form."""
+    lock = _lock([("h2", "4.4.1", FRESH), ("vercel", "1.0.0", OLD)])
+    actions = mod.plan(_SECTION_PYPROJECT, lock, now=NOW)
+    assert {(a[0], a[1]) for a in actions} == {("h2", "replace"), ("vercel", "remove")}
+
+
+def test_section_form_applied_in_pyproject():
+    lock = _lock([("h2", "4.4.1", FRESH), ("vercel", "1.0.0", OLD)])
+    actions = mod.plan(_SECTION_PYPROJECT, lock, now=NOW)
+    out = mod.apply_to_pyproject(_SECTION_PYPROJECT, actions)
+    table = tomllib.loads(out)["tool"]["uv"]["exclude-newer-package"]
+    assert "vercel" not in table
+    assert isinstance(table["h2"], str)  # false -> stamp
+    mod.verify_only_age_changed(
+        _SECTION_PYPROJECT, out, ("tool", "uv", "exclude-newer-package"), "pyproject"
+    )
+
+
+def test_section_form_emptied_drops_header_and_comment():
+    lock = _lock([("vercel", "1.0.0", OLD)])
     py = (
         "[project]\nname = \"fixture\"\nversion = \"0.0.0\"\n\n"
         "[tool.uv]\nexclude-newer = \"14 days\"\n\n"
-        "[tool.uv.exclude-newer-package]\nh2 = false\n"
+        "# temporary exceptions\n"
+        "[tool.uv.exclude-newer-package]\nvercel = \"2026-08-01T00:00:00Z\"\n"
     )
-    with pytest.raises(RuntimeError, match="inline"):
-        mod.plan(py, _lock([("h2", "4.4.1", OLD)]), now=NOW)
+    actions = mod.plan(py, lock, now=NOW)
+    out = mod.apply_to_pyproject(py, actions)
+    parsed = tomllib.loads(out)
+    assert "exclude-newer-package" not in parsed["tool"]["uv"]
+    assert "# temporary exceptions" not in out
+    assert parsed["tool"]["uv"]["exclude-newer"] == "14 days"
+
+
+def test_section_form_keep_marker_respected():
+    py = _SECTION_PYPROJECT.replace(
+        "# temporary exceptions", "# lint: keep\n# standing exceptions"
+    )
+    lock = _lock([("h2", "4.4.1", OLD), ("vercel", "1.0.0", OLD)])
+    assert mod.plan(py, lock, now=NOW) == []
 
 
 def test_real_repo_pyproject_parses():
@@ -162,8 +204,8 @@ def test_real_repo_pyproject_parses():
     lock = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
     span = mod.parse_span(py)
     assert span is not None and span.days >= 1
-    idx, m, _ = mod.find_inline_table(py)
-    assert m is not None, "repo pyproject should carry the inline table"
+    form, _, _ = mod.locate_table(py)
+    assert form is not None, "repo pyproject should carry the table"
     mod.plan(py, lock)  # must not raise
 
 
