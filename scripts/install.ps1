@@ -3276,6 +3276,110 @@ function Try-RestoreElectronDist {
     return Restore-ElectronDist -InstallDir $InstallDir -Mirror $script:DesktopElectronFallbackMirror
 }
 
+function Test-VCRuntimePresent {
+    # The MSVC runtime (vcruntime140.dll and, on 64-bit, vcruntime140_1.dll)
+    # is required by every MSVC-built native Node module -- including
+    # @electron-internal/extract-zip, which Electron >=40.10.3's install.js
+    # loads to unpack its dist. Fresh Windows VMs often lack it; the failure
+    # then surfaces as ERR_DLOPEN_FAILED "The specified module could not be
+    # found" (the .node file EXISTS -- its dependent DLL doesn't).
+    #
+    # Probe the REAL System32: a 32-bit PowerShell host on 64-bit Windows gets
+    # redirected to SysWOW64, so prefer Sysnative when it exists.
+    $sysDirs = @()
+    $sysnative = Join-Path $env:SystemRoot "Sysnative"
+    if (Test-Path (Join-Path $sysnative "kernel32.dll")) { $sysDirs += $sysnative }
+    $sysDirs += (Join-Path $env:SystemRoot "System32")
+    foreach ($dir in $sysDirs) {
+        $core = Join-Path $dir "vcruntime140.dll"
+        if (-not (Test-Path $core)) { continue }
+        if ((Get-WindowsArch) -eq "x86") { return $true }
+        # 64-bit (x64 + arm64): vcruntime140_1.dll is a separate DLL that
+        # newer MSVC-built binaries also link; require both.
+        if (Test-Path (Join-Path $dir "vcruntime140_1.dll")) { return $true }
+    }
+    return $false
+}
+
+function Ensure-VCRedist {
+    # Ensure the Visual C++ 2015-2022 runtime is present before the desktop
+    # npm install. Best-effort and NON-FATAL: most machines already have it
+    # (this is then a millisecond DLL probe), and a redist install hiccup must
+    # not fail an otherwise-good install -- the desktop build failure hint
+    # names the manual fix.
+    if (Test-VCRuntimePresent) { return $true }
+
+    $arch = Get-WindowsArch
+    $slug = switch ($arch) {
+        "arm64" { "arm64" }
+        "x86"   { "x86" }
+        default { "x64" }
+    }
+    Write-Info "Visual C++ runtime (vcruntime140) not found -- installing the VC++ 2015-2022 Redistributable ($slug)..."
+
+    $prevEAP = $ErrorActionPreference
+    # 1. winget, when available (no direct download, honors org policy).
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        $wingetId = "Microsoft.VCRedist.2015+.$slug"
+        try {
+            $ErrorActionPreference = "Continue"
+            winget install --exact --id $wingetId --source winget --silent `
+                --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            $code = $LASTEXITCODE
+            $ErrorActionPreference = $prevEAP
+            if ($code -eq 0 -and (Test-VCRuntimePresent)) {
+                Write-Success "VC++ Redistributable installed via winget"
+                return $true
+            }
+            Write-Info "  winget VC++ install did not complete (exit $code) -- trying direct download..."
+        } catch {
+            $ErrorActionPreference = $prevEAP
+            Write-Info "  winget VC++ install failed ($($_.Exception.Message)) -- trying direct download..."
+        }
+    }
+
+    # 2. Direct download from Microsoft's permanent alias. ~25MB.
+    $url = "https://aka.ms/vs/17/release/vc_redist.$slug.exe"
+    $tmpExe = Join-Path $env:TEMP ("vc_redist_{0}_{1}.exe" -f $slug, (Get-Random))
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $tmpExe -UseBasicParsing
+        $ErrorActionPreference = "Continue"
+        # /quiet needs elevation on most systems; if this PowerShell is not
+        # elevated the exe self-elevates via UAC consent. -Wait blocks until
+        # the installer (and its elevated child) exits.
+        $proc = Start-Process -FilePath $tmpExe -ArgumentList "/install", "/quiet", "/norestart" -Wait -PassThru
+        $code = $proc.ExitCode
+        $ErrorActionPreference = $prevEAP
+        # 0 = ok, 3010 = ok + reboot pending, 1638 = newer version already
+        # installed (fine -- runtime present).
+        if (($code -in 0, 3010, 1638) -and (Test-VCRuntimePresent)) {
+            Write-Success "VC++ Redistributable installed"
+            return $true
+        }
+        Write-Warn "VC++ Redistributable installer returned exit $code"
+    } catch {
+        if ($prevEAP) { $ErrorActionPreference = $prevEAP }
+        Write-Warn "Could not download/run the VC++ Redistributable: $($_.Exception.Message)"
+    } finally {
+        Remove-Item $tmpExe -Force -ErrorAction SilentlyContinue
+    }
+
+    Write-Warn "Continuing without the VC++ runtime -- the desktop build may fail with 'Cannot find native binding'."
+    Write-Info  "  Manual fix: install https://aka.ms/vs/17/release/vc_redist.$slug.exe and re-run the installer."
+    return $false
+}
+
+function Test-NativeBindingFailure {
+    # Signature of an MSVC-built native module failing to load during npm
+    # install (Electron's install.js via @electron-internal/extract-zip is
+    # the common case). Distinct from a compile failure -- the prebuilt
+    # .node exists but a dependent DLL (vcruntime140*.dll) doesn't.
+    param([string]$NpmOutput)
+    if (-not $NpmOutput) { return $false }
+    return ($NpmOutput -match "Cannot find native binding") `
+        -or ($NpmOutput -match "ERR_DLOPEN_FAILED")
+}
+
 function Install-DesktopVoiceDeps {
     # Desktop ships with working voice out of the box: eagerly install the
     # wake-word + local-STT stacks ([wake] + [voice] extras) instead of
@@ -3354,6 +3458,14 @@ function Install-Desktop {
         if (Test-Path $sibling) { $npmExe = $sibling }
     }
 
+    # 0. Ensure the MSVC runtime before touching npm: Electron >=40.10.3's
+    # postinstall loads an MSVC-built native binding
+    # (@electron-internal/extract-zip) and dies with ERR_DLOPEN_FAILED on
+    # machines without the VC++ Redistributable (field report: fresh
+    # Windows VM, Aug 2026). Best-effort -- failure here only means the
+    # npm step below may hit the hinted error.
+    Ensure-VCRedist | Out-Null
+
     # 1. Workspace-level install so apps/desktop's deps (Electron, Vite,
     # node-pty prebuilds, etc.) actually land in node_modules. This is
     # the SAME `npm install` Install-NodeDeps does for browser tools,
@@ -3408,6 +3520,12 @@ function Install-Desktop {
                 # summary above rarely contains the postinstall stderr
                 # (e.g. Electron's install.js) that explains the failure.
                 Write-NpmDebugLogTail -NpmOutput ($npmOut -join "`n")
+                if (Test-NativeBindingFailure ($npmOut -join "`n")) {
+                    Write-Warn "A native module failed to load (ERR_DLOPEN_FAILED / 'Cannot find native binding')."
+                    Write-Info  "  This usually means the Visual C++ runtime is missing or incomplete."
+                    Write-Info  "  Install https://aka.ms/vs/17/release/vc_redist.x64.exe (arm64: vc_redist.arm64.exe)"
+                    Write-Info  "  and re-run the installer."
+                }
                 throw "desktop workspace npm install failed (exit $code) -- see lines above for cause"
             }
         } else {
