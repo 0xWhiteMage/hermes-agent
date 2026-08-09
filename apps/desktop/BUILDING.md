@@ -76,17 +76,19 @@ AZURE_CLIENT_ID         (the OIDC app id)
 ```
 
 `electron-builder.config.cjs` reads these variables and composes the
-`win.sign` configuration itself, including
-`additionalMetadata.ExcludeCredentials: "ManagedIdentityCredential"`.
-Without the exclusion, the signing dlib walks the full
-DefaultAzureCredential chain, and on GitHub-hosted runners (which are Azure
-VMs) the managed-identity probe reaches a live IMDS endpoint that never
-grants a token, hanging signtool; the exclusion leaves `AzureCliCredential`
-— the credential `azure/login` (OIDC) prepares in CI. Do not pass the
-values as `-c` arguments: the publisher name contains spaces, and spaces do
-not survive the cmd.exe hops between npm and the builder on Windows.
-Without the variables, the build produces unsigned artifacts. Forks and
-local builds work unsigned.
+`win.sign` configuration itself. Do not pass the values as `-c` arguments:
+the publisher name contains spaces, and spaces do not survive the cmd.exe
+hops between npm and the builder on Windows. Without the variables, the
+build produces unsigned artifacts. Forks and local builds work unsigned.
+
+The release workflow also sets `AZURE_TOKEN_CREDENTIALS=AzureCliCredential`
+so the signing dlib's DefaultAzureCredential chain collapses to the
+credential `azure/login` (OIDC) prepared. Without it, the chain probes
+managed identity first, and on GitHub-hosted runners (which are Azure VMs)
+that probe reaches a live IMDS endpoint that never grants a token, hanging
+signtool. `win.sign.additionalMetadata.ExcludeCredentials` cannot express
+the exclusion: electron-builder's v27 schema types it as a string while the
+dlib requires a JSON list.
 
 Authentication uses the Azure credential chain: OIDC federated login in CI,
 or an `az login` session on a dev machine. There is no signing secret.

@@ -219,6 +219,7 @@
     "afterSign": "scripts/notarize.mjs",
     "mac": {
       "category": "public.app-category.developer-tools",
+      "notarize": false,
       "extendInfo": {
         "CFBundleDisplayName": "Hermes",
         "CFBundleExecutable": "Hermes",

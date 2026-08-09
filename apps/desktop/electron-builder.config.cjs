@@ -43,13 +43,11 @@ function isMachO(file) {
 // electron-builder process, so the values pass from the environment
 // verbatim.
 //
-// ExcludeCredentials skips ManagedIdentityCredential in the dlib's
-// DefaultAzureCredential chain, leaving AzureCliCredential — the one
-// azure/login (OIDC) prepares in CI. On GitHub-hosted runners (Azure
-// VMs) the managed-identity probe reaches a live IMDS endpoint that
-// never grants a token — observed as signtool hanging on the arm64
-// runners. The value is a plain string: the v27 schema types
-// additionalMetadata as Record<string,string> and rejects arrays.
+// Do NOT put ExcludeCredentials in additionalMetadata: the v27 schema
+// types it Record<string,string> while the dlib deserializes it as
+// List<string> — no value satisfies both. The credential chain is
+// narrowed with the AZURE_TOKEN_CREDENTIALS env var instead (set in the
+// release workflow), which Azure.Identity reads directly.
 function windowsSigning() {
   if (!process.env.AZURE_SIGN_ENDPOINT || !process.env.AZURE_CLIENT_ID) {
     return {}
@@ -61,9 +59,6 @@ function windowsSigning() {
       codeSigningAccountName: process.env.AZURE_SIGN_ACCOUNT,
       certificateProfileName: process.env.AZURE_SIGN_PROFILE,
       publisherName: process.env.AZURE_SIGN_PUBLISHER,
-      additionalMetadata: {
-        ExcludeCredentials: "ManagedIdentityCredential",
-      },
     },
   }
 }
