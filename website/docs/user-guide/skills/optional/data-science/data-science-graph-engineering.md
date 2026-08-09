@@ -1,14 +1,14 @@
 ---
-title: "Graph Engineering"
+title: "Graph Engineering — Build knowledge graphs and agent task graphs"
 sidebar_label: "Graph Engineering"
-description: "Build knowledge graphs and task graphs for agents — ontology design, entity/relation/event extraction, fusion, GraphRAG/graph memory, and multi-agent orchest..."
+description: "Build knowledge graphs and agent task graphs"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Graph Engineering
 
-Build knowledge graphs and task graphs for agents — ontology design, entity/relation/event extraction, fusion, GraphRAG/graph memory, and multi-agent orchestration patterns (parallel fan-out, verifier separation, the stop rule, human gates). Use when asked to build a knowledge graph, extract entities/relations from text, design an ontology, dedupe/merge entities, add graph memory or GraphRAG to an agent, orchestrate multi-agent workflows as a graph, or LEARN graph engineering — teaching mode explains each stage with worked examples and visual diagram artifacts.
+Build knowledge graphs and agent task graphs.
 
 ## Skill metadata
 
@@ -19,8 +19,9 @@ Build knowledge graphs and task graphs for agents — ontology design, entity/re
 | Version | `1.0.0` |
 | Author | codejunkie99 (ported to Hermes by Hermes Agent) |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `knowledge-graph`, `graphrag`, `ontology`, `extraction`, `orchestration`, `data-science` |
-| Related skills | [`gitnexus-explorer`](/docs/user-guide/skills/optional/research/research-gitnexus-explorer), `deepresearch`, [`excalidraw`](/docs/user-guide/skills/bundled/creative/creative-excalidraw) |
+| Related skills | [`gitnexus-explorer`](/docs/user-guide/skills/optional/research/research-gitnexus-explorer), [`excalidraw`](/docs/user-guide/skills/bundled/creative/creative-excalidraw) |
 
 ## Reference: full SKILL.md
 
@@ -29,6 +30,11 @@ The following is the complete skill definition that Hermes loads when this skill
 :::
 
 # Graph Engineering
+
+Use when asked to build a knowledge graph, extract entities/relations/events from text, design
+an ontology, dedupe/merge entities, add graph memory or GraphRAG to an agent, orchestrate
+multi-agent workflows as a task graph, or teach graph engineering (teaching mode explains each
+stage with worked examples and visual diagram artifacts).
 
 > **Hermes adaptation notes** (read once, then follow the original body below):
 > - **Task-graph half → Hermes primitives.** The diamond pattern maps directly onto
@@ -42,7 +48,13 @@ The following is the complete skill definition that Hermes loads when this skill
 >   graph database only when multi-hop query volume justifies it.
 > - **Diagrams.** Teaching mode's visual artifacts work well as mermaid blocks in chat, or as
 >   Excalidraw/self-contained HTML files for keepable artifacts (see the `excalidraw` skill).
-> - Ported from [codejunkie99/graph-engineering](https://github.com/codejunkey99/graph-engineering)
+> - **Fusion pitfall (stage 8).** Initial-letter acronym matching misses intra-word acronyms —
+>   "SEU" for "So·uth·east University" yields "SU" under a naive first-letters rule. Use alias
+>   lists, subsequence matching, or LLM adjudication for acronym candidates, not initial-letter
+>   rules alone.
+> - **Quality gate at pilot scale (stage 7).** "≥90% precision on a 50-item sample" means
+>   *all* items when the pilot has fewer than 50.
+> - Ported from [codejunkie99/graph-engineering](https://github.com/codejunkie99/graph-engineering)
 >   (MIT), itself distilled and translated from Southeast University's graduate Knowledge
 >   Graph course (npubird/KnowledgeGraphCourse, Prof. Peng Wang).
 

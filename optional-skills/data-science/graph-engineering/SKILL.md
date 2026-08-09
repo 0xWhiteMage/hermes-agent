@@ -1,16 +1,22 @@
 ---
 name: graph-engineering
-description: Build knowledge graphs and task graphs for agents — ontology design, entity/relation/event extraction, fusion, GraphRAG/graph memory, and multi-agent orchestration patterns (parallel fan-out, verifier separation, the stop rule, human gates). Use when asked to build a knowledge graph, extract entities/relations from text, design an ontology, dedupe/merge entities, add graph memory or GraphRAG to an agent, orchestrate multi-agent workflows as a graph, or LEARN graph engineering — teaching mode explains each stage with worked examples and visual diagram artifacts.
+description: Build knowledge graphs and agent task graphs.
 version: 1.0.0
 author: codejunkie99 (ported to Hermes by Hermes Agent)
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [knowledge-graph, graphrag, ontology, extraction, orchestration, data-science]
-    related_skills: [gitnexus-explorer, deepresearch, excalidraw]
+    related_skills: [gitnexus-explorer, excalidraw]
 ---
 
 # Graph Engineering
+
+Use when asked to build a knowledge graph, extract entities/relations/events from text, design
+an ontology, dedupe/merge entities, add graph memory or GraphRAG to an agent, orchestrate
+multi-agent workflows as a task graph, or teach graph engineering (teaching mode explains each
+stage with worked examples and visual diagram artifacts).
 
 > **Hermes adaptation notes** (read once, then follow the original body below):
 > - **Task-graph half → Hermes primitives.** The diamond pattern maps directly onto

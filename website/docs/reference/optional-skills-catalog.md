@@ -74,7 +74,7 @@ hermes skills uninstall <skill-name>
 
 | Skill | Description |
 |-------|-------------|
-| [**graph-engineering**](/docs/user-guide/skills/optional/data-science/data-science-graph-engineering) | Build knowledge graphs and task graphs for agents — ontology design, entity/relation/event extraction, fusion, GraphRAG/graph memory, and multi-agent orchestration patterns (parallel fan-out, verifier separation, the stop rule, human gat... |
+| [**graph-engineering**](/docs/user-guide/skills/optional/data-science/data-science-graph-engineering) | Build knowledge graphs and agent task graphs. |
 | [**jupyter-notebook**](/docs/user-guide/skills/optional/data-science/data-science-jupyter-notebook) | Iterative Python via live Jupyter kernel (hamelnb). |
 
 ## devops
