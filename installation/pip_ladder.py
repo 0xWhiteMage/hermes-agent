@@ -89,6 +89,7 @@ def pip_install(
     timeout: int = 300,
     target: Optional[Path] = None,
     constraints: Optional[Path] = None,
+    overrides: Optional[Path] = None,
     env: Optional[dict] = None,
     capture_output: bool = True,
     creationflags: int = 0,
