@@ -134,7 +134,7 @@ jobs:
           cache-dependency-glob: |
             pyproject.toml
             uv.lock
-          python-version: 3.13
+          python-version: ${{ env.HERMES_PAYLOAD_PYTHON }}
 
       # ── OpenSSL for the win32-arm64 source builds ──────────────────────
       # cryptography publishes no win_arm64 wheel, so the staging script
