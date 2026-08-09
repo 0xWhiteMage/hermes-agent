@@ -119,9 +119,9 @@ jobs:
         shell: bash
         run: npm i -g npm@12
 
-      - uses: ./.github/actions/retry
-        with:
-          command: npm ci
+      # No npm ci here: the build script runs it as its own first step, and
+      # a second install would delete and recreate node_modules (~10 min on
+      # the Windows runners).
 
       # ── uv + Python (native to this runner) ───────────────────────────
       # setup-python gives every OS a working `python3` on PATH. The desktop
@@ -184,13 +184,27 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           allow-no-subscriptions: true
 
+      # electron-builder runs `Install-Module TrustedSigning` on demand, but
+      # under -NonInteractive that install can wait forever on the NuGet
+      # provider confirmation prompt (observed on the arm64 runner: 59
+      # minutes until the job timeout). Preinstall it with the prompts
+      # forced off so the on-demand path finds it already present.
+      - name: Preinstall TrustedSigning module
+        if: startsWith(matrix.label, 'win32-') && vars.AZURE_CLIENT_ID != ''
+        shell: powershell
+        run: |
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name TrustedSigning -RequiredVersion 0.5.8 -Force -Scope CurrentUser -AllowClobber
+          Import-Module TrustedSigning
+          Get-Command Invoke-TrustedSigning | Out-Null
+
       # ── Build + package through the shared script ──────────────────────
       # scripts/build-bundled-desktop.mjs owns the whole sequence: the root
       # npm ci, the JS surface builds, the payload node dist, the bundled
       # desktop build, and electron-builder. Run the same script locally to
       # reproduce a CI build. The workflow adds only caching, signing, and
-      # upload. (The npm ci above only warms the cache for the retry
-      # wrapper; the script's own npm ci is the one that counts.)
+      # upload.
       - name: Build and package
         shell: bash
         env:
