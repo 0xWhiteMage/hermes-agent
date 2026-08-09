@@ -229,14 +229,18 @@ jobs:
           AZURE_SIGN_PROFILE: ${{ vars.AZURE_SIGN_PROFILE }}
           AZURE_SIGN_PUBLISHER: ${{ vars.AZURE_SIGN_PUBLISHER }}
           AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-          # Collapse the signing dlib's DefaultAzureCredential chain to the
-          # CLI credential azure/login prepared. Without this the chain
-          # probes managed identity first, and on GitHub-hosted runners
-          # (Azure VMs) that probe reaches a live IMDS endpoint that never
-          # grants a token — signtool hung for 30+ minutes. ExcludeCredentials
-          # in win.sign.additionalMetadata cannot express this: the v27
-          # schema types it as a string while the dlib requires a list.
-          AZURE_TOKEN_CREDENTIALS: AzureCliCredential
+          # Restrict the signing dlib's DefaultAzureCredential chain to the
+          # 'dev' half (SharedTokenCache/VisualStudio/AzureCli/
+          # AzurePowerShell/AzureDeveloperCli) so it reaches the CLI
+          # credential azure/login prepared. The full chain probes managed
+          # identity first, and on GitHub-hosted runners (Azure VMs) that
+          # probe reaches a live IMDS endpoint that never grants a token —
+          # signtool hung for 30+ minutes. The dlib's Azure.Identity is too
+          # old for per-credential names here ('dev'/'prod' only), and
+          # ExcludeCredentials in win.sign.additionalMetadata cannot express
+          # it either: the v27 schema types it as a string while the dlib
+          # requires a list.
+          AZURE_TOKEN_CREDENTIALS: dev
         run: |
           # Windows signing turns on inside run-electron-builder.mjs when the
           # AZURE_SIGN_* variables above are present. It cannot ride through

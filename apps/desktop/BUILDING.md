@@ -81,14 +81,16 @@ the publisher name contains spaces, and spaces do not survive the cmd.exe
 hops between npm and the builder on Windows. Without the variables, the
 build produces unsigned artifacts. Forks and local builds work unsigned.
 
-The release workflow also sets `AZURE_TOKEN_CREDENTIALS=AzureCliCredential`
-so the signing dlib's DefaultAzureCredential chain collapses to the
-credential `azure/login` (OIDC) prepared. Without it, the chain probes
-managed identity first, and on GitHub-hosted runners (which are Azure VMs)
-that probe reaches a live IMDS endpoint that never grants a token, hanging
-signtool. `win.sign.additionalMetadata.ExcludeCredentials` cannot express
-the exclusion: electron-builder's v27 schema types it as a string while the
-dlib requires a JSON list.
+The release workflow also sets `AZURE_TOKEN_CREDENTIALS=dev` so the signing
+dlib's DefaultAzureCredential chain runs only its developer-tool half and
+reaches the credential `azure/login` (OIDC) prepared. Without it, the chain
+probes managed identity first, and on GitHub-hosted runners (which are
+Azure VMs) that probe reaches a live IMDS endpoint that never grants a
+token, hanging signtool. The dlib's Azure.Identity accepts only `dev` or
+`prod` here — it predates per-credential names — and
+`win.sign.additionalMetadata.ExcludeCredentials` cannot express the
+exclusion either: electron-builder's v27 schema types it as a string while
+the dlib requires a JSON list.
 
 Authentication uses the Azure credential chain: OIDC federated login in CI,
 or an `az login` session on a dev machine. There is no signing secret.
