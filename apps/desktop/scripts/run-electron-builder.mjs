@@ -51,9 +51,8 @@ if (!args.includes("--publish") && !args.some((a) => a.startsWith("-p"))) {
 
 // Windows signing config lives in electron-builder.config.cjs, composed from
 // the AZURE_SIGN_* variables. It cannot ride through -c arguments: the
-// publisherName contains spaces and commas that die in cmd.exe hops, and
-// additionalMetadata.ExcludeCredentials is an array, which dot-notation
-// cannot express. This block only announces the decision in the log.
+// publisherName contains spaces and commas that die in cmd.exe hops. This
+// block only announces the decision in the log.
 if (args.includes("--win") && process.env.AZURE_SIGN_ENDPOINT && process.env.AZURE_CLIENT_ID) {
   console.log(`[run-electron-builder] Windows signing: Azure Trusted Signing at ${process.env.AZURE_SIGN_ENDPOINT}`)
 }

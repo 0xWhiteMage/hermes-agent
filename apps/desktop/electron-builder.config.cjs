@@ -38,18 +38,18 @@ function isMachO(file) {
 }
 
 // Windows signing with Azure Trusted Signing. Composed here, not as
-// -c.win.sign.* CLI arguments, for two reasons: the publisherName holds
-// spaces and commas that do not survive cmd.exe argument hops, and
-// additionalMetadata.ExcludeCredentials is an ARRAY, which dot-notation
-// cannot express. This file loads inside the electron-builder process,
-// so the values pass from the environment verbatim.
+// -c.win.sign.* CLI arguments: the publisherName holds spaces and commas
+// that do not survive cmd.exe argument hops. This file loads inside the
+// electron-builder process, so the values pass from the environment
+// verbatim.
 //
-// ExcludeCredentials keeps only AzureCliCredential — the one azure/login
-// (OIDC) prepares in CI. The dlib otherwise walks the full
-// DefaultAzureCredential chain, and on GitHub-hosted runners (Azure VMs)
-// the ManagedIdentityCredential probe reaches a live IMDS endpoint that
+// ExcludeCredentials skips ManagedIdentityCredential in the dlib's
+// DefaultAzureCredential chain, leaving AzureCliCredential — the one
+// azure/login (OIDC) prepares in CI. On GitHub-hosted runners (Azure
+// VMs) the managed-identity probe reaches a live IMDS endpoint that
 // never grants a token — observed as signtool hanging on the arm64
-// runners.
+// runners. The value is a plain string: the v27 schema types
+// additionalMetadata as Record<string,string> and rejects arrays.
 function windowsSigning() {
   if (!process.env.AZURE_SIGN_ENDPOINT || !process.env.AZURE_CLIENT_ID) {
     return {}
@@ -62,17 +62,7 @@ function windowsSigning() {
       certificateProfileName: process.env.AZURE_SIGN_PROFILE,
       publisherName: process.env.AZURE_SIGN_PUBLISHER,
       additionalMetadata: {
-        ExcludeCredentials: [
-          "EnvironmentCredential",
-          "WorkloadIdentityCredential",
-          "ManagedIdentityCredential",
-          "SharedTokenCacheCredential",
-          "VisualStudioCredential",
-          "VisualStudioCodeCredential",
-          "AzurePowerShellCredential",
-          "AzureDeveloperCliCredential",
-          "InteractiveBrowserCredential",
-        ],
+        ExcludeCredentials: "ManagedIdentityCredential",
       },
     },
   }

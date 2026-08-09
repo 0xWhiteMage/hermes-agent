@@ -76,15 +76,15 @@ AZURE_CLIENT_ID         (the OIDC app id)
 ```
 
 `electron-builder.config.cjs` reads these variables and composes the
-`win.sign` configuration itself, including an
-`additionalMetadata.ExcludeCredentials` list that keeps only
-`AzureCliCredential` — the credential `azure/login` (OIDC) prepares in CI.
-Without the exclusions, the signing dlib walks the full
+`win.sign` configuration itself, including
+`additionalMetadata.ExcludeCredentials: "ManagedIdentityCredential"`.
+Without the exclusion, the signing dlib walks the full
 DefaultAzureCredential chain, and on GitHub-hosted runners (which are Azure
 VMs) the managed-identity probe reaches a live IMDS endpoint that never
-grants a token, hanging signtool. Do not pass the values as `-c` arguments:
-the publisher name contains spaces, the exclusion list is an array, and
-neither survives the cmd.exe hops between npm and the builder on Windows.
+grants a token, hanging signtool; the exclusion leaves `AzureCliCredential`
+— the credential `azure/login` (OIDC) prepares in CI. Do not pass the
+values as `-c` arguments: the publisher name contains spaces, and spaces do
+not survive the cmd.exe hops between npm and the builder on Windows.
 Without the variables, the build produces unsigned artifacts. Forks and
 local builds work unsigned.
 
