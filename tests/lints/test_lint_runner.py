@@ -148,6 +148,8 @@ def test_crashing_lint_reports_error_without_hiding_others():
 
 # ── Fixer bounds ─────────────────────────────────────────────────────────
 
+_NO_DIRT = lambda: set()  # noqa: E731 — clean-tree stub for reported-path tests
+
 
 def test_fix_outside_declared_globs_is_an_error():
     lint = _lint(
@@ -156,7 +158,7 @@ def test_fix_outside_declared_globs_is_an_error():
         fix=lambda: ["etc/passwd"],
         fix_touches=("**/.npmrc",),
     )
-    changed, errors = lint_run.run_fixes([lint])
+    changed, errors = lint_run.run_fixes([lint], dirty_paths_fn=_NO_DIRT)
     assert changed == ["etc/passwd"]
     assert any("outside its declared" in e for e in errors)
 
@@ -168,7 +170,7 @@ def test_fix_inside_declared_globs_is_clean():
         fix=lambda: ["website/.npmrc"],
         fix_touches=("**/.npmrc",),
     )
-    changed, errors = lint_run.run_fixes([lint])
+    changed, errors = lint_run.run_fixes([lint], dirty_paths_fn=_NO_DIRT)
     assert changed == ["website/.npmrc"]
     assert errors == []
 
@@ -178,9 +180,70 @@ def test_crashing_fixer_reports_error():
         raise RuntimeError("fix kaput")
 
     lint = _lint(id="bad-fix", autofix=True, fix=_boom, fix_touches=("*.py",))
-    changed, errors = lint_run.run_fixes([lint])
+    changed, errors = lint_run.run_fixes([lint], dirty_paths_fn=_NO_DIRT)
     assert changed == []
     assert any("fix kaput" in e for e in errors)
+
+
+class _TreeStub:
+    """Simulates the working tree dirtying as fixers run."""
+
+    def __init__(self, initial: set[str] | None = None):
+        self.dirty: set[str] = set(initial or ())
+
+    def __call__(self) -> set[str]:
+        return set(self.dirty)
+
+
+def test_fix_bounded_by_own_globs_not_the_union():
+    """Lint A writing a file that only lint B's globs allow is an error.
+
+    Each fixer answers to ITS OWN fix_touches — pooling the globs would
+    let any registered fixer launder writes through another lint's
+    allowance.
+    """
+    tree = _TreeStub()
+
+    def fix_a():
+        tree.dirty.add("src/thing.py")  # only lint B's glob allows this
+        return []  # under-reports, too — attribution must catch it
+
+    def fix_b():
+        return []
+
+    lint_a = _lint(id="a", autofix=True, fix=fix_a, fix_touches=("**/.npmrc",))
+    lint_b = _lint(id="b", autofix=True, fix=fix_b, fix_touches=("src/*.py",))
+    changed, errors = lint_run.run_fixes([lint_a, lint_b], dirty_paths_fn=tree)
+    assert changed == ["src/thing.py"]
+    assert len(errors) == 1
+    assert errors[0].startswith("a: fix modified 'src/thing.py'")
+
+
+def test_unreported_change_attributed_to_the_fixer_that_made_it():
+    """Snapshot diffing attributes tree changes per fixer, in order."""
+    tree = _TreeStub()
+
+    def fix_first():
+        tree.dirty.add("website/.npmrc")
+        return []  # silent — snapshot must attribute it anyway
+
+    def fix_second():
+        tree.dirty.add("docs/x.md")
+        return []
+
+    first = _lint(id="first", autofix=True, fix=fix_first, fix_touches=("**/.npmrc",))
+    second = _lint(id="second", autofix=True, fix=fix_second, fix_touches=("docs/*.md",))
+    changed, errors = lint_run.run_fixes([first, second], dirty_paths_fn=tree)
+    assert errors == []
+    assert set(changed) == {"website/.npmrc", "docs/x.md"}
+
+
+def test_preexisting_dirt_not_attributed_to_any_fixer():
+    tree = _TreeStub(initial={"WIP-dev-edit.py"})
+    lint = _lint(id="clean", autofix=True, fix=lambda: [], fix_touches=("*.md",))
+    changed, errors = lint_run.run_fixes([lint], dirty_paths_fn=tree)
+    assert changed == []
+    assert errors == []
 
 
 # ── review_status contract ───────────────────────────────────────────────

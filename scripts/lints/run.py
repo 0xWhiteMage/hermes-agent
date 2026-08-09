@@ -30,6 +30,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -71,43 +72,70 @@ def run_checks(lints: list[Lint]) -> tuple[list[tuple[Lint, Finding]], list[str]
     return results, errors
 
 
-def run_fixes(lints: list[Lint]) -> tuple[list[str], list[str]]:
+def run_fixes(
+    lints: list[Lint],
+    dirty_paths_fn: Callable[[], set[str]] | None = None,
+) -> tuple[list[str], list[str]]:
     """Run every fixer. Returns (changed_paths, errors).
 
-    After each fixer, verify it only touched paths matching its declared
-    ``fix_touches`` globs — an out-of-bounds write is an error and the
-    caller must not ship the resulting diff.
+    Each fixer is bounded by ITS OWN ``fix_touches`` globs — never the
+    union across lints. The working tree is snapshotted around every
+    fixer, so changes are attributed to the lint that made them even
+    when the fixer under-reports its path list: lint A touching a file
+    that only lint B's globs allow is still an error.
     """
+    if dirty_paths_fn is None:
+        dirty_paths_fn = _git_dirty_paths
+    snapshot: Callable[[], set[str]] = dirty_paths_fn
     changed: list[str] = []
     errors: list[str] = []
+    # Pre-existing working-tree changes (dev edits, npm churn) are not
+    # any fixer's doing — exclude them from attribution.
+    baseline = snapshot()
     for lint in lints:
         if not lint.autofix or lint.fix is None:
             continue
         try:
-            paths = lint.fix()
+            reported = lint.fix()
         except Exception as exc:  # noqa: BLE001 — isolate fixer crashes
             errors.append(f"{lint.id}: fix crashed: {exc!r}")
             continue
-        for path in paths:
+        now_dirty = dirty_paths_fn()
+        touched = set(reported) | (now_dirty - baseline)
+        for path in sorted(touched):
             if not any(fnmatch.fnmatch(path, glob) for glob in lint.fix_touches):
                 errors.append(
                     f"{lint.id}: fix modified {path!r} outside its declared "
                     f"fix_touches globs {list(lint.fix_touches)}"
                 )
             changed.append(path)
+        # Advance the baseline so the next fixer only answers for its
+        # own changes.
+        baseline = now_dirty
     return changed, errors
 
 
-def _git_dirty_paths() -> list[str]:
+def _git_dirty_paths() -> set[str]:
+    """Working-tree paths with any change, including untracked files
+    (a fixer that *creates* a file must answer for it too)."""
     out = subprocess.run(
-        ["git", "diff", "--name-only"],
+        ["git", "status", "--porcelain"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
         encoding="utf-8",
         check=False,
     )
-    return [line for line in out.stdout.splitlines() if line.strip()]
+    paths: set[str] = set()
+    for line in out.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        path = line[3:].strip().strip('"')
+        # Rename entries are "old -> new"; the new path is the change.
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1].strip().strip('"')
+        paths.add(path)
+    return paths
 
 
 def to_review_status(
@@ -207,26 +235,13 @@ def main(argv: list[str]) -> int:
         return 0
 
     if args.fix:
-        # Snapshot pre-existing working-tree changes so the glob
-        # cross-check below only judges changes the fixers introduced —
-        # a locally dirty tree (dev edits in progress) is not the
-        # fixers' doing.
-        pre_dirty = set(_git_dirty_paths())
+        # run_fixes snapshots the working tree around each fixer and
+        # validates every change against that lint's OWN fix_touches
+        # globs — under-reported paths and cross-lint writes (lint A
+        # touching a file only lint B's globs allow) both error.
         changed, errors = run_fixes(lints)
         for path in changed:
             print(f"fixed: {path}")
-        # Cross-check the declared globs against what actually changed in
-        # the working tree — belt and suspenders for fixers that report
-        # incomplete path lists.
-        all_globs = [g for lint in lints for g in lint.fix_touches]
-        for path in _git_dirty_paths():
-            if path in changed or path in pre_dirty:
-                continue
-            if not any(fnmatch.fnmatch(path, glob) for glob in all_globs):
-                errors.append(
-                    f"working tree change at {path!r} matches no registered "
-                    "fix_touches glob — refusing to bless this diff"
-                )
         for err in errors:
             print(f"error: {err}", file=sys.stderr)
         return 1 if errors else 0
