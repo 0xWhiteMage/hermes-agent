@@ -384,6 +384,20 @@ function stageUvAndPython(target, outDir) {
   // on the Windows test box).
   run("uv", ["python", "install", "--no-bin", "--install-dir", pythonDir, pythonRequest(target)])
 
+  // uv leaves two things beside the versioned install that must not ship:
+  // a minor-version alias that is an ABSOLUTE symlink to this build host's
+  // path (codesign --strict rejects the .app: "invalid destination for
+  // symbolic link in bundle" — the June darwin lane failures), and its
+  // bookkeeping files (.lock, .temp, .gitignore). findEmbeddedPython
+  // prefers the real patch-versioned directory, so nothing reads the alias.
+  for (const entry of fs.readdirSync(pythonDir)) {
+    const entryPath = path.join(pythonDir, entry)
+    const isRealInstall = pythonDirPattern(target).test(entry) && !fs.lstatSync(entryPath).isSymbolicLink()
+    if (!isRealInstall) {
+      fs.rmSync(entryPath, { recursive: true, force: true })
+    }
+  }
+
   // The installed CPython proves its architecture at runtime.
   // `python -VV` names the arch on Windows ("[MSC v.1944 64 bit (ARM64)]")
   // but not on Linux/macOS ("[Clang 22.1.3 ]"), so the check asks
