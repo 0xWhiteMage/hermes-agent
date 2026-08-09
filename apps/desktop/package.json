@@ -151,7 +151,7 @@
     "concurrently": "10.0.4",
     "cross-env": "10.1.0",
     "electron": "40.10.2",
-    "electron-builder": "26.15.3",
+    "electron-builder": "27.0.0-alpha.6",
     "esbuild": "0.28.1",
     "jsdom": "29.1.1",
     "prettier": "3.9.5",
@@ -210,17 +210,16 @@
         "to": "icon.ico"
       }
     ],
-    "asar": true,
+    "asar": {
+      "unpack": [
+        "**/*.node",
+        "**/prebuilds/**",
+        "dist/**"
+      ]
+    },
     "afterSign": "scripts/notarize.mjs",
-    "asarUnpack": [
-      "**/*.node",
-      "**/prebuilds/**",
-      "dist/**"
-    ],
     "mac": {
       "category": "public.app-category.developer-tools",
-      "entitlements": "electron/entitlements.mac.plist",
-      "entitlementsInherit": "electron/entitlements.mac.inherit.plist",
       "extendInfo": {
         "CFBundleDisplayName": "Hermes",
         "CFBundleExecutable": "Hermes",
@@ -229,12 +228,16 @@
         "NSCameraUsageDescription": "Hermes uses the camera when a plugin or feature you enable requests it.",
         "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations."
       },
-      "gatekeeperAssess": false,
-      "hardenedRuntime": true,
       "target": [
         "dmg",
         "zip"
-      ]
+      ],
+      "sign": {
+        "entitlements": "electron/entitlements.mac.plist",
+        "entitlementsInherit": "electron/entitlements.mac.inherit.plist",
+        "hardenedRuntime": true,
+        "gatekeeperAssess": false
+      }
     },
     "dmg": {
       "title": "Install Hermes",
@@ -263,8 +266,7 @@
       "target": [
         "nsis",
         "msi"
-      ],
-      "signAndEditExecutable": false
+      ]
     },
     "linux": {
       "category": "Development",
