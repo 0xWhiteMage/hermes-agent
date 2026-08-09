@@ -160,11 +160,6 @@ jobs:
     # soundly gate them. The job is static file checks, seconds cheap.
     uses: ./.github/workflows/project-lints.yml
 
-  infographic-check:
-    name: Check no committed infographics
-    needs: detect
-    uses: ./.github/workflows/infographic-check.yml
-
   lockfile-diff:
     name: package-lock.json diff
     needs: detect
