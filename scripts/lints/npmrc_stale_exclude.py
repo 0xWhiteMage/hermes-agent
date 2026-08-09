@@ -277,12 +277,51 @@ def check() -> list[Finding]:
     return findings
 
 
+def _verify_only_exclude_deletions(old: str, new: str) -> None:
+    """Abort unless ``new`` is ``old`` minus deletions of exclude lines,
+    comment lines, and blank lines — the only edits this fixer makes.
+
+    Structural guarantee, not a diff heuristic: every surviving line must
+    appear in the original in order (pure-deletion check), and every
+    dropped line must be an exclude entry, a comment, or blank. Any other
+    delta means a bug in remove_stale_lines, and the file must not be
+    written.
+    """
+    old_lines = old.splitlines()
+    new_lines = new.splitlines()
+
+    i = 0
+    dropped: list[str] = []
+    for line in old_lines:
+        if i < len(new_lines) and new_lines[i] == line:
+            i += 1
+        else:
+            dropped.append(line)
+    if i != len(new_lines):
+        raise RuntimeError(
+            "npmrc-stale-exclude: fixer produced lines not present in the "
+            "original file — refusing to write"
+        )
+
+    for line in dropped:
+        stripped = line.strip()
+        if stripped == "" or stripped.startswith("#"):
+            continue
+        if _EXCLUDE_RE.match(stripped):
+            continue
+        raise RuntimeError(
+            "npmrc-stale-exclude: fixer would delete a non-exclude "
+            f"directive {stripped!r} — refusing to write"
+        )
+
+
 def fix() -> list[str]:
     changed = []
     for npmrc, stale in _evaluate_repo():
         text = npmrc.read_text(encoding="utf-8")
         new_text = remove_stale_lines(text, {idx for idx, _, _ in stale})
         if new_text != text:
+            _verify_only_exclude_deletions(text, new_text)
             npmrc.write_text(new_text, encoding="utf-8")
             changed.append(npmrc.relative_to(REPO_ROOT).as_posix())
     return changed

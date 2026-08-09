@@ -287,6 +287,37 @@ def test_removal_preserves_unrelated_directives():
     assert "exclude" not in result
 
 
+# ── _verify_only_exclude_deletions ───────────────────────────────────────
+
+
+def test_verify_accepts_pure_exclude_deletion():
+    old = "min-release-age=14\n# c\nmin-release-age-exclude[]=tar\nengine-strict=true\n"
+    new = "min-release-age=14\nengine-strict=true\n"
+    mod._verify_only_exclude_deletions(old, new)  # no raise
+
+
+def test_verify_rejects_deleting_other_directives():
+    old = "min-release-age=14\nengine-strict=true\n"
+    new = "min-release-age=14\n"
+    try:
+        mod._verify_only_exclude_deletions(old, new)
+    except RuntimeError as e:
+        assert "non-exclude directive" in str(e)
+    else:
+        raise AssertionError("should have refused to delete engine-strict")
+
+
+def test_verify_rejects_edited_or_inserted_lines():
+    old = "min-release-age=14\n"
+    for new in ("min-release-age=7\n", "min-release-age=14\nregistry=https://evil\n"):
+        try:
+            mod._verify_only_exclude_deletions(old, new)
+        except RuntimeError as e:
+            assert "not present in the original" in str(e)
+        else:
+            raise AssertionError(f"should have refused: {new!r}")
+
+
 # ── end-to-end: check()/fix() against a fixture repo ─────────────────────
 
 
