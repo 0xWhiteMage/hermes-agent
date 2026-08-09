@@ -33,3 +33,25 @@ to 10 minutes of wall per encounter.
 - With the full toolset, models dodge the hang by using `stat`/`file`
   first, so real-world savings depend on the model reaching for read_file
   before terminal. qwen did so consistently in the file-only arm.
+
+## Feature 2: unicode filename retry + near-miss suggestions (PR #82800)
+
+**A/B (control = guard-only stack, same fixture, 3 reps):** unicode task
+qwen 31k→16k tok (−48%), turns 6.7→3.7; opus 57k→33k (−42%), 8.3→5.0;
+accuracy held 1.00. Near-miss: opus 40k→34k, qwen flat. Repair fires only
+on invisible-encoding differences with exactly one match; homoglyph twins
+and visible typos never auto-repair (pinned by tests).
+
+**Verdict: SHIP.**
+
+## Feature 3: past-EOF + empty-file notes (PR #82804)
+
+**A/B (control = #82800 stack, 3 reps, past_eof + empty_config):**
+qwen −18% tok / −26% tool calls / −17% turns; opus −10% tok, turns flat
+(recovered cheaply already). Accuracy 1.00 both arms. Also fixes the
+phantom-line bug (past-EOF returned content "900|" as if line 900
+existed and were empty).
+
+**Verdict: SHIP** — qwen-consistent efficiency win + correctness fix;
+opus side is noise-level, which matches the feature's aim (it serves
+models that can't infer around ambiguous silence).
