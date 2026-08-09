@@ -184,20 +184,26 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           allow-no-subscriptions: true
 
-      # electron-builder runs `Install-Module TrustedSigning` on demand, but
-      # under -NonInteractive that install can wait forever on the NuGet
-      # provider confirmation prompt (observed on the arm64 runner: 59
-      # minutes until the job timeout). Preinstall it with the prompts
-      # forced off so the on-demand path finds it already present.
-      - name: Preinstall TrustedSigning module
+      # The Trusted Signing tool install freezes the runner when no .NET 8
+      # runtime is present (actions/runner-images#13538). electron-builder
+      # always runs its own `Install-Module TrustedSigning -Force` before it
+      # signs — a preinstalled module cannot short-circuit that — so the fix
+      # is to give the runner the runtime the tooling needs up front.
+      # Observed on the arm64 runner: 32+ minutes stalled inside that
+      # Install-Module call until the job was canceled.
+      - name: Install .NET 8 runtime for Trusted Signing
         if: startsWith(matrix.label, 'win32-') && vars.AZURE_CLIENT_ID != ''
-        shell: powershell
-        run: |
-          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser
-          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
-          Install-Module -Name TrustedSigning -RequiredVersion 0.5.8 -Force -Scope CurrentUser -AllowClobber
-          Import-Module TrustedSigning
-          Get-Command Invoke-TrustedSigning | Out-Null
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: "8.x"
+
+      # setup-dotnet exports DOTNET_ROOT. On ARM64 Windows that points the
+      # x64 signtool at an arm64 runtime and it dies with exit code 3 (seen
+      # on the promise build box). The tooling only needs dotnet on PATH.
+      - name: Clear DOTNET_ROOT
+        if: startsWith(matrix.label, 'win32-') && vars.AZURE_CLIENT_ID != ''
+        shell: bash
+        run: echo "DOTNET_ROOT=" >> "$GITHUB_ENV"
 
       # ── Build + package through the shared script ──────────────────────
       # scripts/build-bundled-desktop.mjs owns the whole sequence: the root
