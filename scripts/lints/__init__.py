@@ -134,7 +134,15 @@ def discover(directory: Path | None = None) -> list[Lint]:
         if spec is None or spec.loader is None:
             raise RuntimeError(f"cannot load lint module {path}")
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        # Register before exec: @dataclass resolves string annotations by
+        # looking the module up in sys.modules — an unregistered module
+        # crashes _is_type with AttributeError on None.
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(module_name, None)
+            raise
         lint = getattr(module, "LINT", None)
         if lint is None:
             raise RuntimeError(f"lint module {path} defines no top-level LINT")
