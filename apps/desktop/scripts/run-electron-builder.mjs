@@ -35,6 +35,14 @@ function electronBuilderCli() {
 const args = []
 args.push(...process.argv.slice(2))
 
+// The config file wraps package.json's "build" field to add the one option
+// JSON cannot express: mac.sign.ignore as a function (Mach-O-only signing).
+// package.json's "build" wins over config files unless --config is explicit,
+// so name it here.
+if (!args.some((a) => a === "--config" || a.startsWith("--config="))) {
+  args.push("--config", "electron-builder.config.cjs")
+}
+
 // Never let electron-builder publish. On a CI tag build it auto-detects
 // GitHub and demands GH_TOKEN after the artifacts are already built.
 // The release workflow uploads artifacts in its own step.

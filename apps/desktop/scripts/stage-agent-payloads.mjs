@@ -330,6 +330,49 @@ function stageRepo(tag, outDir) {
   return commit
 }
 
+/**
+ * The payload must ship NO symlink that is absolute, escapes the payload
+ * root, or dangles. macOS codesign --strict rejects the whole .app for
+ * any of them ("invalid destination for symbolic link in bundle"), and
+ * they are dead weight on every platform. Individual stages try to avoid
+ * creating them, but the sources vary (uv's install alias, node's npm/npx
+ * bin links copied by cpSync, npm's .bin links), so this final pass owns
+ * the invariant for the whole tree:
+ *  - absolute link with a live target inside the root → rewritten relative
+ *  - link resolving outside the root (or dangling) with a live target →
+ *    replaced by a real copy of the target
+ *  - dangling link → removed
+ */
+export function sanitizeSymlinks(rootDir, fsImpl = fs) {
+  const root = path.resolve(rootDir)
+  const contains = (p) => p === root || p.startsWith(root + path.sep)
+
+  const walk = (dir) => {
+    for (const entry of fsImpl.readdirSync(dir, { withFileTypes: true })) {
+      const entryPath = path.join(dir, entry.name)
+      if (entry.isSymbolicLink()) {
+        const target = fsImpl.readlinkSync(entryPath)
+        const resolved = path.resolve(path.dirname(entryPath), target)
+        const targetExists = fsImpl.existsSync(resolved)
+        if (!targetExists) {
+          fsImpl.rmSync(entryPath, { force: true })
+        } else if (contains(resolved)) {
+          if (path.isAbsolute(target)) {
+            fsImpl.rmSync(entryPath, { force: true })
+            fsImpl.symlinkSync(path.relative(path.dirname(entryPath), resolved), entryPath)
+          }
+        } else {
+          fsImpl.rmSync(entryPath, { recursive: true, force: true })
+          fsImpl.cpSync(resolved, entryPath, { recursive: true, dereference: true })
+        }
+      } else if (entry.isDirectory()) {
+        walk(entryPath)
+      }
+    }
+  }
+  walk(root)
+}
+
 // Windows: name System32's bsdtar by full path. A GNU tar earlier on
 // PATH (Git bash on the GitHub runners) reads "C:" in a path as a
 // remote host name. bsdtar also reads .zip, so one extraction call
@@ -606,6 +649,8 @@ function main() {
   writeBundlePth(OUT_DIR, payloadPython)
   console.log(`[stage-agent-payloads] staging: node (${target.key}, ${tag})`)
   stageNode(target, OUT_DIR)
+  console.log(`[stage-agent-payloads] sanitizing symlinks`)
+  sanitizeSymlinks(OUT_DIR)
 
   const manifest = buildManifest({ tag, commit, target })
   fs.writeFileSync(path.join(OUT_DIR, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n")
