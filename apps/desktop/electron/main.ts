@@ -4184,6 +4184,7 @@ function createPythonBackend(root, label, backendArgs, options: any = {}) {
       venvRoot
     }),
     root,
+    source: options.source ?? null,
     bootstrap: Boolean(options.bootstrap),
     shell: false
   }
@@ -4208,6 +4209,10 @@ function createActiveBackend(backendArgs) {
       venvRoot: VENV_ROOT
     }),
     root: ACTIVE_HERMES_ROOT,
+    // `git` — a checkout at a managed install root — is the install method
+    // Python's runtime_tree reports for the canonical $HERMES_HOME/hermes-agent
+    // location. The desktop does not re-derive it.
+    source: 'git',
     bootstrap: true,
     shell: false
   }
@@ -4273,6 +4278,7 @@ function createEmbeddedBackend(backendArgs) {
     env,
     root: repoRoot,
     embedded: true,
+    source: 'embedded',
     bootstrap: false,
     shell: false
   }
@@ -4313,7 +4319,7 @@ function resolveHermesBackend(backendArgs) {
   // 1. Explicit override -- HERMES_DESKTOP_HERMES_ROOT points at a developer
   //    checkout. Honor it as-is (no bootstrap; the user is driving).
   if (overrideRoot && isHermesSourceRoot(overrideRoot)) {
-    const backend = createPythonBackend(overrideRoot, `Hermes source at ${overrideRoot}`, backendArgs)
+    const backend = createPythonBackend(overrideRoot, `Hermes source at ${overrideRoot}`, backendArgs, { source: 'hermes-root' })
 
     if (backend) {
       return backend
@@ -4324,8 +4330,10 @@ function resolveHermesBackend(backendArgs) {
   //    cloned repo at SOURCE_REPO_ROOT takes precedence over ACTIVE and any
   //    installed `hermes` on PATH so local Python edits are actually exercised.
   //    (In dev with no checkout, SOURCE_REPO_ROOT won't pass isHermesSourceRoot.)
+  //    `source` — a git checkout outside a managed install root — is the
+  //    install method Python's runtime_tree reports for such a tree.
   if (!IS_PACKAGED && isHermesSourceRoot(SOURCE_REPO_ROOT)) {
-    const backend = createPythonBackend(SOURCE_REPO_ROOT, `Hermes source at ${SOURCE_REPO_ROOT}`, backendArgs)
+    const backend = createPythonBackend(SOURCE_REPO_ROOT, `Hermes source at ${SOURCE_REPO_ROOT}`, backendArgs, { source: 'source' })
 
     if (backend) {
       return backend
@@ -4419,6 +4427,7 @@ function resolveHermesBackend(backendArgs) {
           bootstrap: false,
           env: {},
           kind: 'command',
+          source: 'path',
           shell: shellForProbe
         }
       }
@@ -4451,6 +4460,7 @@ function resolveHermesBackend(backendArgs) {
         args: ['-m', 'hermes_cli.main', ...backendArgs],
         bootstrap: false,
         env: {},
+        source: 'system-python',
         shell: false
       }
     }
@@ -4475,6 +4485,7 @@ function resolveHermesBackend(backendArgs) {
     args: backendArgs,
     bootstrap: true,
     env: {},
+    source: 'bootstrap',
     shell: false,
     // Hints for the bootstrap runner / UI layer:
     activeRoot: ACTIVE_HERMES_ROOT,
@@ -8913,12 +8924,12 @@ async function startHermes() {
 
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
     rememberLog(`Starting Hermes backend via ${backend.label}`)
-    // About → version details reads this: which tree the backend actually
-    // runs from is an install-axis fact users need when reporting issues.
+    // About → version details reads this: where the backend actually runs
+    // from is an install-axis fact users need when reporting issues. The
+    // RuntimeSource is populated once the backend has been resolved, so
+    // external builds report it only after launch.
     activeBackendInfo = {
-      label: backend.label || null,
-      embedded: backend.embedded === true,
-      root: backend.root || null
+      source: backend.source || null
     }
 
     const hermesProcess = spawn(
@@ -12388,11 +12399,13 @@ ipcMain.handle('hermes:version', () => ({
   nodeVersion: process.versions.node,
   platform: process.platform,
   hermesRoot: resolveUpdateRoot(),
-  // The two install axes (About renders them as Artifact / Runtime):
-  // what this build carries, and which tree the backend runs from.
-  artifact: INSTALL_STAMP?.payload === true ? 'embedded' : 'external',
-  payloadTag: INSTALL_STAMP?.payload === true ? (INSTALL_STAMP.tag ?? null) : null,
-  runtime: activeBackendInfo
+  // The install axis (About renders it as Artifact / Runtime): what this
+  // build carries, and where the backend runs from. Embedded artifacts
+  // always run their payload; external builds report the resolved runtime
+  // source only after the backend has been spawned.
+  hermesRuntime: INSTALL_STAMP?.payload === true
+    ? { type: 'embedded' }
+    : { type: 'external', source: activeBackendInfo?.source ?? undefined }
 }))
 
 // ===========================================================================

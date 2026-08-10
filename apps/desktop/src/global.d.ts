@@ -388,13 +388,40 @@ export interface DesktopVersionInfo {
   hermesRoot: string
   distribution?: 'desktop-app' | 'docker' | 'nix'
   source?: 'build' | 'ci' | 'docker' | 'fallback' | 'git' | 'local' | 'nix' | 'unknown'
-  /** What this build carries: an embedded runtime, or nothing (external). */
-  artifact?: 'embedded' | 'external'
-  /** The release the embedded payload was staged from (embedded only). */
-  payloadTag?: string | null
-  /** The backend this session actually spawned. Null before first spawn. */
-  runtime?: { label: string | null; embedded: boolean; root: string | null } | null
+  /**
+   * Where an external build's backend came from. Mirrors the resolution
+   * ladder in `resolveHermesBackend()`; the tree-classification values
+   * (`git` / `source` / sealed stewards) are the Python install methods from
+   * `hermes_cli.runtime_tree.install_method()` — the desktop does not
+   * re-derive them.
+   */
+  hermesRuntime?: { type: 'embedded' } | { type: 'external'; source?: RuntimeSource }
 }
+
+/**
+ * What this build carries: an embedded runtime, or external.
+ * `source` is populated for external builds only after the backend has been
+ * spawned — before the first launch it is absent.
+ *
+ * Values follow `install_method()` in `hermes_cli/runtime_tree.py`: `git`
+ * (a checkout at a managed install root — `$HERMES_HOME/hermes-agent`),
+ * `source` (a git checkout anywhere else), or a sealed-tree steward
+ * (`docker` / `nix` / `desktop-app`). The Electron-only rungs — an explicit
+ * `HERMES_DESKTOP_HERMES_ROOT` override, an existing `hermes` on PATH, the
+ * pip-installed module on system Python, or the first-launch bootstrap — are
+ * resolution facts the backend cannot see, so they are named here.
+ */
+export type RuntimeSource =
+  | 'hermes-root' // HERMES_DESKTOP_HERMES_ROOT — explicit developer override (Electron-only)
+  | 'git' // checkout at a managed install root, $HERMES_HOME/hermes-agent (Python install_method)
+  | 'source' // a git checkout anywhere else — somebody's working tree (Python install_method)
+  | 'docker' // sealed tree stewarded by Docker (Python install_method)
+  | 'nix' // sealed tree stewarded by Nix (Python install_method)
+  | 'desktop-app' // sealed tree stewarded by the desktop bundle (Python install_method)
+  | 'unknown' // no stamp, no .git — provenance cannot be told (Python install_method)
+  | 'path' // an existing `hermes` CLI found on PATH (Electron-only)
+  | 'system-python' // pip-installed hermes_cli importable from system Python (Electron-only)
+  | 'bootstrap' // nothing usable yet; the first-launch installer runs (Electron-only)
 
 export type DesktopUninstallMode = 'data' | 'full' | 'gui' | 'lite'
 

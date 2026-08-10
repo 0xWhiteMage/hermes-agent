@@ -17,26 +17,26 @@ const baseVersion: DesktopVersionInfo = {
 afterEach(cleanup)
 
 describe('VersionDetails', () => {
-  it('labels a missing branch explicitly', () => {
+  it('omits the branch suffix when no branch is present', () => {
     render(
       <I18nProvider configClient={null} initialLocale="en">
-        <VersionDetails version={{ ...baseVersion, branch: null }} />
+        <VersionDetails version={{ ...baseVersion, source: 'ci', branch: null }} />
       </I18nProvider>
     )
 
-    expect(screen.getByText('Branch')).toBeTruthy()
-    expect(screen.getByText('No branch information')).toBeTruthy()
+    expect(screen.getByText('Source')).toBeTruthy()
+    expect(screen.getByText('CI')).toBeTruthy()
+    expect(screen.queryByText('No branch information')).toBeNull()
   })
 
-  it('preserves a literal branch named unknown', () => {
+  it('shows a literal branch named unknown inline', () => {
     render(
       <I18nProvider configClient={null} initialLocale="en">
-        <VersionDetails version={{ ...baseVersion, branch: 'unknown' }} />
+        <VersionDetails version={{ ...baseVersion, source: 'ci', branch: 'unknown' }} />
       </I18nProvider>
     )
 
-    expect(screen.getByText('unknown')).toBeTruthy()
-    expect(screen.queryByText('No branch information')).toBeNull()
+    expect(screen.getByText('CI (unknown)')).toBeTruthy()
   })
 
   it('shows the Nix source and distribution from the stamp', () => {
@@ -69,42 +69,39 @@ describe('VersionDetails', () => {
         <VersionDetails
           version={{
             ...baseVersion,
-            artifact: 'embedded',
             distribution: 'desktop-app',
-            payloadTag: 'v0.20.0',
-            runtime: { label: 'Hermes embedded runtime (v0.20.0)', embedded: true, root: '/Applications/Hermes.app/…/repo' }
+            hermesRuntime: { type: 'embedded' }
           }}
         />
       </I18nProvider>
     )
 
     expect(screen.getByText('Artifact')).toBeTruthy()
-    expect(screen.getByText('Embedded runtime (v0.20.0)')).toBeTruthy()
+    expect(screen.getByText('Embedded runtime')).toBeTruthy()
     expect(screen.getByText('Runtime')).toBeTruthy()
     expect(screen.getByText('The runtime inside this app')).toBeTruthy()
   })
 
-  it('shows the checkout path when an external build runs a machine runtime', () => {
+  it('shows the runtime source when an external build runs a machine runtime', () => {
     render(
       <I18nProvider configClient={null} initialLocale="en">
         <VersionDetails
           version={{
             ...baseVersion,
-            artifact: 'external',
-            runtime: { label: 'Hermes at /home/u/.hermes/hermes-agent', embedded: false, root: '/home/u/.hermes/hermes-agent' }
+            hermesRuntime: { type: 'external', source: 'git' }
           }}
         />
       </I18nProvider>
     )
 
     expect(screen.getByText('External (uses the machine runtime)')).toBeTruthy()
-    expect(screen.getByText('/home/u/.hermes/hermes-agent')).toBeTruthy()
+    expect(screen.getByText('git')).toBeTruthy()
   })
 
   it('omits the runtime row before the first backend spawn', () => {
     render(
       <I18nProvider configClient={null} initialLocale="en">
-        <VersionDetails version={{ ...baseVersion, artifact: 'embedded', runtime: null }} />
+        <VersionDetails version={{ ...baseVersion, hermesRuntime: { type: 'external' } }} />
       </I18nProvider>
     )
 

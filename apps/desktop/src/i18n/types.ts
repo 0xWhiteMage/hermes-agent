@@ -1842,18 +1842,14 @@ export interface Translations {
     versionDetailsTitle: string
     versionDetailsBody: string
     versionDetailsVersion: string
-    versionDetailsBaseVersion: string
-    versionDetailsBranch: string
-    versionDetailsNoBranchInfo: string
     versionDetailsCommit: string
     versionDetailsSource: string
     versionDetailsDistribution: string
     versionDetailsDistributionDesktop: string
     versionDetailsArtifact: string
-    versionDetailsArtifactEmbedded: (tag: string | null) => string
+    versionDetailsArtifactEmbedded: string
     versionDetailsArtifactExternal: string
     versionDetailsRuntime: string
-    versionDetailsRuntimeEmbedded: string
     versionDetailsDirty: string
     versionDetailsDirtyUnknown: string
     connectionRetry: string

@@ -21,14 +21,12 @@ export function VersionDetails({ version }: { version: DesktopVersionInfo }) {
     : null
 
   const artifact =
-    version.artifact === 'embedded' ? u.versionDetailsArtifactEmbedded(version.payloadTag ?? null)
-    : version.artifact === 'external' ? u.versionDetailsArtifactExternal
+    version.hermesRuntime?.type === 'embedded' ? u.versionDetailsArtifactEmbedded
+    : version.hermesRuntime?.type === 'external' ? u.versionDetailsArtifactExternal
     : null
 
-  const runtime = version.runtime
-    ? version.runtime.embedded
-      ? u.versionDetailsRuntimeEmbedded
-      : (version.runtime.root ?? version.runtime.label ?? null)
+  const runtime =
+     version.hermesRuntime?.type === 'external' ? (version.hermesRuntime.source ?? null)
     : null
 
   return (
@@ -36,16 +34,6 @@ export function VersionDetails({ version }: { version: DesktopVersionInfo }) {
       <div className="flex justify-between gap-4">
         <dt className="text-muted-foreground">{u.versionDetailsVersion}</dt>
         <dd>v{version.appVersion}</dd>
-      </div>
-      {version.baseVersion && (
-        <div className="flex justify-between gap-4">
-          <dt className="text-muted-foreground">{u.versionDetailsBaseVersion}</dt>
-          <dd>{version.baseVersion}</dd>
-        </div>
-      )}
-      <div className="flex justify-between gap-4">
-        <dt className="text-muted-foreground">{u.versionDetailsBranch}</dt>
-        <dd className="break-all text-right">{version.branch ?? u.versionDetailsNoBranchInfo}</dd>
       </div>
       {version.commit && (
         <div className="flex justify-between gap-4">
@@ -61,7 +49,7 @@ export function VersionDetails({ version }: { version: DesktopVersionInfo }) {
       {source && (
         <div className="flex justify-between gap-4">
           <dt className="text-muted-foreground">{u.versionDetailsSource}</dt>
-          <dd>{source}</dd>
+          <dd>{source}{version.branch && version.branch !== 'main' ? ` (${version.branch})` : ''}</dd>
         </div>
       )}
       {distribution && (
