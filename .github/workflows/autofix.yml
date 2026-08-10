@@ -135,19 +135,46 @@ jobs:
             # Empty patch signals "nothing to do" to apply-patch.
             : > autofix.patch
           else
-            git diff -- . "${EXCLUDES[@]}" > js-fix.patch
+            git diff -- . "${EXCLUDES[@]}" > autofix.patch
             echo "has-fixes=true" >> "$GITHUB_OUTPUT"
             echo "Patch size: $(wc -c < autofix.patch) bytes"
 
-            # Reject patches that touch anything outside JS/TS/JSON sources.
-            # `npm run fix` should only ever modify those; anything else means
-            # eslint/prettier or a plugin went rogue and we refuse to ship it.
-            BAD=$(git diff --name-only -- . "${EXCLUDES[@]}" | grep -vE '\.(js|cjs|mjs|ts|tsx|json)$' || true)
-            if [ -n "$BAD" ]; then
-              echo "::error::Refusing to upload patch — touches disallowed files:"
-              echo "$BAD"
-              exit 1
-            fi
+            # Reject patches that touch anything outside the allowed set:
+            # JS/TS/JSON sources (npm run fix), .py (ruff check --fix), plus
+            # the union of registered lint fix_touches globs. Anything else
+            # means a fixer or plugin went rogue and we refuse to ship it.
+            # (Per-lint glob attribution already ran inside run.py --fix
+            # above; the EXCLUDES pathspec keeps review-gated files out of
+            # the patch entirely.)
+            git diff --name-only -- . "${EXCLUDES[@]}" | python3 -c '
+          import fnmatch, os, subprocess, sys
+
+          js_exts = (".js", ".cjs", ".mjs", ".ts", ".tsx", ".json")
+          # .py: ruff check --fix output. The .json allowance is for
+          # sources npm run fix formats — NOT lockfiles. A bot-authored,
+          # auto-merged lockfile rewrite is exactly the shape of a
+          # supply-chain attack, so lockfiles fall through to the default
+          # rejection like any other unallowed path.
+          fixer_exts = js_exts + (".py",)
+          not_js_sources = {"package-lock.json", "npm-shrinkwrap.json"}
+          lint_globs = subprocess.run(
+              [sys.executable, "scripts/lints/run.py", "--print-fix-globs"],
+              capture_output=True, text=True, encoding="utf-8", check=True,
+          ).stdout.split()
+
+          bad = []
+          for path in (p.strip() for p in sys.stdin if p.strip()):
+              if path.endswith(fixer_exts) and os.path.basename(path) not in not_js_sources:
+                  continue
+              if any(fnmatch.fnmatch(path, g) for g in lint_globs):
+                  continue
+              bad.append(path)
+
+          if bad:
+              print("::error::Refusing to upload patch — touches disallowed files:")
+              print("\n".join(bad))
+              sys.exit(1)
+          '
           fi
 
       - name: Upload patch artifact
