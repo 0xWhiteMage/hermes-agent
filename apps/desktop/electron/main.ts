@@ -12743,6 +12743,7 @@ function registerDeepLinkProtocol() {
 const _gotSingleInstanceLock = app.requestSingleInstanceLock()
 
 if (!_gotSingleInstanceLock) {
+  console.log(`[hermes] another instance of the app is already running (app name "${APP_NAME}"). exiting.`)
   app.quit()
 } else {
   app.on('second-instance', (_event, argv) => {
