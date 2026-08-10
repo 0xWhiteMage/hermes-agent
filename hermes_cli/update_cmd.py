@@ -1273,6 +1273,19 @@ def _update_via_zip(args):
             "Post-update state.db integrity check (zip path) failed: %s", exc
         )
 
+    # Record the new tree as bootstrapped (see the git-path comment). The
+    # zip path replaced the tree wholesale, so identity comes from the
+    # freshly-extracted checkout/stamp.
+    try:
+        from hermes_cli.boot_bootstrap import current_install_identity, write_record
+
+        _boot_identity = current_install_identity(_m().PROJECT_ROOT)
+        if _boot_identity:
+            write_record(_m().PROJECT_ROOT, "home", _boot_identity, {"source": "hermes-update-zip"})
+            write_record(_m().PROJECT_ROOT, "machine", _boot_identity, {"source": "hermes-update-zip"})
+    except Exception as exc:
+        logger.debug("Could not write boot-bootstrap records (zip path): %s", exc)
+
     print()
     if node_failures:
         print(
@@ -5344,6 +5357,31 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as exc:
             # Never let the cron safety net break an otherwise-good update.
             logger.debug("Cron jobs auto-restore check failed: %s", exc)
+
+        # Record this checkout's commit as bootstrapped for the active home
+        # AND the machine: `hermes update` just ran the same user-state work
+        # inline (config migration, skills sync, state.db guard, cua-driver
+        # refresh below), so the next boot's bootstrap check must skip.
+        # Records are an optimization — failure to write only costs one
+        # redundant (idempotent) slow path at next boot.
+        try:
+            from hermes_cli.boot_bootstrap import (
+                current_install_identity,
+                write_record,
+            )
+
+            _boot_identity = current_install_identity(_m().PROJECT_ROOT)
+            if _boot_identity:
+                write_record(
+                    _m().PROJECT_ROOT, "home", _boot_identity,
+                    {"source": "hermes-update"},
+                )
+                write_record(
+                    _m().PROJECT_ROOT, "machine", _boot_identity,
+                    {"source": "hermes-update"},
+                )
+        except Exception as exc:
+            logger.debug("Could not write boot-bootstrap records: %s", exc)
 
         print()
         if node_failures:
