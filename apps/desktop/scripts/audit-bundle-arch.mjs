@@ -175,6 +175,13 @@ function* walkFiles(dir) {
  * under Hermes.app/Contents/Resources/). The lib segment is `Lib` on
  * Windows and `lib/python3.11` elsewhere; both separators appear in
  * relative paths depending on the build host.
+ *
+ * PortableGit's mingw64/bin and mingw64/lib ship Git Credential Manager
+ * — a .NET app whose dependencies (Avalonia.*, Atlassian.*, etc.) are
+ * AnyCPU/MSIL assemblies. Their PE machine field is 0x14c (ia32) because
+ * .NET assemblies are format-neutral: the CLR JITs them to the native
+ * arch at load time. They run correctly on x64 and arm64 Windows; the
+ * ia32 PE header is a .NET convention, not a wrong-arch bug.
  */
 const EXEMPT_PATTERNS = [
   /agent-payload[/\\]python[/\\]cpython-[^/\\]+[/\\]lib([/\\]python[\d.]+)?[/\\]site-packages[/\\](setuptools|pip[/\\]_vendor[/\\]distlib)[/\\]/i,
@@ -183,6 +190,8 @@ const EXEMPT_PATTERNS = [
   // installs). It is ia32 BY DESIGN: one binary that runs on every
   // Windows arch through the always-present x86 emulation layer.
   /^resources[/\\]elevate\.exe$/i,
+  // PortableGit mingw64 .NET assemblies — see comment above.
+  /agent-payload[/\\]git[/\\]mingw64[/\\](bin|lib)[/\\]/i,
 ]
 
 export function isExemptPath(relPath) {
