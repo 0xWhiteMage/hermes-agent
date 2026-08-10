@@ -626,8 +626,6 @@ export const zhHant = defineLocale({
       updateReady: count => `新更新已就緒（包含 ${count} 項變更）。`,
       lastChecked: age => `上次檢查：${age}`,
       justNowSuffix: ' · 剛剛',
-      automaticUpdates: '自動更新',
-      automaticUpdatesDesc: 'Hermes 會在背景自動檢查更新，並在有可用更新時通知你。',
       never: '從未',
       justNow: '剛剛',
       minAgo: count => `${count} 分鐘前`,

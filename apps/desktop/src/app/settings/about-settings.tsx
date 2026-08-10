@@ -173,11 +173,6 @@ export function AboutSettings() {
 
         {version && <VersionDetails version={version} />}
 
-        <ListRow
-          description={a.automaticUpdatesDesc}
-          title={a.automaticUpdates}
-        />
-
         <UninstallSection />
       </div>
     </SettingsContent>

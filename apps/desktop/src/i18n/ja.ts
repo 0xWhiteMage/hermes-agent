@@ -639,8 +639,6 @@ export const ja = defineLocale({
       updateReady: count => `新しい更新の準備ができました (${count} 件の変更を含みます)。`,
       lastChecked: age => `前回確認: ${age}`,
       justNowSuffix: ' · たった今',
-      automaticUpdates: '自動更新',
-      automaticUpdatesDesc: 'Hermes はバックグラウンドで自動的に更新を確認し、利用可能になったら通知します。',
       never: '未確認',
       justNow: 'たった今',
       minAgo: count => `${count} 分前`,

@@ -763,8 +763,6 @@ export const zh: Translations = {
       updateReady: count => `已准备好新更新 (包含 ${count} 项更改)。`,
       lastChecked: age => `上次检查:${age}`,
       justNowSuffix: ' · 刚刚',
-      automaticUpdates: '自动更新',
-      automaticUpdatesDesc: 'Hermes 会在后台自动检查更新，并在有可用更新时通知你。',
       never: '从未',
       justNow: '刚刚',
       minAgo: count => `${count} 分钟前`,

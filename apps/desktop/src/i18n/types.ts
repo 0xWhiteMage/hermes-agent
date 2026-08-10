@@ -451,8 +451,6 @@ export interface Translations {
       updateReady: (count: number) => string
       lastChecked: (age: string) => string
       justNowSuffix: string
-      automaticUpdates: string
-      automaticUpdatesDesc: string
       never: string
       justNow: string
       minAgo: (count: number) => string
