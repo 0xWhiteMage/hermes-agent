@@ -295,7 +295,24 @@ function stageGit(target, outDir) {
   // PortableGit is a self-extracting 7z archive. Invoke it with
   // `-o<target> -y` (silent) to extract to gitDir. No 7z install required.
   const extractProc = spawnSync(tmpFile, [`-o${gitDir}`, "-y"], { stdio: "inherit" })
-  fs.rmSync(tmpFile, { force: true })
+  // Windows: the 7z self-extractor process has exited but the OS may
+  // not have released the file handle yet — rmSync EPERM is the classic
+  // post-exit race. Retry a few times before giving up.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      fs.rmSync(tmpFile, { force: true })
+      break
+    } catch {
+      if (attempt === 4) {
+        // Last attempt failed — the file is in the build dir which gets
+        // wiped on the next run anyway, so log and continue rather than
+        // failing the whole build over a temp file.
+        console.warn(`[stage-agent-payloads] could not delete ${tmpFile} after 5 attempts — ignoring`)
+      }
+      // Brief pause before retrying.
+      Atomics.wait(new Int32Array(1), 0, 0, 200)
+    }
+  }
   if (extractProc.status !== 0) {
     throw new Error(`git: PortableGit extraction failed (exit ${extractProc.status})`)
   }
