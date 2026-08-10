@@ -1843,12 +1843,11 @@ export interface Translations {
     versionDetailsBody: string
     versionDetailsVersion: string
     versionDetailsCommit: string
-    versionDetailsSource: string
+    versionDetailsBuildOrigin: string
     versionDetailsDistribution: string
     versionDetailsDistributionDesktop: string
-    versionDetailsArtifact: string
-    versionDetailsArtifactEmbedded: string
-    versionDetailsArtifactExternal: string
+    versionDetailsRuntimeEmbedded: string
+    versionDetailsRuntimeExternal: string
     versionDetailsRuntime: string
     versionDetailsDirty: string
     versionDetailsDirtyUnknown: string

@@ -30,13 +30,10 @@ export function VersionDetails({ version }: { version: DesktopVersionInfo }) {
     : version.distribution === 'desktop-app' ? u.versionDetailsDistributionDesktop
     : null
 
-  const artifact =
-    version.hermesRuntime?.type === 'embedded' ? u.versionDetailsArtifactEmbedded
-    : version.hermesRuntime?.type === 'external' ? u.versionDetailsArtifactExternal
-    : null
-
   const runtime =
-    version.hermesRuntime?.type === 'external' && version.hermesRuntime.source ? runtimeSourceLabel(version.hermesRuntime.source)
+    version.hermesRuntime?.type === 'embedded' ? u.versionDetailsRuntimeEmbedded
+    : version.hermesRuntime?.type === 'external' && version.hermesRuntime.source ? runtimeSourceLabel(version.hermesRuntime.source)
+    : version.hermesRuntime?.type === 'external' ? u.versionDetailsRuntimeExternal
     : null
 
   return (
@@ -58,7 +55,7 @@ export function VersionDetails({ version }: { version: DesktopVersionInfo }) {
       )}
       {source && (
         <div className="flex justify-between gap-4">
-          <dt className="text-muted-foreground">{u.versionDetailsSource}</dt>
+          <dt className="text-muted-foreground">{u.versionDetailsBuildOrigin}</dt>
           <dd>{source}{version.branch && version.branch !== 'main' ? ` (${version.branch})` : ''}</dd>
         </div>
       )}
@@ -66,12 +63,6 @@ export function VersionDetails({ version }: { version: DesktopVersionInfo }) {
         <div className="flex justify-between gap-4">
           <dt className="text-muted-foreground">{u.versionDetailsDistribution}</dt>
           <dd>{distribution}</dd>
-        </div>
-      )}
-      {artifact && (
-        <div className="flex justify-between gap-4">
-          <dt className="text-muted-foreground">{u.versionDetailsArtifact}</dt>
-          <dd className="text-right">{artifact}</dd>
         </div>
       )}
       {runtime && (

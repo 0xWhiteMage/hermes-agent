@@ -24,7 +24,7 @@ describe('VersionDetails', () => {
       </I18nProvider>
     )
 
-    expect(screen.getByText('Source')).toBeTruthy()
+    expect(screen.getByText('Build Origin')).toBeTruthy()
     expect(screen.getByText('CI')).toBeTruthy()
     expect(screen.queryByText('No branch information')).toBeNull()
   })
@@ -46,7 +46,7 @@ describe('VersionDetails', () => {
       </I18nProvider>
     )
 
-    expect(screen.getByText('Source')).toBeTruthy()
+    expect(screen.getByText('Build Origin')).toBeTruthy()
     expect(screen.getAllByText('Nix')).toHaveLength(2)
     expect(screen.getByText('Distribution')).toBeTruthy()
   })
@@ -63,7 +63,7 @@ describe('VersionDetails', () => {
     expect(screen.getByText('Docker')).toBeTruthy()
   })
 
-  it('shows the install axis for an embedded build running its payload', () => {
+  it('shows the runtime row for an embedded build running its payload', () => {
     render(
       <I18nProvider configClient={null} initialLocale="en">
         <VersionDetails
@@ -76,11 +76,10 @@ describe('VersionDetails', () => {
       </I18nProvider>
     )
 
-    expect(screen.getByText('Artifact')).toBeTruthy()
+    // The merged Runtime row names the payload the build always runs.
+    expect(screen.getByText('Runtime')).toBeTruthy()
     expect(screen.getByText('Embedded runtime')).toBeTruthy()
-    // The Artifact row already names the embedded runtime; no separate
-    // Runtime row is needed for a payload the build always runs.
-    expect(screen.queryByText('Runtime')).toBeNull()
+    expect(screen.queryByText('Artifact')).toBeNull()
   })
 
   it('shows the runtime source with its location when an external build runs a machine runtime', () => {
@@ -95,18 +94,20 @@ describe('VersionDetails', () => {
       </I18nProvider>
     )
 
-    expect(screen.getByText('External (uses the machine runtime)')).toBeTruthy()
+    expect(screen.getByText('Runtime')).toBeTruthy()
     expect(screen.getByText('git (/home/u/.hermes/hermes-agent)')).toBeTruthy()
+    // The source row replaces the generic external label once a source resolves.
+    expect(screen.queryByText('External (uses the machine runtime)')).toBeNull()
   })
 
-  it('omits the runtime row before the first backend spawn', () => {
+  it('shows the generic external label before the first backend spawn', () => {
     render(
       <I18nProvider configClient={null} initialLocale="en">
         <VersionDetails version={{ ...baseVersion, hermesRuntime: { type: 'external' } }} />
       </I18nProvider>
     )
 
-    expect(screen.getByText('Artifact')).toBeTruthy()
-    expect(screen.queryByText('Runtime')).toBeNull()
+    expect(screen.getByText('Runtime')).toBeTruthy()
+    expect(screen.getByText('External (uses the machine runtime)')).toBeTruthy()
   })
 })
