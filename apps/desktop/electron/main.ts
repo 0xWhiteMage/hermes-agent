@@ -3045,15 +3045,27 @@ async function applyUpdates(opts = {}) {
   }
 
   // Bundled installs: download the new app from the GitHub Releases feed,
-  // then quit and install. After the relaunch, the marker-tag mismatch
-  // triggers the offline agent rebuild — no git, no venv mutation while
-  // the app runs, and the Windows setup-binary handoff is unnecessary.
+  // then quit and install. The swapped-in app carries the new runtime in
+  // its own resources — no git, no venv mutation while the app runs, and
+  // the Windows setup-binary handoff is unnecessary. Before quitAndInstall,
+  // tear down the backend trees on Windows: a surviving backend grandchild
+  // (a pty shell, an MCP server) holds executables inside the install
+  // directory the installer is about to replace — the same lock class the
+  // git path handles in releaseBackendLockForUpdate.
   if (bundledUpdaterActive()) {
     updateInFlight = true
 
     try {
-      return await applyAppUpdate(percent =>
-        emitUpdateProgress({ stage: 'download', message: 'Downloading the app update…', percent })
+      return await applyAppUpdate(
+        percent => emitUpdateProgress({ stage: 'download', message: 'Downloading the app update…', percent }),
+        () => {
+          if (IS_WINDOWS) {
+            stopBackendTreesForUpdate(backendConnectionState.getProcess(), {
+              forceKillProcessTree,
+              stopAllPoolBackends
+            })
+          }
+        }
       )
     } finally {
       updateInFlight = false
@@ -3990,11 +4002,6 @@ function writeBootstrapMarker(payload) {
     schemaVersion: BOOTSTRAP_MARKER_SCHEMA_VERSION,
     pinnedCommit: payload.pinnedCommit || null,
     pinnedBranch: payload.pinnedBranch || null,
-    // Bundled builds: the payload tag that this bootstrap materialized. The
-    // value is null on thin and network bootstraps. At launch, a comparison
-    // against the stamp tag triggers offline re-materialization after an
-    // app update.
-    pinnedTag: payload.pinnedTag || null,
     completedAt: new Date().toISOString(),
     desktopVersion: app.getVersion()
   }
