@@ -496,6 +496,8 @@ function loadInstallStamp() {
   for (const p of candidates) {
     try {
       const raw = fs.readFileSync(p, 'utf8')
+
+    try {
       const parsed = JSON.parse(raw)
 
       // A stamp without a usable commit is still a stamp: a dirty Nix build
@@ -534,7 +536,10 @@ function loadInstallStamp() {
       console.warn(`[hermes] install-stamp.json found at ${p} , but parsing failed with ${e}`)
       // Either ENOENT or malformed JSON; try the next candidate
     }
+  } catch(e) {
+    // no install stamp file at this path
   }
+}
 
   return null
 }
