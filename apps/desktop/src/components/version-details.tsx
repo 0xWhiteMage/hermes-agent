@@ -21,7 +21,6 @@ function runtimeSourceLabel(source: RuntimeSource): string {
 export function VersionDetails({ version }: { version: DesktopVersionInfo }) {
   const { t } = useI18n()
   const u = t.updates
-  const unknownDistance = version.dirty && version.distance == null
   const source = version.source === 'ci' ? 'CI' : version.source ? version.source[0].toUpperCase() + version.source.slice(1) : null
 
   const distribution =
@@ -40,17 +39,23 @@ export function VersionDetails({ version }: { version: DesktopVersionInfo }) {
     <dl className="grid gap-2 rounded-lg border border-border/70 bg-muted/20 px-3 py-3 text-sm">
       <div className="flex justify-between gap-4">
         <dt className="text-muted-foreground">{u.versionDetailsVersion}</dt>
-        <dd>v{version.appVersion}</dd>
+        <dd>
+          v{version.appVersion}
+          {version.dirty && <span className="text-warning"> (!)</span>}
+        </dd>
       </div>
       {version.commit && (
         <div className="flex justify-between gap-4">
           <dt className="text-muted-foreground">{u.versionDetailsCommit}</dt>
-          <ExternalLink
-            className="break-all font-mono text-xs"
-            href={`https://github.com/NousResearch/hermes-agent/commit/${version.commit}`}
-          >
-            {version.commit.slice(0, 14)}
-          </ExternalLink>
+          <dd className="break-all text-right">
+            <ExternalLink
+              className="break-all font-mono text-xs"
+              href={`https://github.com/NousResearch/hermes-agent/commit/${version.commit}`}
+            >
+              {version.commit.slice(0, 14)}
+            </ExternalLink>
+            {version.dirty && <span className="text-warning"> {u.versionDetailsUncommittedChanges}</span>}
+          </dd>
         </div>
       )}
       {source && (
@@ -70,9 +75,6 @@ export function VersionDetails({ version }: { version: DesktopVersionInfo }) {
           <dt className="text-muted-foreground">{u.versionDetailsRuntime}</dt>
           <dd className="break-all text-right">{runtime}</dd>
         </div>
-      )}
-      {version.dirty && (
-        <div className="text-warning">{unknownDistance ? u.versionDetailsDirtyUnknown : u.versionDetailsDirty}</div>
       )}
     </dl>
   )

@@ -1849,8 +1849,7 @@ export interface Translations {
     versionDetailsRuntimeEmbedded: string
     versionDetailsRuntimeExternal: string
     versionDetailsRuntime: string
-    versionDetailsDirty: string
-    versionDetailsDirtyUnknown: string
+    versionDetailsUncommittedChanges: string
     connectionRetry: string
     latestBody: string
     latestBodyBackend: string
