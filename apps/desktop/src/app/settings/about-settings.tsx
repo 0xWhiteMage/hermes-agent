@@ -75,6 +75,7 @@ export function AboutSettings() {
 
   let statusLine: string
   let statusTone: 'idle' | 'available' | 'error' = 'idle'
+  let statusError: string | undefined = undefined
 
   if (!supported) {
     statusLine = status?.message ?? a.cantUpdate
@@ -82,6 +83,7 @@ export function AboutSettings() {
   } else if (status?.error) {
     statusLine = a.cantReach
     statusTone = 'error'
+    statusError = status.message
   } else if (applying) {
     statusLine = a.installing
     statusTone = 'available'
@@ -125,6 +127,7 @@ export function AboutSettings() {
             )}
             <div className="min-w-0">
               <p className="font-medium">{statusLine}</p>
+              {statusError && <p className="mt-1 text-xs text-muted-foreground">{statusError}</p>}
               <p className="mt-1 text-xs text-muted-foreground">
                 {a.lastChecked(relativeTime(status?.fetchedAt, a))}
                 {justChecked && !checking ? a.justNowSuffix : ''}
