@@ -1773,6 +1773,18 @@ function directoryExists(filePath) {
   }
 }
 
+// A linked worktree has `.git` as a FILE (`gitdir: <path>` pointer), not a
+// directory — git accepts both, so update-root detection must too.
+function isGitCheckout(root) {
+  try {
+    const stat = fs.statSync(path.join(root, '.git'))
+
+    return stat.isDirectory() || stat.isFile()
+  } catch {
+    return false
+  }
+}
+
 // --- in-app update mutual exclusion (#50238) -------------------------------
 // The Tauri updater writes HERMES_HOME/.hermes-update-in-progress for the whole
 // duration of an `--update` run (see update.rs UpdateMarkerGuard). If the user
@@ -2447,7 +2459,7 @@ function resolveUpdateRoot() {
     isHermesSourceRoot(ACTIVE_HERMES_ROOT) ? ACTIVE_HERMES_ROOT : null
   ].filter(Boolean)
 
-  return candidates.find(c => directoryExists(path.join(c, '.git'))) || candidates[0] || ACTIVE_HERMES_ROOT
+  return candidates.find(c => isGitCheckout(c)) || candidates[0] || ACTIVE_HERMES_ROOT
 }
 
 function runGit(args, options: any = {}): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -2534,7 +2546,7 @@ async function resolveHealedBranch(updateRoot, branch) {
 async function checkStableChannelUpdates() {
   const updateRoot = resolveUpdateRoot()
 
-  if (!directoryExists(path.join(updateRoot, '.git'))) {
+  if (!isGitCheckout(updateRoot)) {
     return {
       supported: false,
       reason: 'not-a-git-checkout',
@@ -2623,9 +2635,8 @@ async function checkUpdates() {
 
   const updateRoot = resolveUpdateRoot()
   let { branch } = readDesktopUpdateConfig()
-  const gitDir = path.join(updateRoot, '.git')
 
-  if (!directoryExists(gitDir)) {
+  if (!isGitCheckout(updateRoot)) {
     return {
       supported: false,
       reason: 'not-a-git-checkout',
@@ -3296,7 +3307,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
   const updateRoot = resolveUpdateRoot()
   const { branch: configuredBranch } = readDesktopUpdateConfig()
 
-  const branch = directoryExists(path.join(updateRoot, '.git'))
+  const branch = isGitCheckout(updateRoot)
     ? await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
     : configuredBranch || DEFAULT_UPDATE_BRANCH
 
