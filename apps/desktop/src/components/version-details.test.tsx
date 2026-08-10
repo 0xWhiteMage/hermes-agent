@@ -63,7 +63,7 @@ describe('VersionDetails', () => {
     expect(screen.getByText('Docker')).toBeTruthy()
   })
 
-  it('shows both install axes for an embedded build running its payload', () => {
+  it('shows the install axis for an embedded build running its payload', () => {
     render(
       <I18nProvider configClient={null} initialLocale="en">
         <VersionDetails
@@ -78,24 +78,25 @@ describe('VersionDetails', () => {
 
     expect(screen.getByText('Artifact')).toBeTruthy()
     expect(screen.getByText('Embedded runtime')).toBeTruthy()
-    expect(screen.getByText('Runtime')).toBeTruthy()
-    expect(screen.getByText('The runtime inside this app')).toBeTruthy()
+    // The Artifact row already names the embedded runtime; no separate
+    // Runtime row is needed for a payload the build always runs.
+    expect(screen.queryByText('Runtime')).toBeNull()
   })
 
-  it('shows the runtime source when an external build runs a machine runtime', () => {
+  it('shows the runtime source with its location when an external build runs a machine runtime', () => {
     render(
       <I18nProvider configClient={null} initialLocale="en">
         <VersionDetails
           version={{
             ...baseVersion,
-            hermesRuntime: { type: 'external', source: 'git' }
+            hermesRuntime: { type: 'external', source: { type: 'git', root: '/home/u/.hermes/hermes-agent' } }
           }}
         />
       </I18nProvider>
     )
 
     expect(screen.getByText('External (uses the machine runtime)')).toBeTruthy()
-    expect(screen.getByText('git')).toBeTruthy()
+    expect(screen.getByText('git (/home/u/.hermes/hermes-agent)')).toBeTruthy()
   })
 
   it('omits the runtime row before the first backend spawn', () => {

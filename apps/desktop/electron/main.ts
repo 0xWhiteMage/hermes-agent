@@ -4212,7 +4212,7 @@ function createActiveBackend(backendArgs) {
     // `git` — a checkout at a managed install root — is the install method
     // Python's runtime_tree reports for the canonical $HERMES_HOME/hermes-agent
     // location. The desktop does not re-derive it.
-    source: 'git',
+    source: { type: 'git', root: ACTIVE_HERMES_ROOT },
     bootstrap: true,
     shell: false
   }
@@ -4278,7 +4278,7 @@ function createEmbeddedBackend(backendArgs) {
     env,
     root: repoRoot,
     embedded: true,
-    source: 'embedded',
+    source: { type: 'desktop-app', root: repoRoot },
     bootstrap: false,
     shell: false
   }
@@ -4319,7 +4319,7 @@ function resolveHermesBackend(backendArgs) {
   // 1. Explicit override -- HERMES_DESKTOP_HERMES_ROOT points at a developer
   //    checkout. Honor it as-is (no bootstrap; the user is driving).
   if (overrideRoot && isHermesSourceRoot(overrideRoot)) {
-    const backend = createPythonBackend(overrideRoot, `Hermes source at ${overrideRoot}`, backendArgs, { source: 'hermes-root' })
+    const backend = createPythonBackend(overrideRoot, `Hermes source at ${overrideRoot}`, backendArgs, { source: { type: 'hermes-root', root: overrideRoot } })
 
     if (backend) {
       return backend
@@ -4333,7 +4333,7 @@ function resolveHermesBackend(backendArgs) {
   //    `source` — a git checkout outside a managed install root — is the
   //    install method Python's runtime_tree reports for such a tree.
   if (!IS_PACKAGED && isHermesSourceRoot(SOURCE_REPO_ROOT)) {
-    const backend = createPythonBackend(SOURCE_REPO_ROOT, `Hermes source at ${SOURCE_REPO_ROOT}`, backendArgs, { source: 'source' })
+    const backend = createPythonBackend(SOURCE_REPO_ROOT, `Hermes source at ${SOURCE_REPO_ROOT}`, backendArgs, { source: { type: 'source', root: SOURCE_REPO_ROOT } })
 
     if (backend) {
       return backend
@@ -4427,7 +4427,7 @@ function resolveHermesBackend(backendArgs) {
           bootstrap: false,
           env: {},
           kind: 'command',
-          source: 'path',
+          source: { type: 'path', command: hermesCommand },
           shell: shellForProbe
         }
       }
@@ -4460,7 +4460,7 @@ function resolveHermesBackend(backendArgs) {
         args: ['-m', 'hermes_cli.main', ...backendArgs],
         bootstrap: false,
         env: {},
-        source: 'system-python',
+        source: { type: 'system-python', command: python },
         shell: false
       }
     }
@@ -4485,7 +4485,7 @@ function resolveHermesBackend(backendArgs) {
     args: backendArgs,
     bootstrap: true,
     env: {},
-    source: 'bootstrap',
+    source: { type: 'bootstrap' },
     shell: false,
     // Hints for the bootstrap runner / UI layer:
     activeRoot: ACTIVE_HERMES_ROOT,

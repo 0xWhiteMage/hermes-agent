@@ -1,6 +1,16 @@
-import type { DesktopVersionInfo } from '@/global'
+import type { DesktopVersionInfo, RuntimeSource } from '@/global'
 import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
+
+/**
+ * Human label for an external build's runtime source: the resolution rung
+ * plus the location it resolved from, when there is one.
+ */
+function runtimeSourceLabel(source: RuntimeSource): string {
+  const where = 'root' in source && source.root ? source.root : 'command' in source ? source.command : null
+
+  return where ? `${source.type} (${where})` : source.type
+}
 
 /**
  * Shared build-provenance display. Reads from `$desktopVersion`
@@ -26,7 +36,7 @@ export function VersionDetails({ version }: { version: DesktopVersionInfo }) {
     : null
 
   const runtime =
-     version.hermesRuntime?.type === 'external' ? (version.hermesRuntime.source ?? null)
+    version.hermesRuntime?.type === 'external' && version.hermesRuntime.source ? runtimeSourceLabel(version.hermesRuntime.source)
     : null
 
   return (
