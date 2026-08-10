@@ -34,6 +34,7 @@
 import { execSync, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 
 import { isMain } from "./utils.mjs"
@@ -287,7 +288,10 @@ function stageGit(target, outDir) {
   const archTag = target.arch === "arm64" ? "arm64" : "64-bit"
   const assetName = `PortableGit-${GIT_VER}-${archTag}.7z.exe`
   const downloadUrl = `https://github.com/git-for-windows/git/releases/download/${GIT_TAG}/${assetName}`
-  const tmpFile = path.join(outDir, `.download-${assetName}`)
+  // Download to os.tmpdir(), NOT inside outDir — a leftover .download-*
+  // file inside agent-payload/ gets copied into the bundle by
+  // electron-builder's extraResources and fails the arch audit.
+  const tmpFile = path.join(os.tmpdir(), `hermes-${assetName}`)
 
   console.log(`[stage-agent-payloads] downloading ${assetName} (Git for Windows ${GIT_VER})`)
   run("curl", ["-fsSL", "-o", tmpFile, downloadUrl])
@@ -297,11 +301,11 @@ function stageGit(target, outDir) {
   const extractProc = spawnSync(tmpFile, [`-o${gitDir}`, "-y"], { stdio: "inherit" })
   // Windows: the 7z self-extractor exits before the OS releases the file
   // handle — rmSync EPERM is the classic post-exit race. Node's built-in
-  // maxRetries handles this without a manual sleep loop.
+  // maxRetries handles this. The file is in tmpdir so even if cleanup
+  // fails it never lands in the payload.
   try {
     fs.rmSync(tmpFile, { force: true, maxRetries: 5, retryDelay: 200 })
   } catch {
-    // The file is in the build dir which is wiped on the next run.
     console.warn(`[stage-agent-payloads] could not delete ${tmpFile} — ignoring`)
   }
   if (extractProc.status !== 0) {
