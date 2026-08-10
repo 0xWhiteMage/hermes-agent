@@ -2255,7 +2255,7 @@ function findSystemPython() {
 function findGitBash() {
   return _findGitBash({
     isWindows: IS_WINDOWS,
-    env: process.env,
+    env: { ...process.env, HERMES_RESOURCES_PATH: process.resourcesPath },
     fileExists,
     findOnPath
   })
@@ -2313,6 +2313,13 @@ function resolveGitBinary() {
 
   const localAppData = process.env.LOCALAPPDATA || ''
   const candidates = []
+
+  // Bundled PortableGit inside the app's resources (embedded runtime).
+  // Checked first so a bundled app always uses its own git.
+  if (process.resourcesPath) {
+    candidates.push(path.join(process.resourcesPath, 'agent-payload', 'git', 'cmd', 'git.exe'))
+    candidates.push(path.join(process.resourcesPath, 'agent-payload', 'git', 'bin', 'git.exe'))
+  }
 
   if (localAppData) {
     candidates.push(path.join(localAppData, 'hermes', 'git', 'cmd', 'git.exe'))
@@ -4261,14 +4268,21 @@ function createEmbeddedBackend(backendArgs) {
     delete env.PYTHONPATH
   }
 
-  // The payload's own node and uv lead PATH so the backend's subprocesses
-  // (TUI builds never happen, but browser tools and lazy installs do)
-  // find the bundled runtimes before any system ones.
+  // The payload's own node, uv, and git lead PATH so the backend's
+  // subprocesses (TUI builds never happen, but browser tools, git
+  // operations, and lazy installs do) find the bundled runtimes before
+  // any system ones.
   const pathKey = Object.keys(env).find(key => key.toUpperCase() === 'PATH') || 'PATH'
 
-  env[pathKey] = [path.join(payload.dir, 'node', 'bin'), path.join(payload.dir, 'node'), path.join(payload.dir, 'uv'), env[pathKey]]
-    .filter(Boolean)
-    .join(path.delimiter)
+  env[pathKey] = [
+    path.join(payload.dir, 'node', 'bin'),
+    path.join(payload.dir, 'node'),
+    path.join(payload.dir, 'uv'),
+    path.join(payload.dir, 'git', 'cmd'),
+    path.join(payload.dir, 'git', 'bin'),
+    path.join(payload.dir, 'git', 'usr', 'bin'),
+    env[pathKey]
+  ].filter(Boolean).join(path.delimiter)
 
   return {
     kind: 'python',

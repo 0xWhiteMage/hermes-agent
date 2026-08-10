@@ -1318,9 +1318,9 @@ function Install-Git {
         # routinely hit the limit, breaking the installer.
         # Static github.com/.../releases/download/<tag>/<asset> URLs
         # are not subject to the API rate limit.
-        $gitTag    = "v2.54.0.windows.1"
-        $gitVer    = "2.54.0"
-        $gitVerTag = "$gitVer.windows.1"
+        $gitTag    = "v2.55.0.windows.3"
+        $gitVer    = "2.55.0.3"
+        $gitVerTag = "v2.55.0.windows.3"
 
         if ($arch -eq "32-bit-mingit") {
             Write-Warn "32-bit Windows detected -- PortableGit is 64-bit only.  Installing MinGit 32-bit as a last resort; bash-dependent Hermes features (terminal tool, agent-browser) will not work on this machine."

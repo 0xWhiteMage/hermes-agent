@@ -263,6 +263,88 @@ export function stageCacheKey({ target, pythonVersion, requirementsText }) {
 
 // ─── impure staging steps (they shell out, have no unit tests, and run in CI) ──────
 
+// Pinned Git for Windows release. Static download URLs from the official
+// git-for-windows GitHub releases — no API calls (rate-limited to 60/hour
+// for unauthenticated callers). Mirrors the pin in scripts/install.ps1.
+const GIT_TAG = "v2.55.0.windows.3"
+const GIT_VER = "2.55.0.3"
+
+function stageGit(target, outDir) {
+  const gitDir = path.join(outDir, "git")
+  fs.rmSync(gitDir, { recursive: true, force: true })
+
+  // Windows-only: macOS has /usr/bin/git (Xcode CLT), Linux has system git.
+  // Write a marker so the directory exists on every platform — the
+  // EMBEDDED_RUNTIME_ITEMS check requires it — but only download
+  // PortableGit where it is needed.
+  if (target.platform !== "win32") {
+    fs.mkdirSync(gitDir, { recursive: true })
+    fs.writeFileSync(path.join(gitDir, ".platform-native"), "system\n")
+    return
+  }
+
+  fs.mkdirSync(gitDir, { recursive: true })
+  const archTag = target.arch === "arm64" ? "arm64" : "64-bit"
+  const assetName = `PortableGit-${GIT_VER}-${archTag}.7z.exe`
+  const downloadUrl = `https://github.com/git-for-windows/git/releases/download/${GIT_TAG}/${assetName}`
+  const tmpFile = path.join(outDir, `.download-${assetName}`)
+
+  console.log(`[stage-agent-payloads] downloading ${assetName} (Git for Windows ${GIT_VER})`)
+  run("curl", ["-fsSL", "-o", tmpFile, downloadUrl])
+
+  // PortableGit is a self-extracting 7z archive. Invoke it with
+  // `-o<target> -y` (silent) to extract to gitDir. No 7z install required.
+  const extractProc = spawnSync(tmpFile, [`-o${gitDir}`, "-y"], { stdio: "inherit" })
+  fs.rmSync(tmpFile, { force: true })
+  if (extractProc.status !== 0) {
+    throw new Error(`git: PortableGit extraction failed (exit ${extractProc.status})`)
+  }
+
+  // Verify git.exe exists and is the target architecture. `git --version`
+  // prints no arch info, so probe the PE header directly — same technique
+  // as audit-bundle-arch.mjs, applied at staging time.
+  const gitExe = path.join(gitDir, "cmd", "git.exe")
+  if (!fs.existsSync(gitExe)) {
+    throw new Error(`git: PortableGit extraction did not produce git.exe at ${gitExe}`)
+  }
+  const gitArch = probePeArch(gitExe)
+  const expect = bannerExpectations(target)
+  if (!expect.pythonAny.some((word) => gitArch.includes(word))) {
+    throw new Error(
+      `git: staged git.exe reports "${gitArch}" which does not match target arch ` +
+      `${target.arch} (expected one of ${expect.pythonAny.join("|")})`
+    )
+  }
+}
+
+// Read the PE machine field from a Windows .exe and resolve it to an arch
+// name. Returns "unknown" if the file is not a PE binary or the machine
+// code is unrecognized.
+function probePeArch(exePath) {
+  const fd = fs.openSync(exePath, "r")
+  try {
+    const head = Buffer.alloc(64)
+    fs.readSync(fd, head, 0, 64, 0)
+    if (head[0] !== 0x4d || head[1] !== 0x5a) return "unknown"
+    const peOffset = head.readUInt32LE(0x3c)
+    const peHead = Buffer.alloc(6)
+    const n = fs.readSync(fd, peHead, 0, 6, peOffset)
+    if (n < 6 || peHead.readUInt32LE(0) !== 0x00004550) return "unknown"
+    const machine = peHead.readUInt16LE(4)
+    return PE_MACHINES[machine] || "unknown"
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
+const PE_MACHINES = {
+  0x014c: "ia32",
+  0x01c0: "arm",
+  0x01c4: "arm",
+  0x8664: "x64",
+  0xaa64: "arm64",
+}
+
 function run(cmd, args, opts = {}) {
   // stdio: inherit — subprocess output (pip's resolution errors, uv's
   // install messages) streams to the build log in real time. The throw
@@ -737,6 +819,8 @@ function main() {
   writeBundlePth(OUT_DIR, payloadPython)
   console.log(`[stage-agent-payloads] staging: node (${target.key}, ${tag})`)
   stageNode(target, OUT_DIR)
+  console.log(`[stage-agent-payloads] staging: git (${target.key}, ${tag})`)
+  stageGit(target, OUT_DIR)
   console.log(`[stage-agent-payloads] sanitizing symlinks`)
   sanitizeSymlinks(OUT_DIR)
 
