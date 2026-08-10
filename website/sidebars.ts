@@ -93,6 +93,7 @@ const sidebars: SidebarsConfig = {
           label: 'Automation',
           items: [
             'user-guide/features/cron',
+            'user-guide/features/recipes',
             'reference/automation-blueprints-catalog',
             'user-guide/features/delegation',
             'user-guide/features/kanban',
