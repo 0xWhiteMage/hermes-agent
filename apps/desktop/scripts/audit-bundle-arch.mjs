@@ -176,12 +176,14 @@ function* walkFiles(dir) {
  * Windows and `lib/python3.11` elsewhere; both separators appear in
  * relative paths depending on the build host.
  *
- * PortableGit's mingw64/bin and mingw64/lib ship Git Credential Manager
- * — a .NET app whose dependencies (Avalonia.*, Atlassian.*, etc.) are
- * AnyCPU/MSIL assemblies. Their PE machine field is 0x14c (ia32) because
- * .NET assemblies are format-neutral: the CLR JITs them to the native
- * arch at load time. They run correctly on x64 and arm64 Windows; the
- * ia32 PE header is a .NET convention, not a wrong-arch bug.
+ * PortableGit carries .NET AnyCPU/MSIL assemblies (Git Credential Manager:
+ * Avalonia.*, Atlassian.*, Microsoft.*, System.*, etc.) across mingw64/bin,
+ * mingw64/lib, and mingw64/libexec/git-core. Their PE machine field is 0x14c
+ * (ia32) because .NET assemblies are format-neutral — the CLR JITs them to
+ * the native arch at load time. It also ships usr/libexec/getprocaddr32.exe,
+ * a 32-bit MSYS2 helper. The staging script already PE-probes cmd/git.exe
+ * itself; the bundle audit does not need to re-audit PortableGit's internal
+ * MSYS2/.NET layout.
  */
 const EXEMPT_PATTERNS = [
   /agent-payload[/\\]python[/\\]cpython-[^/\\]+[/\\]lib([/\\]python[\d.]+)?[/\\]site-packages[/\\](setuptools|pip[/\\]_vendor[/\\]distlib)[/\\]/i,
@@ -190,8 +192,9 @@ const EXEMPT_PATTERNS = [
   // installs). It is ia32 BY DESIGN: one binary that runs on every
   // Windows arch through the always-present x86 emulation layer.
   /^resources[/\\]elevate\.exe$/i,
-  // PortableGit mingw64 .NET assemblies — see comment above.
-  /agent-payload[/\\]git[/\\]mingw64[/\\](bin|lib)[/\\]/i,
+  // PortableGit — see comment above. The staging script's own PE probe on
+  // cmd/git.exe is the authoritative arch check for the bundled git.
+  /agent-payload[/\\]git[/\\]/i,
 ]
 
 export function isExemptPath(relPath) {
