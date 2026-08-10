@@ -212,6 +212,7 @@ import {
   sandboxPreflight
 } from './update-relaunch'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
+import { classifyUpdateRoot, managedInstallRoots, unmanagedCheckoutMessage } from './update-root-policy'
 import {
   resolveStagedUpdaterBinary,
   resolveUpdateScriptHandoff,
@@ -2462,6 +2463,28 @@ function resolveUpdateRoot() {
   return candidates.find(c => isGitCheckout(c)) || candidates[0] || ACTIVE_HERMES_ROOT
 }
 
+// Mirror the CLI's dev-tree guard (hermes_cli/runtime_tree.py): the desktop's
+// git update flow stashes local changes and moves the checkout to the update
+// branch, which is only ever correct on the installer-created checkout at a
+// managed root. A checkout anywhere else (a pinned worktree, a dev clone) is
+// somebody's working tree — refuse and point at git, exactly like
+// `hermes update` does.
+function classifyResolvedUpdateRoot(updateRoot) {
+  return classifyUpdateRoot(updateRoot, {
+    isGitCheckout,
+    managedRoots: managedInstallRoots(HERMES_HOME, path.join),
+    canonicalize: p => {
+      try {
+        return fs.realpathSync(p)
+      } catch {
+        return path.resolve(p)
+      }
+    },
+    // Windows and default macOS filesystems are case-insensitive.
+    caseInsensitive: IS_WINDOWS || IS_MAC
+  })
+}
+
 function runGit(args, options: any = {}): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(
@@ -2545,12 +2568,23 @@ async function resolveHealedBranch(updateRoot, branch) {
  */
 async function checkStableChannelUpdates() {
   const updateRoot = resolveUpdateRoot()
+  const rootKind = classifyResolvedUpdateRoot(updateRoot)
 
-  if (!isGitCheckout(updateRoot)) {
+  if (rootKind === 'not-a-git-checkout') {
     return {
       supported: false,
       reason: 'not-a-git-checkout',
-      message: `${updateRoot} is not a git checkout — desktop self-update only runs against a source install.`,
+      message: `${updateRoot} is not a git checkout. Desktop self-update only runs against a source install.`,
+      hermesRoot: updateRoot,
+      channel: 'stable'
+    }
+  }
+
+  if (rootKind === 'unmanaged-checkout') {
+    return {
+      supported: false,
+      reason: 'unmanaged-checkout',
+      message: unmanagedCheckoutMessage(updateRoot),
       hermesRoot: updateRoot,
       channel: 'stable'
     }
@@ -2635,12 +2669,23 @@ async function checkUpdates() {
 
   const updateRoot = resolveUpdateRoot()
   let { branch } = readDesktopUpdateConfig()
+  const rootKind = classifyResolvedUpdateRoot(updateRoot)
 
-  if (!isGitCheckout(updateRoot)) {
+  if (rootKind === 'not-a-git-checkout') {
     return {
       supported: false,
       reason: 'not-a-git-checkout',
-      message: `${updateRoot} is not a git checkout — desktop self-update only runs against a source install.`,
+      message: `${updateRoot} is not a git checkout. Desktop self-update only runs against a source install.`,
+      hermesRoot: updateRoot,
+      branch
+    }
+  }
+
+  if (rootKind === 'unmanaged-checkout') {
+    return {
+      supported: false,
+      reason: 'unmanaged-checkout',
+      message: unmanagedCheckoutMessage(updateRoot),
       hermesRoot: updateRoot,
       branch
     }
@@ -3005,6 +3050,29 @@ async function applyUpdates(opts = {}) {
       )
     } finally {
       updateInFlight = false
+    }
+  }
+
+  // Every path below mutates the checkout (stash, branch switch, rebuild).
+  // Refuse before touching anything that isn't the managed install — the
+  // same guard `hermes update` applies (and --yes is not a bypass there
+  // either). checkUpdates already reports this state, but apply must hold
+  // the line itself: the renderer's button state is not a security boundary,
+  // and older renderers can call apply directly.
+  {
+    const updateRoot = resolveUpdateRoot()
+    const rootKind = classifyResolvedUpdateRoot(updateRoot)
+
+    if (rootKind !== 'managed-checkout') {
+      const message =
+        rootKind === 'unmanaged-checkout'
+          ? unmanagedCheckoutMessage(updateRoot)
+          : `${updateRoot} is not a git checkout — desktop self-update only runs against a source install.`
+
+      rememberLog(`[updates] refusing apply (${rootKind}): ${updateRoot}`)
+      emitUpdateProgress({ stage: 'error', message, percent: null })
+
+      return { ok: false, error: rootKind, message, hermesRoot: updateRoot }
     }
   }
 
