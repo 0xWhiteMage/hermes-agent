@@ -2147,6 +2147,71 @@ def _persist_migration(config: Dict[str, Any]) -> None:
     save_config(config)
 
 
+#: Toolset names that Hermes used to ship and no longer defines.
+#:
+#: Only :func:`_scrub_retired_toolsets` reads this — a retired name is inert at
+#: runtime (``resolve_toolset`` returns no tools for it, so nothing reaches the
+#: model schema), which is why this is a config-cleanup concern and not a
+#: resolver one. Empty it once the release carrying the removal has shipped.
+_RETIRED_TOOLSET_NAMES: frozenset[str] = frozenset({"bfl"})
+
+
+def _scrub_retired_toolsets(quiet: bool = False) -> List[str]:
+    """Remove retired toolset names from the saved toolset lists on disk.
+
+    A toolset that shipped and was then removed leaves its name behind in the
+    config of anyone who saved a toolset list while it existed. Nothing else
+    prunes it — ``hermes tools`` writes back any entry it does not recognise,
+    which is how MCP server names survive a save — so it lingers as dead cruft
+    and surfaces as an "Unknown toolset" line under ``hermes --verbose``.
+
+    Three lists carry toolset names and all three are cleaned: the per-platform
+    ``platform_toolsets`` selections, the ``known_builtin_toolsets`` record of
+    what a platform's checklist has offered, and the global
+    ``agent.disabled_toolsets`` suppression list.
+
+    Returns the descriptions of what was removed (empty when nothing matched),
+    for the caller's migration ``results``.
+    """
+    if not _RETIRED_TOOLSET_NAMES:
+        return []
+
+    config = read_raw_config()
+    removed: List[str] = []
+
+    def _prune(names: object) -> Optional[List[str]]:
+        """Return a pruned copy of a toolset-name list, or None if unchanged."""
+        if not isinstance(names, list):
+            return None
+        kept = [n for n in names if str(n) not in _RETIRED_TOOLSET_NAMES]
+        return kept if len(kept) != len(names) else None
+
+    for section in ("platform_toolsets", "known_builtin_toolsets"):
+        by_platform = config.get(section)
+        if not isinstance(by_platform, dict):
+            continue
+        for platform, names in list(by_platform.items()):
+            pruned = _prune(names)
+            if pruned is not None:
+                by_platform[platform] = pruned
+                removed.append(f"{section}.{platform} (retired toolset removed)")
+
+    agent_cfg = config.get("agent")
+    if isinstance(agent_cfg, dict):
+        pruned = _prune(agent_cfg.get("disabled_toolsets"))
+        if pruned is not None:
+            agent_cfg["disabled_toolsets"] = pruned
+            removed.append("agent.disabled_toolsets (retired toolset removed)")
+
+    if removed:
+        _persist_migration(config)
+        if not quiet:
+            names = ", ".join(sorted(_RETIRED_TOOLSET_NAMES))
+            print(f"  ✓ Removed retired toolset(s) from saved tool lists: {names}")
+
+    return removed
+
+
 def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, Any]:
     """
     Migrate config to latest version, prompting for new required fields.
@@ -2248,6 +2313,21 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if mcp_touched:
                 config["mcp_servers"] = raw_mcp_servers
                 _persist_migration(config)
+
+    # ── Always: drop retired toolset names from the user's saved lists ──
+    # Deliberately NOT version-gated. A retired toolset is cruft in the config
+    # of whoever happened to save the picker while it existed, which is not a
+    # schema change and does not deserve a version bump; running it on every
+    # migrate also means a config that already sits at the latest version still
+    # gets cleaned.
+    #
+    # Runs BEFORE the validation below so it does not warn about a name it is
+    # about to remove.
+    try:
+        results["config_added"].extend(_scrub_retired_toolsets(quiet=quiet))
+    except Exception as _scrub_err:
+        # best-effort; never block migration on cleanup
+        logger.debug("retired-toolset scrub skipped: %s", _scrub_err)
 
     # ── Always: validate platform_toolsets after migration ──
     # A migration (or hand-edit) that leaves an invalid toolset name in
