@@ -1427,110 +1427,38 @@ def test_default_config_kanban_block_not_dropped_by_duplicate_key():
     assert "auto_decompose" in kanban
 
 
-class TestRetiredToolsetScrub:
-    """Retired toolset names are deleted from the saved lists on disk.
+def test_migrate_drops_retired_bfl_toolset_from_saved_lists(tmp_path):
+    """One-off cleanup for the retired Nous Portal FLUX 3 ``bfl`` toolset.
 
-    A toolset that shipped and was then removed stays in the config of anyone
-    who saved a toolset list while it existed, and every read of that list then
-    reports an unknown toolset. Nothing else prunes these lists — ``hermes
-    tools`` writes back any entry it does not recognise, which is how MCP server
-    names survive a save.
-
-    Asserted against ``_RETIRED_TOOLSET_NAMES`` rather than a specific name, so
-    the contract holds when the set changes; empty is the steady state, and
-    these skip rather than pass vacuously.
+    Leaves MCP-style unknown names and other real toolsets alone.
     """
+    from toolsets import TOOLSETS
 
-    @staticmethod
-    def _retired():
-        from hermes_cli.config import _RETIRED_TOOLSET_NAMES
+    assert "bfl" not in TOOLSETS
 
-        if not _RETIRED_TOOLSET_NAMES:
-            pytest.skip("no toolset has been retired this release")
-        return _RETIRED_TOOLSET_NAMES
+    (tmp_path / "config.yaml").write_text(
+        f"_config_version: {DEFAULT_CONFIG['_config_version']}\n"
+        "platform_toolsets:\n"
+        "  cli:\n"
+        "    - web\n"
+        "    - bfl\n"
+        "    - my-mcp-server\n"
+        "known_builtin_toolsets:\n"
+        "  cli:\n"
+        "    - bfl\n"
+        "    - web\n"
+        "agent:\n"
+        "  disabled_toolsets:\n"
+        "    - bfl\n"
+        "    - spotify\n"
+    )
+    with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+        migrate_config(interactive=False, quiet=True)
+    raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
 
-    def _migrate(self, tmp_path, body: str) -> dict:
-        (tmp_path / "config.yaml").write_text(body)
-        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            migrate_config(interactive=False, quiet=True)
-        return yaml.safe_load((tmp_path / "config.yaml").read_text())
-
-    def test_the_retired_names_are_genuinely_gone_from_the_catalog(self):
-        """Guards the list itself: scrubbing a name that still resolves would
-        silently delete a working toolset from the user's selection."""
-        from toolsets import TOOLSETS
-
-        for name in self._retired():
-            assert name not in TOOLSETS, f"{name} is still a real toolset"
-
-    def test_retired_name_is_removed_from_every_saved_list(self, tmp_path):
-        retired = sorted(self._retired())
-        entries = "\n".join(f"    - {name}" for name in retired)
-        raw = self._migrate(
-            tmp_path,
-            f"_config_version: {DEFAULT_CONFIG['_config_version']}\n"
-            "platform_toolsets:\n"
-            "  cli:\n"
-            "    - web\n"
-            f"{entries}\n"
-            "    - terminal\n"
-            "known_builtin_toolsets:\n"
-            "  cli:\n"
-            f"{entries}\n"
-            "    - web\n"
-            "agent:\n"
-            "  disabled_toolsets:\n"
-            f"{entries}\n"
-            "    - spotify\n",
-        )
-
-        assert raw["platform_toolsets"]["cli"] == ["web", "terminal"]
-        assert raw["known_builtin_toolsets"]["cli"] == ["web"]
-        assert raw["agent"]["disabled_toolsets"] == ["spotify"]
-
-    def test_scrub_is_not_version_gated(self, tmp_path):
-        """A config already stamped at the current version still gets cleaned —
-        the whole point of running this outside the migration ladder."""
-        retired = sorted(self._retired())
-        raw = self._migrate(
-            tmp_path,
-            f"_config_version: {DEFAULT_CONFIG['_config_version']}\n"
-            "platform_toolsets:\n"
-            "  cli:\n"
-            f"{chr(10).join(f'    - {n}' for n in retired)}\n"
-            "    - web\n",
-        )
-
-        assert raw["platform_toolsets"]["cli"] == ["web"]
-
-    def test_a_config_without_the_retired_name_is_left_alone(self, tmp_path):
-        self._retired()
-        body = (
-            f"_config_version: {DEFAULT_CONFIG['_config_version']}\n"
-            "platform_toolsets:\n"
-            "  cli:\n"
-            "    - web\n"
-            "    - terminal\n"
-        )
-        raw = self._migrate(tmp_path, body)
-
-        assert raw["platform_toolsets"]["cli"] == ["web", "terminal"]
-
-    def test_unknown_names_that_are_not_retired_still_survive(self, tmp_path):
-        """MCP server names live in the same list and must not be collateral."""
-        retired = sorted(self._retired())
-        raw = self._migrate(
-            tmp_path,
-            f"_config_version: {DEFAULT_CONFIG['_config_version']}\n"
-            "platform_toolsets:\n"
-            "  cli:\n"
-            "    - web\n"
-            f"{chr(10).join(f'    - {n}' for n in retired)}\n"
-            "    - my-mcp-server\n",
-        )
-
-        assert "my-mcp-server" in raw["platform_toolsets"]["cli"]
-        assert not (set(retired) & set(raw["platform_toolsets"]["cli"]))
+    assert raw["platform_toolsets"]["cli"] == ["web", "my-mcp-server"]
+    assert raw["known_builtin_toolsets"]["cli"] == ["web"]
+    assert raw["agent"]["disabled_toolsets"] == ["spotify"]
 
 
 def test_default_config_has_no_duplicate_top_level_keys():
