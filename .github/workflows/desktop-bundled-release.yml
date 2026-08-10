@@ -7,8 +7,9 @@ name: Desktop Bundled Release
 # The app runs the backend directly out of its own resources.
 # nothing installs on the user machine.
 #
-# Payload staging stays dormant unless a build sets HERMES_DESKTOP_BUNDLED=1.
-# This workflow is the only place that sets it.
+# Payload staging stays dormant unless a build sets
+# HERMES_DESKTOP_VARIANT=bundled. This workflow is the only place that
+# sets it.
 #
 # Triggers:
 #   * A push of a final release tag (vX.Y.Z). This is the normal release path.
@@ -85,7 +86,7 @@ jobs:
             runner: windows-11-arm
     env:
       # This is the one switch that turns on the whole bundled stack.
-      HERMES_DESKTOP_BUNDLED: '1'
+      HERMES_DESKTOP_VARIANT: 'bundled'
       HERMES_PAYLOAD_TAG: ${{ github.event.inputs.tag || github.ref_name }}
       HERMES_PAYLOAD_PYTHON: '3.11'
     steps:

@@ -59,9 +59,9 @@ The script always runs every step:
    wrong-architecture binary fails the build.
 5. **Package with electron-builder.** NSIS on Windows, DMG on macOS.
 
-Payload staging stays dormant unless `HERMES_DESKTOP_BUNDLED=1` is set. The
-build script sets it. A normal `npm run dev` or `npm run pack` without the
-script does not stage payloads.
+Payload staging stays dormant unless `HERMES_DESKTOP_VARIANT=bundled` is
+set. The build script sets it. A normal `npm run dev` or `npm run pack`
+without the script does not stage payloads.
 
 ## Code signing (Windows)
 

@@ -197,10 +197,6 @@
     "afterPack": "scripts/after-pack.mjs",
     "extraResources": [
       {
-        "from": "build/install-stamp.json",
-        "to": "install-stamp.json"
-      },
-      {
         "from": "build/agent-payload",
         "to": "agent-payload"
       },

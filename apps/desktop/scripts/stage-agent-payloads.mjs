@@ -20,11 +20,11 @@
  *                          from here; nothing materializes at first launch.
  *   node/                  official node dist for this platform/arch
  *
- * Gating: the script does nothing unless HERMES_DESKTOP_BUNDLED=1. That
- * variable is an internal build-time env for CI wiring, not user config.
- * Thus dev builds and current CI keep producing external builds. There is
- * no per-item skip: an embedded payload is complete, or this script throws
- * and the build fails.
+ * Gating: the script does nothing unless HERMES_DESKTOP_VARIANT=bundled.
+ * That variable is an internal build-time env for CI wiring, not user
+ * config. Thus dev builds and current CI keep producing external builds.
+ * There is no per-item skip: an embedded payload is complete, or this
+ * script throws and the build fails.
  *
  * The heavy work shells out to git, uv, and tar. The decision logic
  * (target resolution, pip arg construction, manifest shape) is exported as
@@ -762,18 +762,18 @@ function stageNode(target, outDir) {
 }
 
 function main() {
-  if (process.env.HERMES_DESKTOP_BUNDLED !== "1") {
-    // Thin build: write a stub manifest anyway. Then the extraResources
-    // entry always has a real directory to copy. The behavior of
-    // electron-builder for a missing `from` changes between versions. The
-    // stub also lets runtime code read manifest.json uniformly and learn
-    // that there are no payloads.
+  if (process.env.HERMES_DESKTOP_VARIANT !== "bundled") {
+    // bootstrap and light artifacts carry no payload: write a stub
+    // manifest anyway. Then the extraResources entry always has a real
+    // directory to copy. The behavior of electron-builder for a missing
+    // `from` changes between versions. The stub also lets runtime code
+    // read manifest.json uniformly and learn that there are no payloads.
     fs.mkdirSync(OUT_DIR, { recursive: true })
     fs.writeFileSync(
       path.join(OUT_DIR, "manifest.json"),
       JSON.stringify({ schemaVersion: PAYLOAD_SCHEMA_VERSION, external: true }, null, 2) + "\n"
     )
-    console.log("[stage-agent-payloads] HERMES_DESKTOP_BUNDLED != 1 — wrote external stub manifest")
+    console.log("[stage-agent-payloads] HERMES_DESKTOP_VARIANT != bundled — wrote external stub manifest")
     return
   }
   const target = resolveTargets()

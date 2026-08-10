@@ -6,7 +6,7 @@
 //   2. npm ci at the repo root
 //   3. build ui-tui (with hermes-ink) and the dashboard SPA
 //   4. download the payload node dist (the exact host node version)
-//   5. npm run build in apps/desktop with HERMES_DESKTOP_BUNDLED=1
+//   5. npm run build in apps/desktop with HERMES_DESKTOP_VARIANT=bundled
 //   6. npm run builder -- <platform targets>
 //
 // Every step always runs. There is no opt-out: a skipped step is a
@@ -253,7 +253,7 @@ if (!fs.existsSync(nodeBinary)) {
 
 const env = {
   ...process.env,
-  HERMES_DESKTOP_BUNDLED: "1",
+  HERMES_DESKTOP_VARIANT: "bundled",
   HERMES_PAYLOAD_TAG: tag,
   HERMES_PAYLOAD_PYTHON: process.env.HERMES_PAYLOAD_PYTHON || "3.11",
   HERMES_PAYLOAD_NODE_DIST: nodeDir,

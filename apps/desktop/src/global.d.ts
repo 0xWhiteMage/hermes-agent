@@ -396,11 +396,12 @@ export interface DesktopVersionInfo {
    * re-derive them. Each variant carries the location it resolved from,
    * when there is one.
    */
-  hermesRuntime?: { type: 'embedded' } | { type: 'external'; source?: RuntimeSource }
+  hermesRuntime?: { type: 'embedded' } | { type: 'light' } | { type: 'external'; source?: RuntimeSource }
 }
 
 /**
- * What this build carries: an embedded runtime, or external.
+ * What this build carries: an embedded runtime, light (no runtime at all —
+ * remote connections only), or external.
  * `source` is populated for external builds only after the backend has been
  * spawned — before the first launch it is absent.
  *
