@@ -227,19 +227,45 @@ def run_steps(steps: Iterable) -> dict:
 
 
 def main(argv: list | None = None) -> int:
-    """``python -m hermes_cli.post_update`` — run the phase in a FRESH
-    interpreter so every step imports post-pull code (no reload lists).
+    """``python -m hermes_cli.post_update`` — run in a FRESH interpreter
+    so every step imports post-pull code (no reload lists).
 
-    ``hermes update`` spawns this with inherited stdio; the desktop's
-    streamed-update consumer forwards our lines unchanged.
+    Two modes:
+
+    * default / ``--scope``: the boot-bootstrap step registries.
+    * ``--update-phase``: the full ``hermes update`` post-update phase
+      (``update_cmd._run_update_phase_inline``) — config prompt/migration,
+      skills sync, state.db guard, notices, self-heals, cua refresh, and
+      the gateway fleet restart. ``hermes update`` spawns this with
+      inherited stdio; the desktop's streamed-update consumer forwards
+      our lines unchanged.
     """
     import argparse
 
     parser = argparse.ArgumentParser(prog="hermes_cli.post_update")
     parser.add_argument("--scope", choices=("home", "machine", "all"), default="all")
+    parser.add_argument("--update-phase", action="store_true")
+    parser.add_argument("--gateway-mode", action="store_true")
+    parser.add_argument("--assume-yes", action="store_true")
+    parser.add_argument("--pre-update-snapshot-id", default=None)
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    if args.update_phase:
+        # This process was just born, so update_cmd and everything it
+        # imports come from the pulled tree. The in-function reload
+        # band-aids (_reload_config_modules) turn into no-ops here —
+        # the "fresh" modules ARE the loaded modules.
+        from hermes_cli.update_cmd import _run_update_phase_inline
+
+        return _run_update_phase_inline(
+            gateway_mode=args.gateway_mode,
+            assume_yes=args.assume_yes,
+            pre_update_snapshot_id=args.pre_update_snapshot_id,
+            windows_gateway_resume=None,
+        )
+
     selected: list = []
     if args.scope in ("home", "all"):
         selected.extend(HOME_STEPS)

@@ -27,6 +27,16 @@ def _treat_test_root_as_managed(monkeypatch):
     monkeypatch.setattr(runtime_tree, "is_managed_install_root", lambda p: True)
 
 
+@pytest.fixture(autouse=True)
+def _force_inprocess_phase(monkeypatch):
+    """Pin the post-update phase to the in-process fallback so the
+    migration prompt/auto-apply under test runs in THIS interpreter,
+    where the ``hermes_cli.update_cmd`` mocks can see it."""
+    import hermes_cli.main as hm
+
+    monkeypatch.setattr(hm, "_spawn_post_update_phase", lambda **kw: None)
+
+
 def _make_run_side_effect(
     branch="main", verify_ok=True, commit_count="1", dirty=False
 ):

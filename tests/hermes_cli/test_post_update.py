@@ -201,3 +201,110 @@ def test_main_scope_selects_registries(monkeypatch):
     ran.clear()
     assert post_update.main(["--scope", "all"]) == 0
     assert ran == ["h", "m"]
+
+
+# ── --update-phase runner mode ───────────────────────────────────────
+
+
+def test_main_update_phase_delegates_with_parsed_flags(monkeypatch):
+    """--update-phase routes to update_cmd._run_update_phase_inline with
+    the CLI flags mapped through and NO windows resume token (the token
+    is process-local to the parent)."""
+    import hermes_cli.update_cmd as uc
+
+    seen = {}
+
+    def fake_phase(**kw):
+        seen.update(kw)
+        return 0
+
+    monkeypatch.setattr(uc, "_run_update_phase_inline", fake_phase)
+    rc = post_update.main([
+        "--update-phase", "--gateway-mode", "--assume-yes",
+        "--pre-update-snapshot-id", "snap-123",
+    ])
+    assert rc == 0
+    assert seen == {
+        "gateway_mode": True,
+        "assume_yes": True,
+        "pre_update_snapshot_id": "snap-123",
+        "windows_gateway_resume": None,
+    }
+
+
+def test_main_update_phase_propagates_exit_code(monkeypatch):
+    import hermes_cli.update_cmd as uc
+
+    monkeypatch.setattr(uc, "_run_update_phase_inline", lambda **kw: 1)
+    assert post_update.main(["--update-phase"]) == 1
+
+
+# ── _spawn_post_update_phase ─────────────────────────────────────────
+
+
+def _spawn(monkeypatch, tmp_path, *, runner_exists=True, run_result=0, run_raises=None, **kw):
+    """Drive update_cmd._spawn_post_update_phase with a fake subprocess."""
+    import hermes_cli.main as hm
+    import hermes_cli.update_cmd as uc
+
+    root = tmp_path / "checkout"
+    (root / "hermes_cli").mkdir(parents=True)
+    if runner_exists:
+        (root / "hermes_cli" / "post_update.py").write_text("# runner\n", encoding="utf-8")
+    monkeypatch.setattr(hm, "PROJECT_ROOT", root)
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        if run_raises:
+            raise run_raises
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        import subprocess as sp
+
+        return sp.CompletedProcess(cmd, run_result)
+
+    import subprocess as sp
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    rc = uc._spawn_post_update_phase(
+        gateway_mode=kw.get("gateway_mode", False),
+        assume_yes=kw.get("assume_yes", False),
+        pre_update_snapshot_id=kw.get("pre_update_snapshot_id"),
+    )
+    return rc, captured
+
+
+def test_spawn_command_shape_and_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_DESKTOP_CHILD_PID", "424242")
+    rc, cap = _spawn(
+        monkeypatch, tmp_path,
+        gateway_mode=True, assume_yes=True, pre_update_snapshot_id="snap-9",
+    )
+    assert rc == 0
+    cmd = cap["cmd"]
+    assert cmd[1:4] == ["-m", "hermes_cli.post_update", "--update-phase"]
+    assert "--gateway-mode" in cmd and "--assume-yes" in cmd
+    assert cmd[cmd.index("--pre-update-snapshot-id") + 1] == "snap-9"
+
+    env = cap["kwargs"]["env"]
+    # Inherit-and-extend: desktop contracts survive, unbuffered forced on.
+    assert env["HERMES_DESKTOP_CHILD_PID"] == "424242"
+    assert env["PYTHONUNBUFFERED"] == "1"
+    # Inherited stdio: no capture/pipe arguments.
+    assert "stdout" not in cap["kwargs"] and "capture_output" not in cap["kwargs"]
+
+
+def test_spawn_returns_child_exit_code(monkeypatch, tmp_path):
+    rc, _ = _spawn(monkeypatch, tmp_path, run_result=1)
+    assert rc == 1
+
+
+def test_spawn_none_when_runner_missing(monkeypatch, tmp_path):
+    rc, _ = _spawn(monkeypatch, tmp_path, runner_exists=False)
+    assert rc is None
+
+
+def test_spawn_none_when_spawn_raises(monkeypatch, tmp_path):
+    rc, _ = _spawn(monkeypatch, tmp_path, run_raises=OSError("no exec"))
+    assert rc is None

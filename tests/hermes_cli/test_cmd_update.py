@@ -20,6 +20,19 @@ def _treat_test_root_as_managed(monkeypatch):
     monkeypatch.setattr(runtime_tree, "is_managed_install_root", lambda p: True)
 
 
+@pytest.fixture(autouse=True)
+def _force_inprocess_phase(monkeypatch):
+    """Pin the post-update phase to the in-process fallback.
+
+    These tests assert on the phase's behavior through mocks on
+    ``hermes_cli.update_cmd`` — that only works when the phase runs in
+    THIS interpreter. The spawn path is covered by
+    tests/hermes_cli/test_post_update.py."""
+    import hermes_cli.main as hm
+
+    monkeypatch.setattr(hm, "_spawn_post_update_phase", lambda **kw: None)
+
+
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
     """Build a side_effect function for subprocess.run that simulates git commands."""
 

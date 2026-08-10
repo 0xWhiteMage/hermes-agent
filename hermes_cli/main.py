@@ -5148,6 +5148,8 @@ from hermes_cli.update_cmd import (  # noqa: F401
     _resume_windows_gateways_after_update,
     _run_logged_subprocess,
     _run_pre_update_backup,
+    _run_update_phase_inline,
+    _spawn_post_update_phase,
     _should_skip_upstream_prompt,
     _stash_apply_failed_only_on_existing_untracked,
     _stash_local_changes_if_needed,
