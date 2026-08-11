@@ -82,7 +82,7 @@ import {
 } from './connection-config'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
-import { type DeepLinkRoute, routeDeepLink } from './deep-link-route'
+import { type DeepLinkRoute, deepLinkScheme, routeDeepLink } from './deep-link-route'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import {
   allowedUninstallModes,
@@ -12761,12 +12761,15 @@ ipcMain.handle('hermes:vscode-theme:fetch', async (_event, id) => fetchMarketpla
 ipcMain.handle('hermes:vscode-theme:search', async (_event, query) => searchMarketplaceThemes(String(query || ''), 20))
 
 // ---------------------------------------------------------------------------
-// hermes:// deep links (e.g. hermes://blueprint/morning-brief?time=08:00).
+// Deep links (e.g. hermes://blueprint/morning-brief?time=08:00).
 // A docs/dashboard "Send to App" button opens this URL; we route it into the
 // running app's chat composer. Three delivery paths: macOS 'open-url',
 // Win/Linux running-app 'second-instance' (argv), Win/Linux cold-start argv.
 // ---------------------------------------------------------------------------
-const HERMES_PROTOCOL = 'hermes'
+// Variant-owned scheme (hermes:// vs hermes-light://): side-by-side installs
+// must not fight over one OS handler registration. Contract with the build:
+// deep-link-route.ts deepLinkScheme.
+const HERMES_PROTOCOL: string = deepLinkScheme(INSTALL_STAMP?.payload)
 let _pendingDeepLink = null
 let _rendererReadyForDeepLink = false
 
@@ -12802,25 +12805,20 @@ function handleDeepLink(url) {
   })
   const payload = { kind, name, params }
 
-  // hermes://copilot-key/start — the Windows Copilot hardware key (registered
-  // as a provider in the MSIX manifest; the OS activates us through this
-  // protocol). Summon the ephemeral quick-entry popup: a hardware key wants
-  // the lightweight composer, not the full window. Handled entirely in the
-  // main process — no renderer, no main window, no ready-gate needed.
-  // Routing contract (start summons, stop is ignored): deep-link-route.ts.
   const route: DeepLinkRoute = routeDeepLink(kind, name)
 
+  if (route === 'ignore') {
+    return
+  }
+
+  // The Windows Copilot hardware key fires this
   if (route === 'quick-entry') {
-    // open-url can deliver pre-ready (macOS); BrowserWindow needs ready.
+    // open-url can deliver pre-ready; BrowserWindow needs ready.
     void app.whenReady().then(() => {
       showQuickEntryWindow()
       rememberLog('[deeplink] copilot key: quick entry summoned')
     })
 
-    return
-  }
-
-  if (route === 'ignore') {
     return
   }
 
