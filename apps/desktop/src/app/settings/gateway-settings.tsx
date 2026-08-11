@@ -5,7 +5,13 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tip } from '@/components/ui/tooltip'
-import type { DesktopAuthProvider, DesktopCloudAgent, DesktopCloudOrg, DesktopConnectionProbeResult } from '@/global'
+import type {
+  DesktopAuthProvider,
+  DesktopBackendAvailability,
+  DesktopCloudAgent,
+  DesktopCloudOrg,
+  DesktopConnectionProbeResult
+} from '@/global'
 import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import {
@@ -203,6 +209,41 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   // each profile can point at its own backend.
   const [scope, setScope] = useState<null | string>(null)
   const profiles = useStore($profiles)
+
+  // Which modes this artifact + machine offer (electron backend registry).
+  // Unavailable modes render disabled with their reason. Empty until the
+  // IPC answers; failure or an older Electron defaults to all-available.
+  const [modeAvailabilities, setModeAvailabilities] = useState<DesktopBackendAvailability[]>([])
+
+  const availabilityFor = (mode: GatewaySettingsState['mode']): DesktopBackendAvailability =>
+    modeAvailabilities.find(entry => entry.mode === mode) ?? { mode, available: true }
+
+  const modeUnavailableLabel = (availability: DesktopBackendAvailability): null | string => {
+    if (availability.available) {
+      return null
+    }
+
+    return availability.reason === 'light-artifact' ? g.modeUnavailableLight : g.modeUnavailableSsh
+  }
+
+  useEffect(() => {
+    let cancelled = false
+
+    window.hermesDesktop
+      ?.getBackendAvailability?.()
+      .then((list: DesktopBackendAvailability[] | undefined) => {
+        if (!cancelled && Array.isArray(list)) {
+          setModeAvailabilities(list as DesktopBackendAvailability[])
+        }
+      })
+      .catch(() => {
+        // Older Electron build without the IPC — every mode stays offered.
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     void refreshActiveProfile()
@@ -1067,40 +1108,49 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
           {g.modeTitle}
         </div>
         <div className="grid auto-rows-fr grid-cols-1 gap-2 sm:grid-cols-2 min-[72rem]:grid-cols-4">
-          <ModeCard
-            active={state.mode === 'local'}
-            description={scope === null ? g.localDesc : g.inheritDesc}
-            disabled={state.envOverride}
-            icon={Monitor}
-            onSelect={() => setState(current => ({ ...current, mode: 'local' }))}
-            title={scope === null ? g.localTitle : g.inheritTitle}
-          />
-          <ModeCard
-            active={state.mode === 'cloud'}
-            description={g.cloudDesc}
-            disabled={state.envOverride}
-            icon={Cloud}
-            onSelect={() => setState(current => ({ ...current, mode: 'cloud' }))}
-            title={g.cloudTitle}
-          />
-          <ModeCard
-            active={state.mode === 'remote'}
-            description={g.remoteDesc}
-            disabled={state.envOverride}
-            hint={g.remoteAuthHint}
-            icon={Globe}
-            onSelect={() => setState(current => ({ ...current, mode: 'remote' }))}
-            title={g.remoteTitle}
-          />
-          <ModeCard
-            active={state.mode === 'ssh'}
-            description={g.sshDesc}
-            disabled={state.envOverride}
-            hint={g.sshTrustHint}
-            icon={Terminal}
-            onSelect={() => setState(current => ({ ...current, mode: 'ssh' }))}
-            title={g.sshTitle}
-          />
+          {(() => {
+            const localAvailability = availabilityFor('local')
+            const sshAvailability = availabilityFor('ssh')
+
+            return (
+              <>
+                <ModeCard
+                  active={state.mode === 'local'}
+                  description={modeUnavailableLabel(localAvailability) ?? (scope === null ? g.localDesc : g.inheritDesc)}
+                  disabled={state.envOverride || !localAvailability.available}
+                  icon={Monitor}
+                  onSelect={() => setState(current => ({ ...current, mode: 'local' }))}
+                  title={scope === null ? g.localTitle : g.inheritTitle}
+                />
+                <ModeCard
+                  active={state.mode === 'cloud'}
+                  description={g.cloudDesc}
+                  disabled={state.envOverride}
+                  icon={Cloud}
+                  onSelect={() => setState(current => ({ ...current, mode: 'cloud' }))}
+                  title={g.cloudTitle}
+                />
+                <ModeCard
+                  active={state.mode === 'remote'}
+                  description={g.remoteDesc}
+                  disabled={state.envOverride}
+                  hint={g.remoteAuthHint}
+                  icon={Globe}
+                  onSelect={() => setState(current => ({ ...current, mode: 'remote' }))}
+                  title={g.remoteTitle}
+                />
+                <ModeCard
+                  active={state.mode === 'ssh'}
+                  description={modeUnavailableLabel(sshAvailability) ?? g.sshDesc}
+                  disabled={state.envOverride || !sshAvailability.available}
+                  hint={g.sshTrustHint}
+                  icon={Terminal}
+                  onSelect={() => setState(current => ({ ...current, mode: 'ssh' }))}
+                  title={g.sshTitle}
+                />
+              </>
+            )
+          })()}
         </div>
       </div>
 

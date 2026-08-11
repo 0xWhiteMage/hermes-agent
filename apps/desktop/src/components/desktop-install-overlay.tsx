@@ -8,6 +8,7 @@ import { Loader } from '@/components/ui/loader'
 import { LogView } from '@/components/ui/log-view'
 import { Progress } from '@/components/ui/progress'
 import type {
+  DesktopBackendAvailability,
   DesktopBootstrapEvent,
   DesktopBootstrapStageDescriptor,
   DesktopBootstrapStageResult,
@@ -277,8 +278,44 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
   const [copied, setCopied] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   const [remoteOpen, setRemoteOpen] = useState(false)
+  // Which connection modes this artifact + machine offer (electron backend
+  // registry). null while loading; loading failure or an older Electron
+  // build defaults to null → treated as all-available so the classic
+  // two-card choice keeps working.
+  const [backends, setBackends] = useState<DesktopBackendAvailability[] | null>(null)
+  const [backendsLoaded, setBackendsLoaded] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   const logEndRef = useRef<HTMLDivElement | null>(null)
+
+  const localModeOffered: boolean = backends
+    ? (backends.find(entry => entry.mode === 'local')?.available ?? true)
+    : true
+
+  // Resolve mode availability once: it is a constant of the artifact +
+  // machine (the electron side caches it the same way).
+  useEffect(() => {
+    if (!enabled) {
+      return
+    }
+
+    let cancelled = false
+
+    const finish = (list: DesktopBackendAvailability[] | null) => {
+      if (!cancelled) {
+        setBackends(list)
+        setBackendsLoaded(true)
+      }
+    }
+
+    window.hermesDesktop
+      ?.getBackendAvailability?.()
+      .then((list: DesktopBackendAvailability[] | undefined) => finish(Array.isArray(list) ? list : null))
+      .catch(() => finish(null))
+
+    return () => {
+      cancelled = true
+    }
+  }, [enabled])
 
   // Tick once a second while a bootstrap is in flight so running steps show a
   // live elapsed timer. Stops when nothing is active to avoid idle renders.
@@ -393,10 +430,21 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
   }
 
   if (remoteOpen) {
-    return <FirstRunRemoteForm onBack={() => setRemoteOpen(false)} />
+    return <FirstRunRemoteForm backends={backends ?? undefined} onBack={() => setRemoteOpen(false)} />
   }
 
   if (state.setupChoice) {
+    // A light artifact has no local backend, so there is no choice to make:
+    // the remote form IS first-run setup, with no back behind it. Wait for
+    // the availability answer so the two-card chooser cannot flash first.
+    if (!backendsLoaded) {
+      return null
+    }
+
+    if (!localModeOffered) {
+      return <FirstRunRemoteForm backends={backends ?? undefined} />
+    }
+
     return (
       <div className="fixed inset-0 z-(--z-setup) flex items-center justify-center bg-background/90 p-4 backdrop-blur-md">
         <div className="w-full max-w-2xl rounded-xl border border-(--stroke-nous) bg-card p-8 shadow-nous">

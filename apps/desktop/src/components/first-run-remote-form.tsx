@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import type { DesktopConnectionProbeResult } from '@/global'
+import type { DesktopBackendAvailability, DesktopConnectionProbeResult } from '@/global'
 import { useI18n } from '@/i18n'
 import { deriveRemoteAuthProviderShape } from '@/lib/desktop-remote-auth'
 import { AlertCircle, Check, Loader2, LogIn } from '@/lib/icons'
@@ -13,14 +13,26 @@ type AuthMode = 'oauth' | 'token'
 type ProbeStatus = 'idle' | 'probing' | 'done' | 'error'
 
 interface FirstRunRemoteFormProps {
-  onBack: () => void
+  /** Return to the two-card setup choice. Omitted when there is no choice behind us. */
+  onBack?: () => void
+  /**
+   * Which connection modes this artifact + machine offer (electron backend
+   * registry). When the local mode is unavailable (light artifacts), this
+   * form IS first-run setup — no back button, nothing behind it. Applying
+   * still resumes the gated startup via the remote-applied path.
+   */
+  backends?: DesktopBackendAvailability[]
 }
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err || 'Unknown error')
 }
 
-export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
+export function FirstRunRemoteForm({ backends, onBack }: FirstRunRemoteFormProps) {
+  const localModeOffered: boolean = backends
+    ? (backends.find(entry => entry.mode === 'local')?.available ?? true)
+    : true
+
   const { t } = useI18n()
   const copy = t.install
   const [remoteUrl, setRemoteUrl] = useState('')
@@ -218,7 +230,10 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
     }
 
     if (applied) {
-      onBack()
+      // Two-card flow: return to the chooser (main hides it via the
+      // remote-applied resume). Remote-only flow: nothing to go back to —
+      // the applied event tears this overlay down when startup resumes.
+      onBack?.()
     }
   }
 
@@ -320,10 +335,12 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
           ) : null}
         </div>
 
-        <div className="mt-7 flex flex-wrap items-center justify-between gap-3">
-          <Button disabled={applying} onClick={onBack} size="sm" variant="ghost">
-            {copy.backToSetup}
-          </Button>
+        <div className={localModeOffered ? 'mt-7 flex flex-wrap items-center justify-between gap-3' : 'mt-7 flex flex-wrap items-center justify-end gap-3'}>
+          {localModeOffered ? (
+            <Button disabled={applying} onClick={onBack} size="sm" variant="ghost">
+              {copy.backToSetup}
+            </Button>
+          ) : null}
           <div className="flex items-center gap-2">
             <Button
               disabled={testing || applying || !canTest}

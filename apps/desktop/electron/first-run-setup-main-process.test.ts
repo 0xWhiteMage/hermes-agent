@@ -45,8 +45,14 @@ test('a first-run bootstrap-needed remote apply connects without ensuring or boo
   const prepareLocalBackend = vi.fn(async () => bootstrapBackend)
 
   const pendingConnection = runPrimaryBackendStartup({
+    bootProgress: vi.fn(async () => {}),
     connectRemote,
     ensureLocalRuntime,
+    localMode: {
+      availability: { mode: 'local' as const, available: true as const },
+      setupBackend: bootstrapBackend
+    },
+    log: vi.fn(),
     prepareLocalBackend,
     resolveRemote,
     waitForDecision: gate.wait,
