@@ -13,123 +13,40 @@
 //     Apple's timestamp service — thousands of payload files flooded it
 //     until it refused ("The timestamp service is not available"). The
 //     function scopes signing to real Mach-O files.
-//   * the light variant (HERMES_DESKTOP_VARIANT=light) reshapes identity,
-//     publish channel, and MSIX options at require time.
+//   * the variant is decided at require time: HERMES_DESKTOP_VARIANT=light
+//     builds "Hermes Light", the remote-only client with no agent payload
+//     and no local backend. The whole config derives from the one `light`
+//     flag below — a separate app to the OS and to the updater, so both
+//     variants install and update side by side.
 // @ts-check — typed via JSDoc against app-builder-lib's own declarations;
-// the annotations make editors and `tsc --checkJs` validate every key
-// against the real Configuration/MsixOptions schema.
+// enforced by the checkJs pass in npm run typecheck.
 "use strict"
 
 const fs = require("node:fs")
 
 /** @typedef {import("app-builder-lib").Configuration} Configuration */
-/** @typedef {import("app-builder-lib").MsixOptions} MsixOptions */
 
-// ── base configuration (both variants start here) ──────────────────────────
+// ── the one variant switch ──────────────────────────────────────────────────
 
-/** @satisfies {Configuration} */
-const base = {
-  electronVersion: "40.10.2",
-  appId: "com.nousresearch.hermes",
-  productName: "Hermes",
-  executableName: "Hermes",
-  protocols: [
-    {
-      name: "Hermes Protocol",
-      schemes: ["hermes"],
-    },
-  ],
-  artifactName: "Hermes-${version}-${os}-${arch}.${ext}",
-  icon: "assets/icon",
-  publish: [
-    {
-      provider: "github",
-      owner: "NousResearch",
-      repo: "hermes-agent",
-    },
-  ],
-  directories: {
-    output: "release",
-  },
-  files: ["dist/**", "assets/**", "public/**", "package.json"],
-  beforeBuild: "scripts/before-build.mjs",
-  beforePack: "scripts/before-pack.mjs",
-  afterPack: "scripts/after-pack.mjs",
-  extraResources: [
-    {
-      from: "build/agent-payload",
-      to: "agent-payload",
-    },
-    {
-      from: "assets/icon.ico",
-      to: "icon.ico",
-    },
-  ],
-  asar: {
-    unpack: ["**/*.node", "**/prebuilds/**", "dist/**"],
-  },
-  mac: {
-    category: "public.app-category.developer-tools",
-    extendInfo: {
-      CFBundleDisplayName: "Hermes",
-      CFBundleExecutable: "Hermes",
-      CFBundleName: "Hermes",
-      NSAudioCaptureUsageDescription: "Hermes uses audio capture for voice conversations.",
-      NSCameraUsageDescription: "Hermes uses the camera when a plugin or feature you enable requests it.",
-      NSMicrophoneUsageDescription: "Hermes uses the microphone for voice input and voice conversations.",
-    },
-    target: ["dmg", "zip"],
-    sign: {
-      entitlements: "electron/entitlements.mac.plist",
-      entitlementsInherit: "electron/entitlements.mac.inherit.plist",
-      hardenedRuntime: true,
-      // (gatekeeperAssess is gone: osx-sign v3 dropped the --gatekeeper-assess
-      // pass entirely, and the v27 ElectronSignOptions type rejects the key.)
-    },
-  },
-  dmg: {
-    title: "Install Hermes",
-    backgroundColor: "#f5f5f7",
-    iconSize: 96,
-    window: {
-      width: 560,
-      height: 360,
-    },
-    contents: [
-      {
-        x: 160,
-        y: 170,
-        type: "file",
-      },
-      {
-        x: 400,
-        y: 170,
-        type: "link",
-        path: "/Applications",
-      },
-    ],
-  },
-  win: {
-    legalTrademarks: "Hermes",
-    target: ["nsis", "msix"],
-  },
-  linux: {
-    category: "Development",
-    maintainer: "Nous Research <support@nousresearch.com>",
-    synopsis: "Native desktop shell for Hermes Agent.",
-    target: ["AppImage", "deb", "rpm"],
-  },
-  nsis: {
-    oneClick: true,
-    perMachine: false,
-    installerIcon: "assets/icon.ico",
-    uninstallerIcon: "assets/icon.ico",
-    installerHeaderIcon: "assets/icon.ico",
-    shortcutName: "Hermes",
-    uninstallDisplayName: "Hermes",
-    warningsAsErrors: false,
-  },
-}
+const light = process.env.HERMES_DESKTOP_VARIANT === "light"
+
+// Product identity, derived once. Every name-shaped string below comes from
+// these; nothing else may hardcode "Hermes" / "Hermes Light".
+const productName = light ? "Hermes Light" : "Hermes"
+// appId separates the two apps for the OS (side-by-side installs, own
+// settings); pkgName separates them for electron-updater, whose cache dir
+// derives from the packaged package.json name (appInfo.updaterCacheDirName
+// = sanitized name + '-updater') — with a shared name both apps stage
+// downloads in the same <cache>/hermes-updater dir and can install each
+// other's artifacts. artifactPrefix keys the release file names, and
+// channel: 'light' → the light*.yml feed, so both variants share one
+// GitHub release without colliding feed files. A packaged light app
+// follows its own channel automatically: electron-builder writes it into
+// app-update.yml at package time.
+const appId = light ? "com.nousresearch.hermes-light" : "com.nousresearch.hermes"
+const pkgName = light ? "hermes-light" : "hermes"
+const artifactPrefix = light ? "Hermes-Light" : "Hermes"
+const channel = light ? "light" : undefined
 
 // ── mac signing scope ───────────────────────────────────────────────────────
 
@@ -185,110 +102,71 @@ function windowsSigning() {
   }
 }
 
-// ── msix ────────────────────────────────────────────────────────────────────
-
-// MSIX packaging. Ships beside NSIS: the exe keeps electron-updater and
-// normal distribution; the MSIX exists for Store/sideload installs and for
-// the Windows Copilot hardware key, whose provider registration is only
-// readable from an MSIX manifest (customExtensionsPath splices the
-// uap3:AppExtension fragment into the generated <Extensions> block; the
-// hermes:// protocol extension itself is auto-generated from the top-level
-// protocols config). Signing rides the same Azure Trusted Signing chain as
-// the exe (MsixTarget → packager.signIf), so `publisher` must byte-match
-// the certificate subject. electron-updater does not update MSIX installs.
-/**
- * @param {boolean} light
- * @returns {MsixOptions}
- */
-function msixOptions(light) {
-  return {
-    identityName: light ? "NousResearch.HermesLight" : "NousResearch.Hermes",
-    applicationId: light ? "HermesLight" : "Hermes",
-    displayName: light ? "Hermes Light" : "Hermes",
-    publisher: "CN=Nous Research Inc., O=Nous Research Inc., L=Austin, S=Texas, C=US",
-    publisherDisplayName: "Nous Research",
-    customExtensionsPath: light
-      ? "electron/msix/copilot-key-extensions-light.xml"
-      : "electron/msix/copilot-key-extensions.xml",
-  }
-}
-
-// ── light variant identity overlay ──────────────────────────────────────────
-
-// HERMES_DESKTOP_VARIANT=light builds "Hermes Light": the remote-only
-// client with no agent payload and no local backend. It is a SEPARATE app
-// to the OS and to the updater — its own appId (installs beside full
-// Hermes, never over it), its own product/executable names, its own
-// artifact names, and its own electron-updater channel ('light' →
-// light*.yml) so both variants can share one GitHub release. A packaged
-// light app follows its own channel automatically: electron-builder
-// writes the channel into app-update.yml at package time.
-/** @returns {Partial<Configuration> | null} */
-function lightOverlay() {
-  if (process.env.HERMES_DESKTOP_VARIANT !== "light") {
-    return null
-  }
-  return {
-    appId: "com.nousresearch.hermes-light",
-    productName: "Hermes Light",
-    executableName: "Hermes Light",
-    artifactName: "Hermes-Light-${version}-${os}-${arch}.${ext}",
-    // channel: 'light' → the light*.yml feed, so both variants share one
-    // GitHub release without colliding feed files.
-    publish: base.publish.map((entry) => ({ ...entry, channel: "light" })),
-    // The packaged package.json 'name'. Everything runtime keys on
-    // productName/appId, which the overlay already renames — but
-    // electron-updater's cache dir derives from THIS field
-    // (appInfo.updaterCacheDirName = sanitized name + '-updater'), and
-    // both variants can live on one machine: with the shared name they
-    // stage downloads in the same <cache>/hermes-updater dir and can
-    // install each other's artifacts.
-    extraMetadata: { name: "hermes-light" },
-    mac: {
-      ...base.mac,
-      extendInfo: {
-        ...base.mac.extendInfo,
-        CFBundleDisplayName: "Hermes Light",
-        CFBundleExecutable: "Hermes Light",
-        CFBundleName: "Hermes Light",
-      },
-    },
-    dmg: {
-      ...base.dmg,
-      title: "Install Hermes Light",
-    },
-    win: {
-      ...base.win,
-      legalTrademarks: "Hermes Light",
-    },
-    linux: {
-      ...base.linux,
-      synopsis: "Remote-only desktop client for Hermes Agent.",
-    },
-    nsis: {
-      ...base.nsis,
-      shortcutName: "Hermes Light",
-      uninstallDisplayName: "Hermes Light",
-    },
-  }
-}
-
-const light = lightOverlay()
+// ── the configuration ───────────────────────────────────────────────────────
 
 /** @type {Configuration} */
 module.exports = {
-  ...base,
-  ...light,
-  msix: msixOptions(Boolean(light)),
-  win: {
-    ...base.win,
-    ...(light ? light.win : {}),
-    ...windowsSigning(),
+  electronVersion: "40.10.2",
+  appId,
+  productName,
+  executableName: productName,
+  protocols: [
+    {
+      name: "Hermes Protocol",
+      schemes: ["hermes"],
+    },
+  ],
+  artifactName: `${artifactPrefix}-\${version}-\${os}-\${arch}.\${ext}`,
+  icon: "assets/icon",
+  publish: [
+    {
+      provider: "github",
+      owner: "NousResearch",
+      repo: "hermes-agent",
+      // channel omitted for the full app → the default latest*.yml feed.
+      ...(channel ? { channel } : {}),
+    },
+  ],
+  // The packaged package.json 'name' — see pkgName above. Everything else
+  // runtime keys on productName/appId.
+  extraMetadata: { name: pkgName },
+  directories: {
+    output: "release",
+  },
+  files: ["dist/**", "assets/**", "public/**", "package.json"],
+  beforeBuild: "scripts/before-build.mjs",
+  beforePack: "scripts/before-pack.mjs",
+  afterPack: "scripts/after-pack.mjs",
+  extraResources: [
+    {
+      from: "build/agent-payload",
+      to: "agent-payload",
+    },
+    {
+      from: "assets/icon.ico",
+      to: "icon.ico",
+    },
+  ],
+  asar: {
+    unpack: ["**/*.node", "**/prebuilds/**", "dist/**"],
   },
   mac: {
-    ...(light ? light.mac : base.mac),
+    category: "public.app-category.developer-tools",
+    extendInfo: {
+      CFBundleDisplayName: productName,
+      CFBundleExecutable: productName,
+      CFBundleName: productName,
+      NSAudioCaptureUsageDescription: `${productName} uses audio capture for voice conversations.`,
+      NSCameraUsageDescription: `${productName} uses the camera when a plugin or feature you enable requests it.`,
+      NSMicrophoneUsageDescription: `${productName} uses the microphone for voice input and voice conversations.`,
+    },
+    target: ["dmg", "zip"],
     sign: {
-      ...base.mac.sign,
+      entitlements: "electron/entitlements.mac.plist",
+      entitlementsInherit: "electron/entitlements.mac.inherit.plist",
+      hardenedRuntime: true,
+      // (gatekeeperAssess is gone: osx-sign v3 dropped the --gatekeeper-assess
+      // pass entirely, and the v27 ElectronSignOptions type rejects the key.)
       // true → skip. Directories pass through (the walk hands over .app and
       // .framework bundles, which codesign must see whole); every regular
       // file must prove it is Mach-O to be signed individually.
@@ -304,5 +182,68 @@ module.exports = {
         }
       },
     },
+  },
+  dmg: {
+    title: `Install ${productName}`,
+    backgroundColor: "#f5f5f7",
+    iconSize: 96,
+    window: {
+      width: 560,
+      height: 360,
+    },
+    contents: [
+      {
+        x: 160,
+        y: 170,
+        type: "file",
+      },
+      {
+        x: 400,
+        y: 170,
+        type: "link",
+        path: "/Applications",
+      },
+    ],
+  },
+  win: {
+    legalTrademarks: productName,
+    target: ["nsis", "msix"],
+    ...windowsSigning(),
+  },
+  // MSIX ships beside NSIS: the exe keeps electron-updater and normal
+  // distribution; the MSIX exists for Store/sideload installs and for the
+  // Windows Copilot hardware key, whose provider registration is only
+  // readable from an MSIX manifest (customExtensionsPath splices the
+  // uap3:AppExtension fragment into the generated <Extensions> block; the
+  // hermes:// protocol extension itself is auto-generated from the
+  // protocols config above). Signing rides the same Azure Trusted Signing
+  // chain as the exe (MsixTarget → packager.signIf), so `publisher` must
+  // byte-match the certificate subject. electron-updater does not update
+  // MSIX installs.
+  msix: {
+    identityName: light ? "NousResearch.HermesLight" : "NousResearch.Hermes",
+    applicationId: light ? "HermesLight" : "Hermes",
+    displayName: productName,
+    publisher: "CN=Nous Research Inc., O=Nous Research Inc., L=Austin, S=Texas, C=US",
+    publisherDisplayName: "Nous Research",
+    customExtensionsPath: light
+      ? "electron/msix/copilot-key-extensions-light.xml"
+      : "electron/msix/copilot-key-extensions.xml",
+  },
+  linux: {
+    category: "Development",
+    maintainer: "Nous Research <support@nousresearch.com>",
+    synopsis: light ? "Remote-only desktop client for Hermes Agent." : "Native desktop shell for Hermes Agent.",
+    target: ["AppImage", "deb", "rpm"],
+  },
+  nsis: {
+    oneClick: true,
+    perMachine: false,
+    installerIcon: "assets/icon.ico",
+    uninstallerIcon: "assets/icon.ico",
+    installerHeaderIcon: "assets/icon.ico",
+    shortcutName: productName,
+    uninstallDisplayName: productName,
+    warningsAsErrors: false,
   },
 }
