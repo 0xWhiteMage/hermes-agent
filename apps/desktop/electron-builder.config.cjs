@@ -63,14 +63,76 @@ function windowsSigning() {
   }
 }
 
+// Light variant identity overlay. HERMES_DESKTOP_VARIANT=light builds
+// "Hermes Light": the remote-only client with no agent payload and no
+// local backend. It is a SEPARATE app to the OS and to the updater —
+// its own appId (installs beside full Hermes, never over it), its own
+// product/executable names, its own artifact names, and its own
+// electron-updater channel ('light' → light*.yml) so both variants can
+// share one GitHub release without colliding feed files. A packaged
+// light app follows its own channel automatically: electron-builder
+// writes the channel into app-update.yml at package time.
+function lightOverlay(base) {
+  if (process.env.HERMES_DESKTOP_VARIANT !== "light") {
+    return null
+  }
+  return {
+    appId: "com.nousresearch.hermes-light",
+    productName: "Hermes Light",
+    executableName: "Hermes Light",
+    artifactName: "Hermes-Light-${version}-${os}-${arch}.${ext}",
+    // channel: 'light' → the light*.yml feed, so both variants share one
+    // GitHub release without colliding feed files.
+    publish: (base.publish || []).map((entry) => ({ ...entry, channel: "light" })),
+    // The packaged package.json 'name'. Everything runtime keys on
+    // productName/appId, which the overlay already renames — but
+    // electron-updater's cache dir derives from THIS field
+    // (appInfo.updaterCacheDirName = sanitized name + '-updater'), and
+    // both variants can live on one machine: with the shared name they
+    // stage downloads in the same <cache>/hermes-updater dir and can
+    // install each other's artifacts.
+    extraMetadata: { name: "hermes-light" },
+    mac: {
+      ...base.mac,
+      extendInfo: {
+        ...base.mac.extendInfo,
+        CFBundleDisplayName: "Hermes Light",
+        CFBundleExecutable: "Hermes Light",
+        CFBundleName: "Hermes Light",
+      },
+    },
+    dmg: {
+      ...base.dmg,
+      title: "Install Hermes Light",
+    },
+    win: {
+      ...base.win,
+      legalTrademarks: "Hermes Light",
+    },
+    linux: {
+      ...base.linux,
+      synopsis: "Remote-only desktop client for Hermes Agent.",
+    },
+    nsis: {
+      ...base.nsis,
+      shortcutName: "Hermes Light",
+      uninstallDisplayName: "Hermes Light",
+    },
+  }
+}
+
+const light = lightOverlay(build)
+
 module.exports = {
   ...build,
+  ...light,
   win: {
     ...build.win,
+    ...(light ? light.win : {}),
     ...windowsSigning(),
   },
   mac: {
-    ...build.mac,
+    ...(light ? light.mac : build.mac),
     sign: {
       ...build.mac.sign,
       // true → skip. Directories pass through (the walk hands over .app and
