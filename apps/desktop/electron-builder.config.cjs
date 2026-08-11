@@ -1,17 +1,137 @@
-// The electron-builder configuration. It IS package.json's "build" field —
-// this file exists only because one option cannot be expressed in JSON:
-// mac.sign.ignore as a FUNCTION. osx-sign's walk selects files to sign with
-// a generic binary-content probe, which flags plain binary resources (the
-// payload CPython's idlelib GIFs, wheels, .zip) as signable. Signing those
-// is wrong (non-Mach-O resources are covered by the bundle's CodeResources
-// seal) and each bogus signing hits Apple's timestamp service — thousands
-// of payload files flooded it until it refused ("The timestamp service is
-// not available"). The function scopes signing to real Mach-O files.
+// THE electron-builder configuration — the whole thing, one file. There is
+// no "build" field in package.json: run-electron-builder.mjs always passes
+// --config for this file, so a stray package.json field would be silently
+// ignored anyway, and splitting the config across JSON + this overlay is
+// how the two halves drift.
+//
+// A .cjs module (not JSON) for two reasons:
+//   * mac.sign.ignore must be a FUNCTION. osx-sign's walk selects files to
+//     sign with a generic binary-content probe, which flags plain binary
+//     resources (the payload CPython's idlelib GIFs, wheels, .zip) as
+//     signable. Signing those is wrong (non-Mach-O resources are covered
+//     by the bundle's CodeResources seal) and each bogus signing hits
+//     Apple's timestamp service — thousands of payload files flooded it
+//     until it refused ("The timestamp service is not available"). The
+//     function scopes signing to real Mach-O files.
+//   * the light variant (HERMES_DESKTOP_VARIANT=light) reshapes identity,
+//     publish channel, and MSIX options at require time.
+// @ts-check — typed via JSDoc against app-builder-lib's own declarations;
+// the annotations make editors and `tsc --checkJs` validate every key
+// against the real Configuration/MsixOptions schema.
 "use strict"
 
 const fs = require("node:fs")
 
-const build = require("./package.json").build
+/** @typedef {import("app-builder-lib").Configuration} Configuration */
+/** @typedef {import("app-builder-lib").MsixOptions} MsixOptions */
+
+// ── base configuration (both variants start here) ──────────────────────────
+
+/** @satisfies {Configuration} */
+const base = {
+  electronVersion: "40.10.2",
+  appId: "com.nousresearch.hermes",
+  productName: "Hermes",
+  executableName: "Hermes",
+  protocols: [
+    {
+      name: "Hermes Protocol",
+      schemes: ["hermes"],
+    },
+  ],
+  artifactName: "Hermes-${version}-${os}-${arch}.${ext}",
+  icon: "assets/icon",
+  publish: [
+    {
+      provider: "github",
+      owner: "NousResearch",
+      repo: "hermes-agent",
+    },
+  ],
+  directories: {
+    output: "release",
+  },
+  files: ["dist/**", "assets/**", "public/**", "package.json"],
+  beforeBuild: "scripts/before-build.mjs",
+  beforePack: "scripts/before-pack.mjs",
+  afterPack: "scripts/after-pack.mjs",
+  extraResources: [
+    {
+      from: "build/agent-payload",
+      to: "agent-payload",
+    },
+    {
+      from: "assets/icon.ico",
+      to: "icon.ico",
+    },
+  ],
+  asar: {
+    unpack: ["**/*.node", "**/prebuilds/**", "dist/**"],
+  },
+  mac: {
+    category: "public.app-category.developer-tools",
+    extendInfo: {
+      CFBundleDisplayName: "Hermes",
+      CFBundleExecutable: "Hermes",
+      CFBundleName: "Hermes",
+      NSAudioCaptureUsageDescription: "Hermes uses audio capture for voice conversations.",
+      NSCameraUsageDescription: "Hermes uses the camera when a plugin or feature you enable requests it.",
+      NSMicrophoneUsageDescription: "Hermes uses the microphone for voice input and voice conversations.",
+    },
+    target: ["dmg", "zip"],
+    sign: {
+      entitlements: "electron/entitlements.mac.plist",
+      entitlementsInherit: "electron/entitlements.mac.inherit.plist",
+      hardenedRuntime: true,
+      // (gatekeeperAssess is gone: osx-sign v3 dropped the --gatekeeper-assess
+      // pass entirely, and the v27 ElectronSignOptions type rejects the key.)
+    },
+  },
+  dmg: {
+    title: "Install Hermes",
+    backgroundColor: "#f5f5f7",
+    iconSize: 96,
+    window: {
+      width: 560,
+      height: 360,
+    },
+    contents: [
+      {
+        x: 160,
+        y: 170,
+        type: "file",
+      },
+      {
+        x: 400,
+        y: 170,
+        type: "link",
+        path: "/Applications",
+      },
+    ],
+  },
+  win: {
+    legalTrademarks: "Hermes",
+    target: ["nsis", "msix"],
+  },
+  linux: {
+    category: "Development",
+    maintainer: "Nous Research <support@nousresearch.com>",
+    synopsis: "Native desktop shell for Hermes Agent.",
+    target: ["AppImage", "deb", "rpm"],
+  },
+  nsis: {
+    oneClick: true,
+    perMachine: false,
+    installerIcon: "assets/icon.ico",
+    uninstallerIcon: "assets/icon.ico",
+    installerHeaderIcon: "assets/icon.ico",
+    shortcutName: "Hermes",
+    uninstallDisplayName: "Hermes",
+    warningsAsErrors: false,
+  },
+}
+
+// ── mac signing scope ───────────────────────────────────────────────────────
 
 // The four magics that open a Mach-O or universal (fat) binary, in both
 // byte orders: MH_MAGIC(_64) and FAT_MAGIC read big-endian at offset 0.
@@ -24,6 +144,7 @@ const MACHO_MAGICS = new Set([
   0xbebafeca, // FAT_CIGAM
 ])
 
+/** @param {string} file */
 function isMachO(file) {
   const buf = Buffer.alloc(4)
   const fd = fs.openSync(file, "r")
@@ -37,11 +158,12 @@ function isMachO(file) {
   return MACHO_MAGICS.has(buf.readUInt32BE(0))
 }
 
-// Windows signing with Azure Trusted Signing. Composed here, not as
-// -c.win.sign.* CLI arguments: the publisherName holds spaces and commas
-// that do not survive cmd.exe argument hops. This file loads inside the
-// electron-builder process, so the values pass from the environment
-// verbatim.
+// ── windows signing ─────────────────────────────────────────────────────────
+
+// Azure Trusted Signing. Composed here, not as -c.win.sign.* CLI arguments:
+// the publisherName holds spaces and commas that do not survive cmd.exe
+// argument hops. This file loads inside the electron-builder process, so
+// the values pass from the environment verbatim.
 //
 // Do NOT put ExcludeCredentials in additionalMetadata: the v27 schema
 // types it Record<string,string> while the dlib deserializes it as
@@ -63,6 +185,8 @@ function windowsSigning() {
   }
 }
 
+// ── msix ────────────────────────────────────────────────────────────────────
+
 // MSIX packaging. Ships beside NSIS: the exe keeps electron-updater and
 // normal distribution; the MSIX exists for Store/sideload installs and for
 // the Windows Copilot hardware key, whose provider registration is only
@@ -72,6 +196,10 @@ function windowsSigning() {
 // protocols config). Signing rides the same Azure Trusted Signing chain as
 // the exe (MsixTarget → packager.signIf), so `publisher` must byte-match
 // the certificate subject. electron-updater does not update MSIX installs.
+/**
+ * @param {boolean} light
+ * @returns {MsixOptions}
+ */
 function msixOptions(light) {
   return {
     identityName: light ? "NousResearch.HermesLight" : "NousResearch.Hermes",
@@ -85,16 +213,18 @@ function msixOptions(light) {
   }
 }
 
-// Light variant identity overlay. HERMES_DESKTOP_VARIANT=light builds
-// "Hermes Light": the remote-only client with no agent payload and no
-// local backend. It is a SEPARATE app to the OS and to the updater —
-// its own appId (installs beside full Hermes, never over it), its own
-// product/executable names, its own artifact names, and its own
-// electron-updater channel ('light' → light*.yml) so both variants can
-// share one GitHub release without colliding feed files. A packaged
+// ── light variant identity overlay ──────────────────────────────────────────
+
+// HERMES_DESKTOP_VARIANT=light builds "Hermes Light": the remote-only
+// client with no agent payload and no local backend. It is a SEPARATE app
+// to the OS and to the updater — its own appId (installs beside full
+// Hermes, never over it), its own product/executable names, its own
+// artifact names, and its own electron-updater channel ('light' →
+// light*.yml) so both variants can share one GitHub release. A packaged
 // light app follows its own channel automatically: electron-builder
 // writes the channel into app-update.yml at package time.
-function lightOverlay(base) {
+/** @returns {Partial<Configuration> | null} */
+function lightOverlay() {
   if (process.env.HERMES_DESKTOP_VARIANT !== "light") {
     return null
   }
@@ -105,7 +235,7 @@ function lightOverlay(base) {
     artifactName: "Hermes-Light-${version}-${os}-${arch}.${ext}",
     // channel: 'light' → the light*.yml feed, so both variants share one
     // GitHub release without colliding feed files.
-    publish: (base.publish || []).map((entry) => ({ ...entry, channel: "light" })),
+    publish: base.publish.map((entry) => ({ ...entry, channel: "light" })),
     // The packaged package.json 'name'. Everything runtime keys on
     // productName/appId, which the overlay already renames — but
     // electron-updater's cache dir derives from THIS field
@@ -143,25 +273,26 @@ function lightOverlay(base) {
   }
 }
 
-const light = lightOverlay(build)
+const light = lightOverlay()
 
+/** @type {Configuration} */
 module.exports = {
-  ...build,
+  ...base,
   ...light,
   msix: msixOptions(Boolean(light)),
   win: {
-    ...build.win,
+    ...base.win,
     ...(light ? light.win : {}),
     ...windowsSigning(),
   },
   mac: {
-    ...(light ? light.mac : build.mac),
+    ...(light ? light.mac : base.mac),
     sign: {
-      ...build.mac.sign,
+      ...base.mac.sign,
       // true → skip. Directories pass through (the walk hands over .app and
       // .framework bundles, which codesign must see whole); every regular
       // file must prove it is Mach-O to be signed individually.
-      ignore: (file) => {
+      ignore: (/** @type {string} */ file) => {
         try {
           if (fs.lstatSync(file).isDirectory()) {
             return false
