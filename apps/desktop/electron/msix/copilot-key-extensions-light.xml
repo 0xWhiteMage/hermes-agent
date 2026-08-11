@@ -1,0 +1,20 @@
+<!-- Hermes Light's copy of copilot-key-extensions.xml. The fragment is spliced
+     after macro substitution, so the display strings cannot come from config —
+     each variant ships its own static fragment (the light electron-builder
+     overlay points msix.customExtensionsPath here). Keep the protocol URLs and
+     structure identical to the full app's fragment; only the names differ. -->
+<uap3:Extension
+    xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+    Category="windows.appExtension">
+  <uap3:AppExtension
+      Name="com.microsoft.windows.copilotkeyprovider"
+      Id="HermesLightCopilotKeyProvider"
+      DisplayName="Hermes Light"
+      Description="Launch Hermes Light with the Copilot key"
+      PublicFolder="Public">
+    <uap3:Properties>
+      <uap3:PressAndHoldStart>hermes://copilot-key/start</uap3:PressAndHoldStart>
+      <uap3:PressAndHoldStop>hermes://copilot-key/stop</uap3:PressAndHoldStop>
+    </uap3:Properties>
+  </uap3:AppExtension>
+</uap3:Extension>

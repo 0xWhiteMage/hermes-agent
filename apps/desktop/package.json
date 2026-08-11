@@ -259,7 +259,7 @@
       "legalTrademarks": "Hermes",
       "target": [
         "nsis",
-        "msi"
+        "msix"
       ]
     },
     "linux": {

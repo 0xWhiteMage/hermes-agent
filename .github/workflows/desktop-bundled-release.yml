@@ -373,6 +373,7 @@ jobs:
             apps/desktop/release/*.dmg
             apps/desktop/release/*.zip
             apps/desktop/release/*.exe
+            apps/desktop/release/*.msix
             apps/desktop/release/*.AppImage
             apps/desktop/release/*.blockmap
             apps/desktop/release/latest*.yml
@@ -390,7 +391,8 @@ jobs:
         run: |
           shopt -s nullglob
           files=(apps/desktop/release/*.dmg apps/desktop/release/*.zip \
-                 apps/desktop/release/*.exe apps/desktop/release/*.AppImage \
+                 apps/desktop/release/*.exe apps/desktop/release/*.msix \
+                 apps/desktop/release/*.AppImage \
                  apps/desktop/release/*.blockmap apps/desktop/release/latest*.yml \
                  apps/desktop/release/light*.yml)
           if [ ${#files[@]} -eq 0 ]; then

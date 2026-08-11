@@ -63,6 +63,28 @@ function windowsSigning() {
   }
 }
 
+// MSIX packaging. Ships beside NSIS: the exe keeps electron-updater and
+// normal distribution; the MSIX exists for Store/sideload installs and for
+// the Windows Copilot hardware key, whose provider registration is only
+// readable from an MSIX manifest (customExtensionsPath splices the
+// uap3:AppExtension fragment into the generated <Extensions> block; the
+// hermes:// protocol extension itself is auto-generated from the top-level
+// protocols config). Signing rides the same Azure Trusted Signing chain as
+// the exe (MsixTarget → packager.signIf), so `publisher` must byte-match
+// the certificate subject. electron-updater does not update MSIX installs.
+function msixOptions(light) {
+  return {
+    identityName: light ? "NousResearch.HermesLight" : "NousResearch.Hermes",
+    applicationId: light ? "HermesLight" : "Hermes",
+    displayName: light ? "Hermes Light" : "Hermes",
+    publisher: "CN=Nous Research Inc., O=Nous Research Inc., L=Austin, S=Texas, C=US",
+    publisherDisplayName: "Nous Research",
+    customExtensionsPath: light
+      ? "electron/msix/copilot-key-extensions-light.xml"
+      : "electron/msix/copilot-key-extensions.xml",
+  }
+}
+
 // Light variant identity overlay. HERMES_DESKTOP_VARIANT=light builds
 // "Hermes Light": the remote-only client with no agent payload and no
 // local backend. It is a SEPARATE app to the OS and to the updater —
@@ -126,6 +148,7 @@ const light = lightOverlay(build)
 module.exports = {
   ...build,
   ...light,
+  msix: msixOptions(Boolean(light)),
   win: {
     ...build.win,
     ...(light ? light.win : {}),

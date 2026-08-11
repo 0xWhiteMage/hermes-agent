@@ -82,6 +82,7 @@ import {
 } from './connection-config'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
+import { type DeepLinkRoute, routeDeepLink } from './deep-link-route'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import {
   allowedUninstallModes,
@@ -12800,6 +12801,28 @@ function handleDeepLink(url) {
     params[k] = v
   })
   const payload = { kind, name, params }
+
+  // hermes://copilot-key/start — the Windows Copilot hardware key (registered
+  // as a provider in the MSIX manifest; the OS activates us through this
+  // protocol). Summon the ephemeral quick-entry popup: a hardware key wants
+  // the lightweight composer, not the full window. Handled entirely in the
+  // main process — no renderer, no main window, no ready-gate needed.
+  // Routing contract (start summons, stop is ignored): deep-link-route.ts.
+  const route: DeepLinkRoute = routeDeepLink(kind, name)
+
+  if (route === 'quick-entry') {
+    // open-url can deliver pre-ready (macOS); BrowserWindow needs ready.
+    void app.whenReady().then(() => {
+      showQuickEntryWindow()
+      rememberLog('[deeplink] copilot key: quick entry summoned')
+    })
+
+    return
+  }
+
+  if (route === 'ignore') {
+    return
+  }
 
   if (!_rendererReadyForDeepLink || !mainWindow || mainWindow.isDestroyed()) {
     _pendingDeepLink = payload

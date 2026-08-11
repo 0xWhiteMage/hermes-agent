@@ -1,0 +1,24 @@
+<!-- Registers Hermes as a Windows Copilot hardware key provider (MSIX only;
+     spliced into the generated <Extensions> block by msix.customExtensionsPath —
+     it is a fragment, not a manifest). The xmlns:uap3 declaration lives on the
+     element because the fragment is inserted AFTER macro substitution: the
+     stock manifest template declares no uap3 prefix and ${...} macros in this
+     file would never expand. The OS activates us through the protocol URLs
+     below; electron-builder generates the matching windows.protocol extension
+     for hermes:// from the top-level protocols config. Routing lives in
+     electron/deep-link-route.ts (press summons the quick-entry popup). -->
+<uap3:Extension
+    xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+    Category="windows.appExtension">
+  <uap3:AppExtension
+      Name="com.microsoft.windows.copilotkeyprovider"
+      Id="HermesCopilotKeyProvider"
+      DisplayName="Hermes"
+      Description="Launch Hermes with the Copilot key"
+      PublicFolder="Public">
+    <uap3:Properties>
+      <uap3:PressAndHoldStart>hermes://copilot-key/start</uap3:PressAndHoldStart>
+      <uap3:PressAndHoldStop>hermes://copilot-key/stop</uap3:PressAndHoldStop>
+    </uap3:Properties>
+  </uap3:AppExtension>
+</uap3:Extension>
