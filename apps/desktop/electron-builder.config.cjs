@@ -20,131 +20,95 @@
 //     variants install and update side by side.
 // @ts-check — typed via JSDoc against app-builder-lib's own declarations;
 // enforced by the checkJs pass in npm run typecheck.
-"use strict"
+'use strict'
 
-const fs = require("node:fs")
-const path = require("node:path")
+const fs = require('node:fs')
+const path = require('node:path')
 
 /** @typedef {import("app-builder-lib").Configuration} Configuration */
 
-// ── the one variant switch ──────────────────────────────────────────────────
+const light = process.env.HERMES_DESKTOP_VARIANT === 'light'
 
-const light = process.env.HERMES_DESKTOP_VARIANT === "light"
-
-// Product identity, derived once. Every name-shaped string below comes from
-// these; nothing else may hardcode "Hermes" / "Hermes Light".
-const productName = light ? "Hermes Light" : "Hermes"
-
-// appId separates the two apps for the OS (side-by-side installs, own
-// settings); pkgName separates them for electron-updater, whose cache dir
-// derives from the packaged package.json name (appInfo.updaterCacheDirName
-// = sanitized name + '-updater') — with a shared name both apps stage
-// downloads in the same <cache>/hermes-updater dir and can install each
-// other's artifacts. artifactPrefix keys the release file names, and
-// channel: 'light' → the light*.yml feed, so both variants share one
-// GitHub release without colliding feed files. A packaged light app
-// follows its own channel automatically: electron-builder writes it into
-// app-update.yml at package time.
-const appId = light ? "com.nousresearch.hermes-light" : "com.nousresearch.hermes"
-const pkgName = light ? "hermes-light" : "hermes"
-const artifactPrefix = light ? "Hermes-Light" : "Hermes"
-const channel = light ? "light" : undefined
-// Deep-link scheme. Each variant owns its own: with a shared scheme the
-// two side-by-side apps fight over the OS handler registration and the
-// Copilot key's activation URI can launch the wrong app. The runtime
-// derives the same value from the baked install stamp (deep-link-route.ts
-// deepLinkScheme), so keep the two derivations in agreement.
-const protocolScheme = light ? "hermes-light" : "hermes"
-
-// ── mac signing scope ───────────────────────────────────────────────────────
-
-// The four magics that open a Mach-O or universal (fat) binary, in both
-// byte orders: MH_MAGIC(_64) and FAT_MAGIC read big-endian at offset 0.
-const MACHO_MAGICS = new Set([
-  0xfeedface, // MH_MAGIC (32-bit)
-  0xcefaedfe, // MH_CIGAM
-  0xfeedfacf, // MH_MAGIC_64
-  0xcffaedfe, // MH_CIGAM_64
-  0xcafebabe, // FAT_MAGIC (universal)
-  0xbebafeca, // FAT_CIGAM
-])
-
-/** @param {string} file */
-function isMachO(file) {
-  const buf = Buffer.alloc(4)
-  const fd = fs.openSync(file, "r")
-  try {
-    if (fs.readSync(fd, buf, 0, 4, 0) !== 4) {
-      return false
-    }
-  } finally {
-    fs.closeSync(fd)
-  }
-  return MACHO_MAGICS.has(buf.readUInt32BE(0))
+// master product id, used for all sorts of markers
+const variant = light ? ['Hermes', 'Light'] : ['Hermes']
+// variant in various cases
+const name = {
+  display: variant.join(' '),
+  kebab: variant.join('-').toLowerCase(),
+  train: variant.join('-'),
+  pascal: variant.join('')
 }
 
-// ── the configuration ───────────────────────────────────────────────────────
+// distinct for the OS (settings, installs, etc)
+const appId = `com.nousresearch.${name.kebab}`
+
+// distinct for release channels
+const channel = light ? 'light' : 'latest'
+
+// distinct for deep link schemes
+const protocolScheme = name.kebab
 
 /** @type {Configuration} */
 module.exports = {
-  electronVersion: "40.10.2",
+  electronVersion: '40.10.2',
   appId,
-  productName,
-  executableName: productName,
+  productName: name.display,
+  executableName: name.display,
   protocols: [
     {
-      name: `${productName} Protocol`,
-      schemes: [protocolScheme],
-    },
+      name: `${name.display} Protocol`,
+      schemes: [protocolScheme]
+    }
   ],
-  artifactName: `${artifactPrefix}-\${version}-\${os}-\${arch}.\${ext}`,
-  icon: "assets/icon",
+  // separate variants for release filenames
+  artifactName: `${name.train}-\${version}-\${os}-\${arch}.\${ext}`,
+  icon: 'assets/icon',
   publish: [
     {
-      provider: "github",
-      owner: "NousResearch",
-      repo: "hermes-agent",
-      // channel omitted for the full app → the default latest*.yml feed.
-      ...(channel ? { channel } : {}),
-    },
+      provider: 'github',
+      owner: 'NousResearch',
+      repo: 'hermes-agent',
+      channel
+    }
   ],
-  // The packaged package.json 'name' — see pkgName above. Everything else
-  // runtime keys on productName/appId.
-  extraMetadata: { name: pkgName },
-  directories: {
-    output: "release",
+  extraMetadata: {
+    // separate variants for electron-updater download cache dirs
+    name: name.kebab
   },
-  files: ["dist/**", "assets/**", "public/**", "package.json"],
-  beforeBuild: "scripts/before-build.mjs",
-  beforePack: "scripts/before-pack.mjs",
-  afterPack: "scripts/after-pack.mjs",
+  directories: {
+    output: 'release'
+  },
+  files: ['dist/**', 'assets/**', 'public/**', 'package.json'],
+  beforeBuild: 'scripts/before-build.mjs',
+  beforePack: 'scripts/before-pack.mjs',
+  afterPack: 'scripts/after-pack.mjs',
   extraResources: [
     {
-      from: "build/agent-payload",
-      to: "agent-payload",
+      from: 'build/agent-payload',
+      to: 'agent-payload'
     },
     {
-      from: "assets/icon.ico",
-      to: "icon.ico",
-    },
+      from: 'assets/icon.ico',
+      to: 'icon.ico'
+    }
   ],
   asar: {
-    unpack: ["**/*.node", "**/prebuilds/**", "dist/**"],
+    unpack: ['**/*.node', '**/prebuilds/**', 'dist/**']
   },
   mac: {
-    category: "public.app-category.developer-tools",
+    category: 'public.app-category.developer-tools',
     extendInfo: {
-      CFBundleDisplayName: productName,
-      CFBundleExecutable: productName,
-      CFBundleName: productName,
-      NSAudioCaptureUsageDescription: `${productName} uses audio capture for voice conversations.`,
-      NSCameraUsageDescription: `${productName} uses the camera when a plugin or feature you enable requests it.`,
-      NSMicrophoneUsageDescription: `${productName} uses the microphone for voice input and voice conversations.`,
+      CFBundleDisplayName: name.display,
+      CFBundleExecutable: name.display,
+      CFBundleName: name.display,
+      NSAudioCaptureUsageDescription: `${name.display} uses audio capture for voice conversations.`,
+      NSCameraUsageDescription: `${name.display} uses the camera when a plugin or feature you enable requests it.`,
+      NSMicrophoneUsageDescription: `${name.display} uses the microphone for voice input and voice conversations.`
     },
-    target: ["dmg", "zip"],
+    target: ['dmg', 'zip'],
     sign: {
-      entitlements: "electron/entitlements.mac.plist",
-      entitlementsInherit: "electron/entitlements.mac.inherit.plist",
+      entitlements: 'electron/entitlements.mac.plist',
+      entitlementsInherit: 'electron/entitlements.mac.inherit.plist',
       hardenedRuntime: true,
       // (gatekeeperAssess is gone: osx-sign v3 dropped the --gatekeeper-assess
       // pass entirely, and the v27 ElectronSignOptions type rejects the key.)
@@ -161,105 +125,80 @@ module.exports = {
           // Unreadable/vanished: nothing to sign either way.
           return true
         }
-      },
-    },
+      }
+    }
   },
   dmg: {
-    title: `Install ${productName}`,
-    backgroundColor: "#f5f5f7",
+    title: `Install ${name.display}`,
+    backgroundColor: '#f5f5f7',
     iconSize: 96,
     window: {
       width: 560,
-      height: 360,
+      height: 360
     },
     contents: [
       {
         x: 160,
         y: 170,
-        type: "file",
+        type: 'file'
       },
       {
         x: 400,
         y: 170,
-        type: "link",
-        path: "/Applications",
-      },
-    ],
+        type: 'link',
+        path: '/Applications'
+      }
+    ]
   },
   win: {
-    legalTrademarks: productName,
-    target: ["nsis", "msix"],
-    ...windowsSigning(),
+    legalTrademarks: name.display,
+    target: ['nsis', 'msix'],
+    ...windowsSigning()
   },
   // MSIX ships beside NSIS: the exe keeps electron-updater and normal
   // distribution; the MSIX exists for Store/sideload installs and for the
-  // Windows Copilot hardware key, whose provider registration is only
-  // readable from an MSIX manifest (customExtensionsPath splices the
-  // generated uap3:AppExtension fragment — see copilotKeyFragmentPath —
-  // into the <Extensions> block; the hermes:// protocol extension itself
-  // is auto-generated from the protocols config above). Signing rides the
-  // same Azure Trusted Signing chain as the exe (MsixTarget →
-  // packager.signIf), so `publisher` must byte-match the certificate
-  // subject. electron-updater does not update MSIX installs.
+  // Windows Copilot hardware key.
+  // electron-updater does not update MSIX installs.
   msix: {
-    identityName: light ? "NousResearch.HermesLight" : "NousResearch.Hermes",
-    applicationId: light ? "HermesLight" : "Hermes",
-    displayName: productName,
-    publisher: "CN=Nous Research Inc., O=Nous Research Inc., L=Austin, S=Texas, C=US",
-    publisherDisplayName: "Nous Research",
-    customExtensionsPath: copilotKeyFragmentPath(),
+    identityName: `NousResearch.${name.pascal}`,
+    applicationId: name.pascal,
+    displayName: name.display,
+    publisher: 'CN=Nous Research Inc., O=Nous Research Inc., L=Austin, S=Texas, C=US',
+    publisherDisplayName: 'Nous Research',
+    customExtensionsPath: copilotKeyFragmentPath()
   },
   linux: {
-    category: "Development",
-    maintainer: "Nous Research <support@nousresearch.com>",
-    synopsis: light ? "Remote-only desktop client for Hermes Agent." : "Native desktop shell for Hermes Agent.",
-    target: ["AppImage"],
+    category: 'Development',
+    maintainer: 'Nous Research <support@nousresearch.com>',
+    synopsis: light ? 'Remote-only desktop client for Hermes Agent.' : 'Native desktop shell for Hermes Agent.',
+    target: ['AppImage']
   },
   nsis: {
     oneClick: true,
     perMachine: false,
-    installerIcon: "assets/icon.ico",
-    uninstallerIcon: "assets/icon.ico",
-    installerHeaderIcon: "assets/icon.ico",
-    shortcutName: productName,
-    uninstallDisplayName: productName,
-    warningsAsErrors: false,
-  },
+    installerIcon: 'assets/icon.ico',
+    uninstallerIcon: 'assets/icon.ico',
+    installerHeaderIcon: 'assets/icon.ico',
+    shortcutName: name.display,
+    uninstallDisplayName: name.display,
+    warningsAsErrors: false
+  }
 }
-
 
 // ── copilot key provider fragment ───────────────────────────────────────────
 
 // The uap3:AppExtension fragment that registers the app as a Windows
-// Copilot hardware key provider. MsixTarget reads customExtensionsPath
-// relative to the app dir and splices the file's content into the
-// generated <Extensions> block verbatim, AFTER macro substitution — a
-// path is the only interface it offers. So the fragment is produced here
-// from the variant's productName and written into the gitignored build/
-// dir at require time: electron-builder always requires this config
-// before packaging, so the file exists by the time the MSIX target reads
-// it, and one template serves both variants.
-//
-// Two content rules, both learned the hard way:
-//   * xmlns:uap3 must be declared ON the fragment's root element — the
-//     stock manifest template declares no uap3 prefix, and ${...} in this
-//     fragment would never expand (the splice is post-substitution).
-//   * children of uap3:Properties are UNPREFIXED (xs:any content, per the
-//     copilot-key-state sample): a uap3: prefix there fails manifest
-//     validation — makeappx 0x80080204.
-//
-// The press activates <scheme>://copilot-key/start; routing lives in
-// electron/deep-link-route.ts (start summons the quick-entry popup, stop
-// is ignored).
+// Copilot hardware key provider.
+// The press activates <scheme>://copilot-key/start
 function copilotKeyFragmentPath() {
   const fragment = `<uap3:Extension
     xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
     Category="windows.appExtension">
   <uap3:AppExtension
       Name="com.microsoft.windows.copilotkeyprovider"
-      Id="${productName.replace(/\s/g, "")}CopilotKeyProvider"
-      DisplayName="${productName}"
-      Description="Launch ${productName} with the Copilot key"
+      Id="${name.pascal}CopilotKeyProvider"
+      DisplayName="${name.display}"
+      Description="Launch ${name.display} with the Copilot key"
       PublicFolder="Public">
     <uap3:Properties>
       <SingleTap>${protocolScheme}://copilot-key/start?state=Tap</SingleTap>
@@ -269,7 +208,7 @@ function copilotKeyFragmentPath() {
   </uap3:AppExtension>
 </uap3:Extension>
 `
-  const rel = path.join("build", "msix-copilot-key-extensions.xml")
+  const rel = path.join('build', 'msix-copilot-key-extensions.xml')
   const abs = path.join(__dirname, rel)
   fs.mkdirSync(path.dirname(abs), { recursive: true })
   fs.writeFileSync(abs, fragment)
@@ -294,11 +233,38 @@ function windowsSigning() {
   }
   return {
     sign: {
-      type: "azure",
+      type: 'azure',
       endpoint: process.env.AZURE_SIGN_ENDPOINT,
       codeSigningAccountName: process.env.AZURE_SIGN_ACCOUNT,
       certificateProfileName: process.env.AZURE_SIGN_PROFILE,
-      publisherName: process.env.AZURE_SIGN_PUBLISHER,
-    },
+      publisherName: process.env.AZURE_SIGN_PUBLISHER
+    }
   }
+}
+
+// ── mac signing scope ───────────────────────────────────────────────────────
+
+// The four magics that open a Mach-O or universal (fat) binary, in both
+// byte orders: MH_MAGIC(_64) and FAT_MAGIC read big-endian at offset 0.
+const MACHO_MAGICS = new Set([
+  0xfeedface, // MH_MAGIC (32-bit)
+  0xcefaedfe, // MH_CIGAM
+  0xfeedfacf, // MH_MAGIC_64
+  0xcffaedfe, // MH_CIGAM_64
+  0xcafebabe, // FAT_MAGIC (universal)
+  0xbebafeca // FAT_CIGAM
+])
+
+/** @param {string} file */
+function isMachO(file) {
+  const buf = Buffer.alloc(4)
+  const fd = fs.openSync(file, 'r')
+  try {
+    if (fs.readSync(fd, buf, 0, 4, 0) !== 4) {
+      return false
+    }
+  } finally {
+    fs.closeSync(fd)
+  }
+  return MACHO_MAGICS.has(buf.readUInt32BE(0))
 }
