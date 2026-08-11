@@ -9,8 +9,7 @@ import type {
   DesktopAuthProvider,
   DesktopBackendAvailability,
   DesktopCloudAgent,
-  DesktopCloudOrg,
-  DesktopConnectionProbeResult
+  DesktopCloudOrg
 } from '@/global'
 import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
@@ -29,6 +28,7 @@ import {
 } from '@/lib/icons'
 import { coerceRemoteUrlScheme } from '@/lib/remote-url'
 import { selectableCardClass } from '@/lib/selectable-card'
+import { useRemoteConnectionSetup } from '@/lib/use-remote-connection-setup'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $profiles, refreshActiveProfile } from '@/store/profile'
@@ -249,13 +249,6 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     void refreshActiveProfile()
   }, [])
 
-  // Auth-mode probe: as the user types a remote URL we ask the gateway (via
-  // its public /api/status) whether it gates with OAuth or a static session
-  // token, so we can show the right control (login button vs token box).
-  const [probeStatus, setProbeStatus] = useState<ProbeStatus>('idle')
-  const [probe, setProbe] = useState<DesktopConnectionProbeResult | null>(null)
-  const probeSeq = useRef(0)
-
   useEffect(() => {
     let cancelled = false
     const desktop = window.hermesDesktop
@@ -312,77 +305,39 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   const isConnectedAgent = (agent: DesktopCloudAgent) =>
     Boolean(connectedCloudUrl && agent.dashboardUrl && normalizeCloudUrl(agent.dashboardUrl) === connectedCloudUrl)
 
-  useEffect(() => {
-    if (state.mode !== 'remote' || !trimmedUrl || !/^https?:\/\//i.test(trimmedUrl)) {
-      setProbeStatus('idle')
-      setProbe(null)
+  // Shared connection-setup logic (probe debounce, auth-mode resolution,
+  // oauth sign-in) — the same hook first-run setup uses; Settings differs
+  // only in presentation (toasts) and its pre-save before oauth login.
+  const hasSavedRemote: boolean = state.remoteTokenSet || state.remoteOauthConnected
 
-      return
-    }
+  const remoteSetup = useRemoteConnectionSetup({
+    beforeOAuthLogin: async (url: string) => {
+      // Save (don't apply/restart) so the login window has a URL to use and
+      // the oauth mode is persisted, without yet flipping the live connection.
+      const saved = await window.hermesDesktop.saveConnectionConfig({
+        mode: state.mode,
+        profile: scope ?? undefined,
+        remoteAuthMode: 'oauth',
+        remoteUrl: url
+      })
 
-    const desktop = window.hermesDesktop
+      acceptSavedConfig(saved)
+    },
+    copy: {
+      enterUrlFirst: g.enterUrlFirst,
+      probeError: g.probeError,
+      signInIncomplete: t.boot.failure.signInIncompleteMessage
+    },
+    enabled: state.mode === 'remote',
+    hasSavedCredentials: hasSavedRemote,
+    onError: (message: string) => notify({ kind: 'warning', title: g.incompleteTitle, message }),
+    payloadExtras: { profile: scope ?? undefined },
+    remoteToken,
+    remoteUrl: state.remoteUrl,
+    savedAuthMode: state.remoteAuthMode
+  })
 
-    if (!desktop?.probeConnectionConfig) {
-      return
-    }
-
-    const seq = ++probeSeq.current
-    setProbeStatus('probing')
-
-    const timer = setTimeout(() => {
-      desktop
-        .probeConnectionConfig(trimmedUrl)
-        .then(result => {
-          if (seq !== probeSeq.current) {
-            return
-          }
-
-          setProbe(result)
-          setProbeStatus(result.reachable ? 'done' : 'error')
-        })
-        .catch(() => {
-          if (seq !== probeSeq.current) {
-            return
-          }
-
-          setProbe(null)
-          setProbeStatus('error')
-        })
-    }, 500)
-
-    return () => clearTimeout(timer)
-  }, [state.mode, trimmedUrl])
-
-  // Effective auth mode: a reachable probe wins; otherwise fall back to the
-  // saved config's mode so a re-open of settings doesn't flicker.
-  const authMode: AuthMode = useMemo(() => {
-    if (probeStatus === 'done' && probe && probe.authMode !== 'unknown') {
-      return probe.authMode
-    }
-
-    return state.remoteAuthMode
-  }, [probe, probeStatus, state.remoteAuthMode])
-
-  // Whether we actually KNOW how this gateway authenticates yet. Until we do,
-  // neither the OAuth button nor the session-token box should render —
-  // `authMode` defaults to 'token', so without this gate the token box flashes
-  // for every gateway (including OAuth ones) during the idle/probing window
-  // before the first probe lands. The scheme is known when either:
-  //   * the live probe finished (probeStatus 'done'), or
-  //   * we're idle but showing a previously-saved remote config (re-opening
-  //     settings for a gateway already signed-in or with a saved token), so
-  //     its control appears immediately with no flicker.
-  // While probing (or after a probe error), the scheme is unknown and we show
-  // the probe status row instead of a control.
-  const hasSavedRemote = state.remoteTokenSet || state.remoteOauthConnected
-
-  const authResolved = useMemo(() => {
-    if (probeStatus === 'done') {
-      return true
-    }
-
-    return probeStatus === 'idle' && hasSavedRemote
-  }, [probeStatus, hasSavedRemote])
+  const { authMode, authResolved, probe, probeStatus } = remoteSetup
 
   const providerLabel = useMemo(() => {
     const providers: DesktopAuthProvider[] = probe?.providers ?? []
@@ -561,62 +516,25 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     }
   }
 
-  // OAuth sign-in: persist the URL + oauth mode first (so the saved config has
-  // the URL the login window needs), then open the gateway login window and
-  // refresh the connection status from the saved config once it completes.
-  const signIn = async () => {
+  // OAuth sign-in through the shared hook (which runs our pre-save via
+  // beforeOAuthLogin); on success, refresh the saved config so the
+  // signed-in state renders, and toast — Settings' presentation.
+  const signIn = async (): Promise<void> => {
     const seq = ++signingSeq.current
+    const connected = await remoteSetup.signIn()
 
-    if (!trimmedUrl) {
-      notify({ kind: 'warning', title: g.incompleteTitle, message: g.enterUrlFirst })
-
+    if (seq !== signingSeq.current || !connected) {
       return
     }
 
-    setSigningIn(true)
+    const refreshed = await window.hermesDesktop.getConnectionConfig(scope)
 
-    try {
-      // Save (don't apply/restart) so the login window has a URL to use and the
-      // oauth mode is persisted, without yet flipping the live connection.
-      const saved = await window.hermesDesktop.saveConnectionConfig({
-        mode: state.mode,
-        profile: scope ?? undefined,
-        remoteAuthMode: 'oauth',
-        remoteUrl: trimmedUrl
-      })
-
-      if (seq !== signingSeq.current) {
-        return
-      }
-
-      acceptSavedConfig(saved)
-
-      const result = await window.hermesDesktop.oauthLoginConnectionConfig(trimmedUrl)
-
-      if (seq !== signingSeq.current) {
-        return
-      }
-
-      if (result.connected) {
-        const refreshed = await window.hermesDesktop.getConnectionConfig(scope)
-        acceptSavedConfig(refreshed)
-        notify({ kind: 'success', title: g.signedIn, message: g.connectedTo(providerLabel) })
-      } else {
-        notify({
-          kind: 'warning',
-          title: t.boot.failure.signInIncompleteTitle,
-          message: t.boot.failure.signInIncompleteMessage
-        })
-      }
-    } catch (err) {
-      if (seq === signingSeq.current) {
-        notifyError(err, g.signInFailed)
-      }
-    } finally {
-      if (seq === signingSeq.current) {
-        setSigningIn(false)
-      }
+    if (seq !== signingSeq.current) {
+      return
     }
+
+    acceptSavedConfig(refreshed)
+    notify({ kind: 'success', title: g.signedIn, message: g.connectedTo(providerLabel) })
   }
 
   const signOut = async () => {
@@ -1344,8 +1262,11 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
                     </Button>
                   </div>
                 ) : (
-                  <Button disabled={signingIn || state.envOverride || !trimmedUrl} onClick={() => void signIn()}>
-                    {signingIn ? <Loader2 className="animate-spin" /> : <LogIn />}
+                  <Button
+                    disabled={remoteSetup.signingIn || state.envOverride || !trimmedUrl}
+                    onClick={() => void signIn()}
+                  >
+                    {remoteSetup.signingIn ? <Loader2 className="animate-spin" /> : <LogIn />}
                     {isPasswordProvider ? g.signIn : g.signInWith(providerLabel)}
                   </Button>
                 )

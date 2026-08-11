@@ -307,8 +307,19 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
       }
     }
 
-    window.hermesDesktop
-      ?.getBackendAvailability?.()
+    const availabilityCall = window.hermesDesktop?.getBackendAvailability?.()
+
+    if (!availabilityCall) {
+      // Older Electron main without the IPC: no availability facts, offer
+      // the classic two-card choice.
+      finish(null)
+
+      return () => {
+        cancelled = true
+      }
+    }
+
+    availabilityCall
       .then((list: DesktopBackendAvailability[] | undefined) => finish(Array.isArray(list) ? list : null))
       .catch(() => finish(null))
 
