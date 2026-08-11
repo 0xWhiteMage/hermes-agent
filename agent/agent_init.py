@@ -1459,7 +1459,7 @@ def init_agent(
         KANBAN_GUIDANCE if "kanban_show" in agent.valid_tool_names else ""
     )
 
-    # Tool-provider bridge session state (composio-bridge prototype):
+    # Tool-provider bridge session state (tool-provider prototype):
     # context_id is an opaque correlation token for /v1/search + /v1/execute
     # calls in THIS session (see tools/tool_search.py::capture_context_id,
     # which updates this attribute after each bridge/provider tool call).
