@@ -8569,6 +8569,19 @@ async function spawnPoolBackend(profile, entry) {
 
   const token = crypto.randomBytes(32).toString('base64url')
 
+  // No remote override for this profile → the local spawn path. On an
+  // artifact without a local mode (light), that path does not exist: fail
+  // with the availability reason instead of resolving a runtime this
+  // build does not ship. Mirrors the primary startup's registry gate.
+  const poolLocalAvailability: ModeAvailability = modeAvailability(desktopBackendAvailability(), 'local')
+
+  if (poolLocalAvailability.available === false) {
+    throw new Error(
+      `Profile "${profile}" has no remote connection configured, and this Hermes build has no local backend ` +
+        `(${poolLocalAvailability.reason}). Point the profile at a remote gateway in Settings.`
+    )
+  }
+
   // Same update mutual exclusion as the primary window's waitForLocalStart
   // (#73822): pool backends spawn from the same venv, so an ungated respawn
   // during applyUpdates' critical section re-locks the venv and trips the
@@ -10632,6 +10645,15 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
   return { ok: true }
 })
 ipcMain.handle('hermes:bootstrap:continue-local', async () => {
+  // A stale/legacy renderer can still send this on an artifact with no
+  // local mode; refuse here so the setup gate never resolves a decision
+  // the light startup path treats as a wiring bug.
+  const localAvailability: ModeAvailability = modeAvailability(desktopBackendAvailability(), 'local')
+
+  if (localAvailability.available === false) {
+    throw new Error('This Hermes build has no local backend. Connect to a remote gateway instead.')
+  }
+
   rememberLog('[bootstrap] local install selected by renderer; continuing first-launch bootstrap')
   continueFirstRunLocalBootstrap()
 
