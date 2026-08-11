@@ -238,6 +238,16 @@ jobs:
           ( while sleep 240; do mint || true; done ) &
           echo "AZURE_FEDERATED_TOKEN_FILE=$file" >> "$GITHUB_ENV"
 
+      # dmgbuild mounts a staging image and ejects it when done; Spotlight
+      # races to index the fresh volume and holds it busy past dmgbuild's
+      # detach retries ("hdiutil: couldn't eject — Resource busy", a
+      # recurring flake on hosted macOS runners). Nothing on a CI runner
+      # needs Spotlight; turning it off removes the only known holder.
+      - name: Disable Spotlight indexing (dmg detach flake)
+        if: startsWith(matrix.target.label, 'darwin-')
+        shell: bash
+        run: sudo mdutil -a -i off || true
+
       # notarytool's --key flag takes a PATH to the .p8 — and the chain
       # from env var to argv is verbatim (no decode, no temp file:
       # MacTargetHelper passes process.env.APPLE_API_KEY straight to
