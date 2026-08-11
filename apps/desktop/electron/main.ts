@@ -10815,6 +10815,7 @@ ipcMain.handle('hermes:cloud:agent-sign-in', async (_event, dashboardUrl) => {
   // saves a cloud-mode connection pointed at this dashboardUrl.
   return cloudAgentSilentSignIn(dashboardUrl)
 })
+
 // Refuse persisting a connection mode this artifact/machine does not offer.
 // The renderer hides unavailable mode cards, but hiding is not a boundary —
 // the IPC surface must hold the invariant on its own (a stale renderer, a
