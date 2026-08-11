@@ -2131,6 +2131,50 @@ def git_result(*args, cwd=None):
     )
 
 
+def list_remotes() -> list[str]:
+    """The configured git remote names, in git's order."""
+    result = git_result("remote")
+    if result.returncode != 0:
+        return []
+    return [name for name in result.stdout.split() if name]
+
+
+def resolve_push_remote(requested: str | None) -> str:
+    """Pick the remote that receives the release push (and the GitHub
+    release). One configured remote: use it. More than one: the tag push
+    is what fires the release workflow on whichever repo it lands on, so
+    an implicit default is a foot-gun — require an explicit --remote.
+    """
+    remotes = list_remotes()
+    if not remotes:
+        raise SystemExit("release: no git remotes configured — nothing to push to")
+    if requested:
+        if requested not in remotes:
+            raise SystemExit(
+                f"release: remote {requested!r} is not configured "
+                f"(available: {', '.join(remotes)})"
+            )
+        return requested
+    if len(remotes) == 1:
+        return remotes[0]
+    raise SystemExit(
+        "release: multiple remotes are configured "
+        f"({', '.join(remotes)}) — pass --remote <name> to say which one "
+        "receives the release push"
+    )
+
+
+def remote_github_repo(remote: str) -> str | None:
+    """The 'owner/repo' behind a remote's push URL, for gh --repo.
+    None when the URL is not a recognizable GitHub URL."""
+    result = git_result("remote", "get-url", "--push", remote)
+    if result.returncode != 0:
+        return None
+    url = result.stdout.strip()
+    match = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$", url)
+    return match.group(1) if match else None
+
+
 # Cap the major at three digits — the same rule as _parse_release_tag in
 # hermes_cli/update_cmd.py and _SEMVER_TAG_RE in scripts/write_install_stamp.py.
 # The legacy CalVer tags (v2026.7.20) must never match as SemVer.
@@ -2497,6 +2541,10 @@ def main():
                         help="Which semver component to bump")
     parser.add_argument("--publish", action="store_true",
                         help="Actually create the tag and GitHub release (otherwise dry run)")
+    parser.add_argument("--remote", type=str,
+                        help="Git remote that receives the release push and the GitHub "
+                             "release. Required with --publish when more than one remote "
+                             "is configured; the single remote is used when only one exists.")
     parser.add_argument("--date", type=str,
                         help="Override release date metadata (format: YYYY.M.D)")
     parser.add_argument("--first-release", action="store_true",
@@ -2561,8 +2609,14 @@ def main():
         print(changelog)
 
     if args.publish:
+        # Resolve the destination FIRST: a wrong or ambiguous remote must
+        # fail before any commit or tag exists, not after.
+        push_remote = resolve_push_remote(args.remote)
+        gh_repo = remote_github_repo(push_remote)
+
         print(f"\n{'='*60}")
         print("  Publishing release...")
+        print(f"  Remote: {push_remote}" + (f" ({gh_repo})" if gh_repo else ""))
         print(f"{'='*60}")
 
         # Update version files
@@ -2596,13 +2650,13 @@ def main():
         print(f"  ✓ Created tag {tag_name}")
 
         # Push
-        push_result = git_result("push", "origin", "HEAD", "--tags")
+        push_result = git_result("push", push_remote, "HEAD", "--tags")
         if push_result.returncode == 0:
-            print("  ✓ Pushed to origin")
+            print(f"  ✓ Pushed to {push_remote}")
         else:
-            print(f"  ✗ Failed to push to origin: {push_result.stderr.strip()}")
+            print(f"  ✗ Failed to push to {push_remote}: {push_result.stderr.strip()}")
             print("    Continue manually after fixing access:")
-            print("    git push origin HEAD --tags")
+            print(f"    git push {push_remote} HEAD --tags")
 
         # Create GitHub release
         changelog_file = REPO_ROOT / ".release_notes.md"
@@ -2613,6 +2667,10 @@ def main():
             "--title", f"Hermes Agent v{new_version} ({calver_date})",
             "--notes-file", str(changelog_file),
         ]
+        # Pin gh to the pushed remote's repo: gh's own default resolution
+        # can pick a different remote than the one the tag just landed on.
+        if gh_repo:
+            gh_cmd += ["--repo", gh_repo]
 
         gh_bin = shutil.which("gh")
         if gh_bin:
@@ -2635,8 +2693,9 @@ def main():
                 print(f"  ✗ GitHub release failed: {result.stderr.strip()}")
             print(f"    Release notes kept at: {changelog_file}")
             print("    Tag was created locally. Create the release manually:")
+            repo_flag = f" --repo {gh_repo}" if gh_repo else ""
             print(
-                f"    gh release create {tag_name} --title 'Hermes Agent v{new_version} ({calver_date})' "
+                f"    gh release create {tag_name}{repo_flag} --title 'Hermes Agent v{new_version} ({calver_date})' "
                 f"--notes-file .release_notes.md"
             )
             print(f"\n  ✓ Release v{new_version} ({tag_name}) prepared for manual publish.")
