@@ -335,6 +335,21 @@ jobs:
           fi
           node scripts/build-bundled-desktop.mjs --tag="$HERMES_BUNDLE_TAG" --variant="${{ matrix.variant }}"
 
+      # makeappx reports manifest problems as a bare 0x80080204 with no
+      # detail, and the manifest lives in a per-run stage dir — unreadable
+      # after the runner is gone. On failure, print the generated
+      # AppxManifest.xml (and the spliced extensions fragment) so the log
+      # carries the exact XML makeappx rejected.
+      - name: Dump MSIX manifest on failure
+        if: failure() && startsWith(matrix.target.label, 'win32-')
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for f in apps/desktop/release/__msix-*/AppxManifest.xml apps/desktop/build/msix-copilot-key-extensions.xml; do
+            echo "===== $f ====="
+            cat "$f" || true
+          done
+
       # Every native binary in the unpacked app must match the target
       # arch. Wrong-arch binaries run FINE on the runners (Windows-on-ARM
       # and Rosetta emulate x64 silently) and ship broken or slow — an
