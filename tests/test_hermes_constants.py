@@ -101,22 +101,22 @@ class TestHermesManagedNode:
     @pytest.mark.windows_only
     def test_windows_node_dir_prefers_portable_root(self, tmp_path, monkeypatch):
         home = tmp_path / "hermes"
-        node_dir = home / "node"
+        node_dir = home / ".hermes-runtime" / "node"
         bin_dir = node_dir / "bin"
         node_dir.mkdir(parents=True)
         bin_dir.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(home))
 
         assert iter_hermes_node_dirs() == [node_dir, bin_dir]
 
     @pytest.mark.windows_only
     def test_windows_finds_npm_cmd_before_path(self, tmp_path, monkeypatch):
         home = tmp_path / "hermes"
-        node_dir = home / "node"
+        node_dir = home / ".hermes-runtime" / "node"
         node_dir.mkdir(parents=True)
         npm_cmd = node_dir / "npm.cmd"
         npm_cmd.write_text("@echo off\n")
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(home))
         monkeypatch.setattr(hermes_constants, "node_tool_runnable", lambda path: True)
 
         assert find_hermes_node_executable("npm") == str(npm_cmd)
@@ -126,7 +126,7 @@ class TestHermesManagedNode:
     @pytest.mark.windows_only
     def test_windows_skips_broken_managed_npm_without_path_fallback(self, tmp_path, monkeypatch):
         home = tmp_path / "hermes"
-        managed_npm = home / "node" / "npm.cmd"
+        managed_npm = home / ".hermes-runtime" / "node" / "npm.cmd"
         managed_npm.parent.mkdir(parents=True)
         managed_npm.write_text("@echo off\n")
         bin_dir = tmp_path / "nodejs"
@@ -134,6 +134,7 @@ class TestHermesManagedNode:
         path_npm = bin_dir / "npm.cmd"
         path_npm.write_text("@echo off\n")
         monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(home))
         monkeypatch.setenv("PATH", str(bin_dir))
         monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
         monkeypatch.setattr(hermes_constants, "heal_hermes_managed_node", lambda: False)
@@ -168,7 +169,7 @@ class TestNodeToolRunnable:
     def test_broken_managed_npm_heals_when_node_still_runs(self, tmp_path, monkeypatch):
         """npm can fail while node --version still succeeds (missing lib/cli.js)."""
         profile_home = tmp_path / "profiles" / "assistant"
-        managed_bin = profile_home / "node" / "bin"
+        managed_bin = profile_home / ".hermes-runtime" / "node" / "bin"
         managed_bin.mkdir(parents=True)
         self._stub(managed_bin, "node", "#!/bin/sh\necho '22.0.0'\nexit 0\n")
         broken_npm = self._stub(managed_bin, "npm", "#!/bin/sh\nexit 1\n")
@@ -179,6 +180,7 @@ class TestNodeToolRunnable:
         self._stub(system_bin, "npm", "#!/bin/sh\necho '11.10.0'\nexit 0\n")
 
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(profile_home))
         monkeypatch.setenv("PATH", str(system_bin))
         monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
 
@@ -198,7 +200,7 @@ class TestNodeToolRunnable:
 
     def test_broken_managed_npm_returns_none_when_heal_fails(self, tmp_path, monkeypatch):
         profile_home = tmp_path / "profiles" / "assistant"
-        managed_bin = profile_home / "node" / "bin"
+        managed_bin = profile_home / ".hermes-runtime" / "node" / "bin"
         managed_bin.mkdir(parents=True)
         self._stub(managed_bin, "npm", "#!/bin/sh\nexit 1\n")
 
@@ -207,6 +209,7 @@ class TestNodeToolRunnable:
         self._stub(system_bin, "npm", "#!/bin/sh\necho '11.10.0'\nexit 0\n")
 
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(profile_home))
         monkeypatch.setenv("PATH", str(system_bin))
         monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
         monkeypatch.setattr(hermes_constants, "heal_hermes_managed_node", lambda: False)
@@ -217,7 +220,7 @@ class TestNodeToolRunnable:
         """A healthy managed tree below the target major upgrades on next resolve."""
         target = hermes_constants._HERMES_NODE_TARGET_MAJOR
         profile_home = tmp_path / "profiles" / "assistant"
-        managed_bin = profile_home / "node" / "bin"
+        managed_bin = profile_home / ".hermes-runtime" / "node" / "bin"
         managed_bin.mkdir(parents=True)
         old_node = self._stub(
             managed_bin, "node", f"#!/bin/sh\necho 'v{target - 1}.20.0'\nexit 0\n"
@@ -225,6 +228,7 @@ class TestNodeToolRunnable:
         heal_called = {"value": False}
 
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(profile_home))
         monkeypatch.setenv("PATH", "")
         monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
 
@@ -244,13 +248,14 @@ class TestNodeToolRunnable:
         """Offline heal failure keeps serving the old tree — old Node beats no Node."""
         target = hermes_constants._HERMES_NODE_TARGET_MAJOR
         profile_home = tmp_path / "profiles" / "assistant"
-        managed_bin = profile_home / "node" / "bin"
+        managed_bin = profile_home / ".hermes-runtime" / "node" / "bin"
         managed_bin.mkdir(parents=True)
         old_node = self._stub(
             managed_bin, "node", f"#!/bin/sh\necho 'v{target - 1}.20.0'\nexit 0\n"
         )
 
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(profile_home))
         monkeypatch.setenv("PATH", "")
         monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
         monkeypatch.setattr(hermes_constants, "heal_hermes_managed_node", lambda: False)
@@ -261,13 +266,14 @@ class TestNodeToolRunnable:
         """A tree already at the target major never triggers the heal."""
         target = hermes_constants._HERMES_NODE_TARGET_MAJOR
         profile_home = tmp_path / "profiles" / "assistant"
-        managed_bin = profile_home / "node" / "bin"
+        managed_bin = profile_home / ".hermes-runtime" / "node" / "bin"
         managed_bin.mkdir(parents=True)
         node = self._stub(
             managed_bin, "node", f"#!/bin/sh\necho 'v{target}.5.1'\nexit 0\n"
         )
 
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(profile_home))
         monkeypatch.setenv("PATH", "")
         monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
 

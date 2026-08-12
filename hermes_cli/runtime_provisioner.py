@@ -353,6 +353,63 @@ def _tool_applies(tool: str) -> bool:
 # ─── the provisioning loop ──────────────────────────────────────────────────
 
 
+def _provision_one(
+    tool: str,
+    spec: str,
+    rt: Path,
+    facts: dict[str, RuntimeFact],
+) -> ToolResult:
+    """Bring ONE tool to a satisfying state. Never raises."""
+    if not _tool_applies(tool):
+        return ToolResult(tool, "skipped", detail="not managed on this platform")
+
+    # Already good? Fact recorded, binary present, version satisfies.
+    fact = facts.get(tool)
+    if fact is not None and (rt / fact.path).is_file() and satisfies(fact.version, spec):
+        return ToolResult(tool, "kept", version=fact.version)
+
+    try:
+        salvaged = _salvage(tool, rt, spec)
+        if salvaged is not None:
+            action, version = "salvaged", salvaged
+        else:
+            installer = _INSTALLERS.get(tool) if tool != "git" else _install_git_windows
+            if installer is None:
+                return ToolResult(tool, "failed", detail="no installer")
+            version = installer(rt, spec)
+            action = "downloaded"
+        # Verify by running THE binary we recorded, not trusting the
+        # installer's word.
+        binary = rt / _binary_rel(tool)
+        if _probe_version(binary) is None:
+            return ToolResult(tool, "failed", detail="provisioned binary does not run")
+        facts[tool] = RuntimeFact(
+            version=version, path=_binary_rel(tool), path_dirs=_path_dirs(tool)
+        )
+        save_facts(facts, rt)
+        return ToolResult(tool, action, version=version)
+    except Exception as exc:  # noqa: BLE001 — per-tool isolation is the contract
+        logger.warning("provisioning %s failed: %s", tool, exc)
+        return ToolResult(tool, "failed", detail=str(exc))
+
+
+def provision_tool(
+    tool: str,
+    runtime_dir: Path | None = None,
+    install_root: Path | None = None,
+) -> ToolResult:
+    """Provision a single pinned tool. Used by the self-heal paths that
+    need exactly one runtime (managed-Node bootstrap/heal) without paying
+    for a full sweep."""
+    rt = runtime_dir if runtime_dir is not None else get_runtime_dir()
+    rt.mkdir(parents=True, exist_ok=True)
+    pins = load_pins(install_root)
+    entry = pins.get(tool)
+    if entry is None:
+        return ToolResult(tool, "failed", detail=f"{tool} is not pinned")
+    return _provision_one(tool, entry["version"], rt, load_facts(rt))
+
+
 def provision_runtimes(
     runtime_dir: Path | None = None,
     install_root: Path | None = None,
@@ -367,7 +424,8 @@ def provision_runtimes(
     facts = load_facts(rt)
     results: list[ToolResult] = []
 
-    def _emit(result: ToolResult) -> None:
+    for tool, entry in pins.items():
+        result = _provision_one(tool, entry["version"], rt, facts)
         results.append(result)
         if emit:
             emit(
@@ -379,45 +437,6 @@ def provision_runtimes(
                     "detail": result.detail,
                 }
             )
-
-    for tool, entry in pins.items():
-        spec = entry["version"]
-        if not _tool_applies(tool):
-            _emit(ToolResult(tool, "skipped", detail="not managed on this platform"))
-            continue
-
-        # Already good? Fact recorded, binary present, version satisfies.
-        fact = facts.get(tool)
-        if fact is not None and (rt / fact.path).is_file() and satisfies(fact.version, spec):
-            _emit(ToolResult(tool, "kept", version=fact.version))
-            continue
-
-        try:
-            salvaged = _salvage(tool, rt, spec)
-            if salvaged is not None:
-                action, version = "salvaged", salvaged
-            else:
-                installer = _INSTALLERS.get(tool) if tool != "git" else _install_git_windows
-                if installer is None:
-                    _emit(ToolResult(tool, "failed", detail="no installer"))
-                    continue
-                version = installer(rt, spec)
-                action = "downloaded"
-            # Verify by running THE binary we recorded, not trusting the
-            # installer's word.
-            binary = rt / _binary_rel(tool)
-            probed = _probe_version(binary)
-            if probed is None:
-                _emit(ToolResult(tool, "failed", detail="provisioned binary does not run"))
-                continue
-            facts[tool] = RuntimeFact(
-                version=version, path=_binary_rel(tool), path_dirs=_path_dirs(tool)
-            )
-            save_facts(facts, rt)
-            _emit(ToolResult(tool, action, version=version))
-        except Exception as exc:  # noqa: BLE001 — per-tool isolation is the contract
-            logger.warning("provisioning %s failed: %s", tool, exc)
-            _emit(ToolResult(tool, "failed", detail=str(exc)))
 
     return results
 

@@ -351,12 +351,22 @@ def get_hermes_dir(
 def iter_hermes_node_dirs(home: Path | None = None) -> list[Path]:
     """Return Hermes-managed Node.js directories in preferred lookup order.
 
-    Windows installs from ``scripts/install.ps1`` unpack portable Node directly
-    into ``%LOCALAPPDATA%\\hermes\\node``. POSIX installs use
-    ``$HERMES_HOME/node/bin``. Include both shapes on every platform so mixed
-    or migrated installs still work.
+    The managed Node tree lives in the install-scoped runtime dir
+    (``<install>/.hermes-runtime/node``) — install artifacts never share a
+    profile home (hermes-home lifetime split, phase 2.6). The runtime
+    provisioner salvages a legacy ``$HERMES_HOME/node`` tree by move on
+    first run; until it does, callers simply find no managed Node and fall
+    back to system Node, which is a degrade, not a break.
+
+    Windows unpacks portable Node flat (``node/node.exe``); POSIX uses
+    ``node/bin``. Both shapes are returned on every platform, leading with
+    the native one.
+
+    The optional *home* argument is retained for callers that pass an
+    explicit root (tests, cross-install inspection); it now names the
+    INSTALL root rather than HERMES_HOME.
     """
-    root = home or get_hermes_home()
+    root = get_runtime_dir() if home is None else Path(home)
     dirs = [root / "node"]
     bin_dir = root / "node" / "bin"
     # NOTE: keep this ordering in sync with hermesManagedNodePathEntries() in
@@ -442,104 +452,23 @@ def hermes_managed_node_tree_present(home: Path | None = None) -> bool:
     return False
 
 
-def _heal_managed_node_windows() -> bool:
-    """Redownload the portable Node zip into ``%HERMES_HOME%\\node`` on Windows."""
-    import re
-    import tempfile
-    import urllib.request
-    import zipfile
+def _provision_managed_node() -> bool:
+    """Install/repair the managed Node tree via the runtime provisioner.
 
-    arch = (os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE", "")).lower()
-    if arch in ("amd64", "x86_64"):
-        node_arch = "x64"
-    elif arch == "arm64":
-        node_arch = "arm64"
-    elif arch in ("x86",):
-        node_arch = "x86"
-    else:
-        return False
-
-    home = get_hermes_home()
-    index_url = f"https://nodejs.org/dist/latest-v{_HERMES_NODE_TARGET_MAJOR}.x/"
-    try:
-        with urllib.request.urlopen(index_url, timeout=60) as response:
-            index_html = response.read().decode("utf-8", errors="replace")
-    except OSError:
-        return False
-
-    match = re.search(
-        rf"node-v{_HERMES_NODE_TARGET_MAJOR}\.\d+\.\d+-win-{node_arch}\.zip",
-        index_html,
-    )
-    if not match:
-        return False
-
-    zip_name = match.group(0)
-    download_url = f"{index_url}{zip_name}"
-    try:
-        with urllib.request.urlopen(download_url, timeout=300) as response:
-            zip_bytes = response.read()
-    except OSError:
-        return False
-
-    try:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_path = Path(tmp_dir)
-            zip_path = tmp_path / zip_name
-            zip_path.write_bytes(zip_bytes)
-            extract_dir = tmp_path / "extract"
-            extract_dir.mkdir()
-            with zipfile.ZipFile(zip_path) as archive:
-                archive.extractall(extract_dir)
-            extracted = next(extract_dir.glob("node-v*"), None)
-            if extracted is None or not extracted.is_dir():
-                return False
-            target = home / "node"
-            if target.exists():
-                shutil.rmtree(target)
-            shutil.move(str(extracted), str(target))
-    except OSError:
-        return False
-
-    return node_tool_runnable(str(target / "node.exe"))
-
-
-def _bootstrap_managed_node_posix() -> bool:
-    """Install a fresh managed Node under ``$HERMES_HOME/node`` on POSIX.
-
-    Shells out to ``_nb_install_bundled_node`` in ``scripts/lib/node-bootstrap.sh``
-    (the same pinned-nodejs.org path ``install.sh`` uses), so the resulting
-    tree matches what a normal install would have produced. Runs with
-    ``HERMES_NODE_SKIP_LINKS=1`` so the user's own node/npm on PATH is not
-    shadowed by ``~/.local/bin`` symlinks.
+    ONE implementation (hermes-home lifetime split, phase 2.6). This used
+    to be two: ``_heal_managed_node_windows`` re-implemented install.ps1's
+    portable-zip download, and ``_bootstrap_managed_node_posix`` shelled
+    into ``scripts/lib/node-bootstrap.sh`` — a third copy of the same
+    nodejs.org fetch. The provisioner downloads the pinned version from
+    ``runtime-pins.json`` into the install-scoped runtime dir on every
+    platform, so installer and self-heal cannot drift apart.
     """
-    if not _NODE_BOOTSTRAP_SCRIPT.is_file():
-        return False
-
-    import subprocess
-
     try:
-        result = subprocess.run(
-            [
-                "bash",
-                "-c",
-                f'source "{_NODE_BOOTSTRAP_SCRIPT}" && _nb_install_bundled_node',
-            ],
-            env={
-                **os.environ,
-                "HERMES_HOME": str(get_hermes_home()),
-                # Private provisioning: do not symlink node/npm/npx into
-                # ~/.local/bin — the user has their own toolchain on PATH and
-                # this tree must not shadow it.
-                "HERMES_NODE_SKIP_LINKS": "1",
-            },
-            capture_output=True,
-            timeout=600,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
+        from hermes_cli.runtime_provisioner import provision_tool
+
+        return provision_tool("node").ok
+    except Exception:  # noqa: BLE001 — a failed heal degrades to system Node
         return False
-    return result.returncode == 0
 
 
 def bootstrap_hermes_managed_node() -> str | None:
@@ -559,11 +488,7 @@ def bootstrap_hermes_managed_node() -> str | None:
     if existing:
         return existing
 
-    if sys.platform == "win32":
-        ok = _heal_managed_node_windows()
-    else:
-        ok = _bootstrap_managed_node_posix()
-    if not ok:
+    if not _provision_managed_node():
         return None
 
     for directory in iter_hermes_node_dirs():
@@ -581,9 +506,8 @@ def bootstrap_hermes_managed_node() -> str | None:
 def heal_hermes_managed_node() -> bool:
     """Redownload Hermes-managed Node when the tree exists but is broken.
 
-    Runs at most once per process. POSIX installs shell out to
-    ``heal_managed_node`` in ``scripts/lib/node-bootstrap.sh``; Windows
-    downloads the portable zip directly (same source as ``install.ps1``).
+    Runs at most once per process, and delegates to the runtime
+    provisioner — same code path as a fresh install (phase 2.6).
     """
     global _managed_node_heal_attempted
     if _managed_node_heal_attempted:
@@ -592,29 +516,7 @@ def heal_hermes_managed_node() -> bool:
         return False
     _managed_node_heal_attempted = True
 
-    if sys.platform == "win32":
-        return _heal_managed_node_windows()
-
-    if not _NODE_BOOTSTRAP_SCRIPT.is_file():
-        return False
-
-    import subprocess
-
-    try:
-        result = subprocess.run(
-            [
-                "bash",
-                "-c",
-                f'source "{_NODE_BOOTSTRAP_SCRIPT}" && heal_managed_node',
-            ],
-            env={**os.environ, "HERMES_HOME": str(get_hermes_home())},
-            capture_output=True,
-            timeout=300,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0
+    return _provision_managed_node()
 
 
 def _managed_node_tree_outdated(home: Path | None = None) -> bool:
