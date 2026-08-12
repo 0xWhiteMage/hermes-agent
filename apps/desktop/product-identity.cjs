@@ -31,10 +31,10 @@ const name = {
 const identity = {
   light,
   displayName: name.display,
-  appIdKebab: `com.nousresearch.${name.kebab}`,
+  appId: `com.nousresearch.${name.kebab}`,
   channel: light ? "light" : "latest",
   protocolScheme: name.kebab,
-  appIdPascal: name.pascal,
+  appNamePascal: name.pascal,
   msixAppIdWithOrg: `NousResearch.${name.pascal}`
 }
 

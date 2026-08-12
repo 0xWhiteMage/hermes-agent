@@ -652,7 +652,7 @@ const BOOT_FAKE_STEP_MS = (() => {
 // The app name keys Electron's userData dir and the single-instance lock,
 // so it comes from the baked product identity (light/normal hermes must not share state).
 // The env override is a dev-only escape hatch.
-const APP_NAME: string = process.env.HERMES_DESKTOP_APP_NAME || PRODUCT_IDENTITY.appIdPascal
+const APP_NAME: string = process.env.HERMES_DESKTOP_APP_NAME || PRODUCT_IDENTITY.appNamePascal
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 

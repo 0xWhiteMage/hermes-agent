@@ -25,7 +25,15 @@
 const fs = require('node:fs')
 const path = require('node:path')
 
-const { light, displayName, appId, channel, protocolScheme, msixAppIdWithOrg, msixAppId } = require('./product-identity.cjs')
+const {
+  light,
+  displayName,
+  appId,
+  appNamePascal,
+  channel,
+  protocolScheme,
+  msixAppIdWithOrg
+} = require('./product-identity.cjs')
 
 /** @typedef {import("app-builder-lib").Configuration} Configuration */
 
@@ -42,7 +50,7 @@ module.exports = {
     }
   ],
   // separate variants for release filenames
-  artifactName: `${appId}-\${version}-\${os}-\${arch}.\${ext}`,
+  artifactName: `${appNamePascal}-\${version}-\${os}-\${arch}.\${ext}`,
   icon: 'assets/icon',
   publish: [
     {
@@ -54,7 +62,7 @@ module.exports = {
   ],
   extraMetadata: {
     // separate variants for electron-updater download cache dirs
-    name: appId
+    name: appNamePascal
   },
   directories: {
     output: 'release'
@@ -141,8 +149,8 @@ module.exports = {
   // Windows Copilot hardware key.
   // electron-updater does not update MSIX installs.
   msix: {
-    identityName: `NousResearch.${msixAppIdWithOrg}`,
-    applicationId: msixAppId,
+    identityName: msixAppIdWithOrg,
+    applicationId: appNamePascal,
     displayName: displayName,
     publisher: 'CN=Nous Research Inc., O=Nous Research Inc., L=Austin, S=Texas, C=US',
     publisherDisplayName: 'Nous Research',
@@ -193,7 +201,7 @@ function copilotKeyFragmentPath() {
     Category="windows.appExtension">
   <uap3:AppExtension
       Name="com.microsoft.windows.copilotkeyprovider"
-      Id="${msixAppId}CopilotKeyProvider"
+      Id="${appNamePascal}CopilotKeyProvider"
       DisplayName="${displayName}"
       Description="Launch ${displayName} with the Copilot key"
       PublicFolder="Public">

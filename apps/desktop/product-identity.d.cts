@@ -3,11 +3,11 @@ interface ProductIdentity {
   light: boolean
   /** Display name. e.g. "Hermes Light" */
   displayName: string
-  /** OS-level app identity in kebab case. e.g. "com.nousresearch.hermes-light" */
-  appIdKebab: string
-    /** app identity in pascal case. e.g. "HermesLight" */
-  appIdPascal: string
-  /** msix OS-level app identity w/ org prefix. e.g. "NousResearch.HermesLight" */
+  /** OS-level app identity. e.g. "com.nousresearch.hermes-light" */
+  appId: string
+    /** app name in pascal case. e.g. "HermesLight" */
+  appNamePascal: string
+  /** OS-level app identity w/ org prefix. e.g. "NousResearch.HermesLight" */
   msixAppIdWithOrg: string
   /** electron-updater feed channel. e.g. "light" | "latest". */
   channel: string
