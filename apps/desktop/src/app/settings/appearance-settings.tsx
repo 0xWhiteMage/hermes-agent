@@ -17,7 +17,7 @@ import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedM
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
-import { $translucency, $translucencyMode, GLASS_SUPPORTED, setTranslucency, setTranslucencyMode } from '@/store/translucency'
+import { $translucency, $translucencyMaterial, $translucencyMode, GLASS_MATERIALS, GLASS_SUPPORTED, setTranslucency, setTranslucencyMaterial, setTranslucencyMode } from '@/store/translucency'
 import { $zoomPercent, setZoomPercent } from '@/store/zoom'
 import { getBaseColors, useTheme } from '@/themes/context'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
@@ -253,6 +253,7 @@ export function AppearanceSettings() {
   const embedAllowed = useStore($embedAllowed)
   const translucency = useStore($translucency)
   const translucencyMode = useStore($translucencyMode)
+  const translucencyMaterial = useStore($translucencyMaterial)
   const reactionsEnabled = useStore($reactionsEnabled)
   const backdrop = useStore($backdrop)
   const installs = useStore($marketplaceInstalls)
@@ -468,6 +469,26 @@ export function AppearanceSettings() {
                   {translucency}%
                 </span>
               </div>
+            }
+            below={
+              translucencyMode === 'glass' && GLASS_SUPPORTED ? (
+                <div className="mt-3 flex items-center gap-3">
+                  <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                    {a.translucencyFrostTitle}
+                  </span>
+                  <SegmentedControl
+                    onChange={id => {
+                      triggerHaptic('selection')
+                      setTranslucencyMaterial(id)
+                    }}
+                    options={GLASS_MATERIALS.map(material => ({
+                      id: material,
+                      label: a.translucencyFrost[material]
+                    }))}
+                    value={translucencyMaterial}
+                  />
+                </div>
+              ) : undefined
             }
             description={translucencyMode === 'glass' ? a.translucencyGlassDesc : a.translucencyDesc}
             title={a.translucencyTitle}

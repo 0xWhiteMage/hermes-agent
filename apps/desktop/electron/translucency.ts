@@ -13,6 +13,28 @@
 
 export type TranslucencyMode = 'clear' | 'glass'
 
+/**
+ * macOS vibrancy materials offered as glass "frost" levels, ordered sheer →
+ * heavy. macOS exposes no blur-radius knob (VibrancyOptions is only an
+ * animation duration), so the material IS the blur control: each maps to a
+ * different NSVisualEffectView material with its own blur strength and
+ * luminance lift (measured on macOS 26: popover keeps ~2.5x more wallpaper
+ * detail than under-window and reads ~30% darker; fullscreen-ui/menu/content
+ * render pixel-identical to each other, so only distinct looks are offered).
+ * Keep in sync with GLASS_MATERIALS in src/store/translucency.ts.
+ */
+export const GLASS_MATERIALS = ['popover', 'hud', 'sidebar', 'under-window'] as const
+
+export type GlassMaterial = (typeof GLASS_MATERIALS)[number]
+
+export const DEFAULT_GLASS_MATERIAL: GlassMaterial = 'under-window'
+
+export interface TranslucencyState {
+  intensity: number
+  mode: TranslucencyMode
+  material: GlassMaterial
+}
+
 export function clampIntensity(value: unknown): number {
   const n = Math.round(Number(value))
 
@@ -38,13 +60,19 @@ export function windowOpacityFor(intensity: number, mode: TranslucencyMode): num
   return 1 - (clampIntensity(intensity) / 100) * 0.7
 }
 
+/** Unknown or unsupported values fall back to the default material. */
+export function normalizeMaterial(value: unknown): GlassMaterial {
+  return GLASS_MATERIALS.includes(value as GlassMaterial) ? (value as GlassMaterial) : DEFAULT_GLASS_MATERIAL
+}
+
 /** Parse a persisted translucency.json / IPC payload into a safe shape. */
-export function normalizePayload(payload: unknown, isMac: boolean): { intensity: number; mode: TranslucencyMode } {
+export function normalizePayload(payload: unknown, isMac: boolean): TranslucencyState {
   const record = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
 
   return {
     intensity: clampIntensity(record.intensity),
-    mode: normalizeMode(record.mode, isMac)
+    mode: normalizeMode(record.mode, isMac),
+    material: normalizeMaterial(record.material)
   }
 }
 
@@ -58,6 +86,16 @@ export function normalizePayload(payload: unknown, isMac: boolean): { intensity:
  */
 export function glassActive(state: { intensity: number; mode: TranslucencyMode }): boolean {
   return state.mode === 'glass' && state.intensity > 0
+}
+
+/**
+ * The vibrancy material a chat window should carry. 'sidebar' is the
+ * long-standing default the titlebar band was designed against; glass mode
+ * swaps the whole window onto the user's chosen material (setVibrancy is
+ * cheap and animatable at runtime, unlike the backing).
+ */
+export function vibrancyFor(state: TranslucencyState): GlassMaterial | 'sidebar' {
+  return glassActive(state) ? state.material : 'sidebar'
 }
 
 /**

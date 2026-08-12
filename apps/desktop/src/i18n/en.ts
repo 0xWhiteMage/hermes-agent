@@ -470,6 +470,13 @@ export const en: Translations = {
       translucencyGlassDesc: 'Matte glass: the desktop shows through as a smooth blur while text stays sharp. macOS only.',
       translucencyModeClear: 'Clear',
       translucencyModeGlass: 'Glass',
+      translucencyFrostTitle: 'Frost',
+      translucencyFrost: {
+        popover: 'Sheer',
+        hud: 'Light',
+        sidebar: 'Medium',
+        'under-window': 'Heavy'
+      },
       backdropTitle: 'Chat Backdrop',
       backdropDesc: 'The faint statue image behind the conversation.',
       reactionsTitle: 'Message Reactions',

@@ -205,7 +205,7 @@ import {
 } from './ssh-connection'
 import { createStreamThrottle } from './stream-throttle'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
-import { glassActive, normalizePayload as normalizeTranslucencyPayload, windowBackingOptions, windowOpacityFor } from './translucency'
+import { glassActive, normalizePayload as normalizeTranslucencyPayload, vibrancyFor as vibrancyForTranslucency, windowBackingOptions, windowOpacityFor } from './translucency'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
@@ -780,7 +780,7 @@ function readPersistedTranslucency() {
   try {
     return normalizeTranslucencyPayload(JSON.parse(fs.readFileSync(TRANSLUCENCY_CONFIG_PATH, 'utf8')), IS_MAC)
   } catch {
-    return { intensity: 0, mode: 'clear' as const }
+    return normalizeTranslucencyPayload(null, IS_MAC)
   }
 }
 
@@ -826,10 +826,18 @@ function applyWindowTranslucency(win) {
   }
 
   try {
-    // Backing swap is scoped to registered chat windows (see
+    // Backing swap + material are scoped to registered chat windows (see
     // translucencyBackedWindows above).
-    if (translucencyBackedWindows.has(win) && typeof win.setBackgroundColor === 'function') {
-      win.setBackgroundColor(glassActive(translucencyState) ? '#00000000' : getWindowBackgroundColor())
+    if (translucencyBackedWindows.has(win)) {
+      if (typeof win.setBackgroundColor === 'function') {
+        win.setBackgroundColor(glassActive(translucencyState) ? '#00000000' : getWindowBackgroundColor())
+      }
+
+      // Glass frost level = the vibrancy material (macOS has no blur-radius
+      // knob). Animate the hop so slider-adjacent switches feel continuous.
+      if (IS_MAC && typeof win.setVibrancy === 'function') {
+        win.setVibrancy(vibrancyForTranslucency(translucencyState), { animationDuration: 150 })
+      }
     }
 
     if (typeof win.setOpacity === 'function') {
@@ -8789,7 +8797,7 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
-    vibrancy: IS_MAC ? 'sidebar' : undefined,
+    vibrancy: IS_MAC ? vibrancyForTranslucency(translucencyState) : undefined,
     opacity: windowOpacity(),
     icon,
     // Don't show until the renderer's first themed paint is ready. macOS
@@ -8893,7 +8901,7 @@ function createInstanceWindow() {
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
-    vibrancy: IS_MAC ? 'sidebar' : undefined,
+    vibrancy: IS_MAC ? vibrancyForTranslucency(translucencyState) : undefined,
     opacity: windowOpacity(),
     icon,
     show: false,
@@ -9751,7 +9759,7 @@ function createWindow() {
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
-    vibrancy: IS_MAC ? 'sidebar' : undefined,
+    vibrancy: IS_MAC ? vibrancyForTranslucency(translucencyState) : undefined,
     opacity: windowOpacity(),
     icon,
     // Hidden until the first themed paint so macOS `vibrancy` (which ignores
@@ -11245,7 +11253,11 @@ ipcMain.on('hermes:native-theme', (_event, mode) => {
 ipcMain.on('hermes:translucency', (_event, payload) => {
   const next = normalizeTranslucencyPayload(payload, IS_MAC)
 
-  if (next.intensity === translucencyState.intensity && next.mode === translucencyState.mode) {
+  if (
+    next.intensity === translucencyState.intensity &&
+    next.mode === translucencyState.mode &&
+    next.material === translucencyState.material
+  ) {
     return
   }
 

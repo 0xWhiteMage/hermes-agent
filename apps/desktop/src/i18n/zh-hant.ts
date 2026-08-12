@@ -322,6 +322,13 @@ export const zhHant = defineLocale({
       translucencyGlassDesc: '霧面玻璃：桌面以柔和模糊透出，文字保持清晰。僅支援 macOS。',
       translucencyModeClear: '透明',
       translucencyModeGlass: '玻璃',
+      translucencyFrostTitle: '磨砂程度',
+      translucencyFrost: {
+        popover: '通透',
+        hud: '輕',
+        sidebar: '中',
+        'under-window': '重'
+      },
       backdropTitle: '聊天背景',
       backdropDesc: '對話後方那張淡淡的雕像圖片。',
       reactionsTitle: '訊息回應',

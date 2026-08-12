@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { clampIntensity, glassActive, normalizeMode, normalizePayload, windowBackingOptions, windowOpacityFor } from './translucency'
+import { clampIntensity, DEFAULT_GLASS_MATERIAL, glassActive, normalizeMaterial, normalizeMode, normalizePayload, vibrancyFor, windowBackingOptions, windowOpacityFor } from './translucency'
 
 describe('clampIntensity', () => {
   it('clamps to 0-100 and rounds', () => {
@@ -49,17 +49,29 @@ describe('windowOpacityFor', () => {
 
 describe('normalizePayload', () => {
   it('parses a modern payload', () => {
-    expect(normalizePayload({ intensity: 40, mode: 'glass' }, true)).toEqual({ intensity: 40, mode: 'glass' })
+    expect(normalizePayload({ intensity: 40, mode: 'glass', material: 'hud' }, true)).toEqual({
+      intensity: 40,
+      material: 'hud',
+      mode: 'glass'
+    })
   })
 
-  it('parses a legacy intensity-only payload as clear', () => {
-    expect(normalizePayload({ intensity: 70 }, true)).toEqual({ intensity: 70, mode: 'clear' })
+  it('parses a legacy intensity-only payload as clear with the default material', () => {
+    expect(normalizePayload({ intensity: 70 }, true)).toEqual({
+      intensity: 70,
+      material: DEFAULT_GLASS_MATERIAL,
+      mode: 'clear'
+    })
   })
 
   it('survives junk payloads', () => {
-    expect(normalizePayload(null, true)).toEqual({ intensity: 0, mode: 'clear' })
-    expect(normalizePayload('nope', true)).toEqual({ intensity: 0, mode: 'clear' })
-    expect(normalizePayload({ intensity: 'x', mode: 'glass' }, false)).toEqual({ intensity: 0, mode: 'clear' })
+    expect(normalizePayload(null, true)).toEqual({ intensity: 0, material: DEFAULT_GLASS_MATERIAL, mode: 'clear' })
+    expect(normalizePayload('nope', true)).toEqual({ intensity: 0, material: DEFAULT_GLASS_MATERIAL, mode: 'clear' })
+    expect(normalizePayload({ intensity: 'x', material: 'acrylic', mode: 'glass' }, false)).toEqual({
+      intensity: 0,
+      material: DEFAULT_GLASS_MATERIAL,
+      mode: 'clear'
+    })
   })
 })
 
@@ -68,6 +80,26 @@ describe('glassActive', () => {
     expect(glassActive({ intensity: 60, mode: 'glass' })).toBe(true)
     expect(glassActive({ intensity: 0, mode: 'glass' })).toBe(false)
     expect(glassActive({ intensity: 60, mode: 'clear' })).toBe(false)
+  })
+})
+
+describe('normalizeMaterial', () => {
+  it('accepts curated materials and falls back on junk', () => {
+    expect(normalizeMaterial('popover')).toBe('popover')
+    expect(normalizeMaterial('hud')).toBe('hud')
+    expect(normalizeMaterial('acrylic')).toBe(DEFAULT_GLASS_MATERIAL)
+    expect(normalizeMaterial(undefined)).toBe(DEFAULT_GLASS_MATERIAL)
+  })
+})
+
+describe('vibrancyFor', () => {
+  it('serves the chosen material while glass is active', () => {
+    expect(vibrancyFor({ intensity: 60, material: 'hud', mode: 'glass' })).toBe('hud')
+  })
+
+  it('serves the legacy sidebar material otherwise', () => {
+    expect(vibrancyFor({ intensity: 0, material: 'hud', mode: 'glass' })).toBe('sidebar')
+    expect(vibrancyFor({ intensity: 60, material: 'hud', mode: 'clear' })).toBe('sidebar')
   })
 })
 

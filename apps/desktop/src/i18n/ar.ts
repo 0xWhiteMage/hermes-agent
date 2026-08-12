@@ -401,6 +401,13 @@ export const ar = defineLocale({
       translucencyGlassDesc: 'زجاج غير لامع: يظهر سطح المكتب كضبابية ناعمة بينما يبقى النص واضحًا. متاح على macOS فقط.',
       translucencyModeClear: 'شفاف',
       translucencyModeGlass: 'زجاج',
+      translucencyFrostTitle: 'شدة الضبابية',
+      translucencyFrost: {
+        popover: 'رقيق',
+        hud: 'خفيف',
+        sidebar: 'متوسط',
+        'under-window': 'كثيف'
+      },
       backdropTitle: 'خلفية النافذة',
       backdropDesc: 'اختيار مقدار مزج خلفية سطح المكتب مع سطح Hermes.',
       reactionsTitle: 'تفاعلات الرسائل',
