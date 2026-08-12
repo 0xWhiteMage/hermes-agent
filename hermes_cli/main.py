@@ -5958,6 +5958,10 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
     if stamp_data.get("sourceMode") != source_mode:
         return True
 
+    # If the variant changed, force a rebuild
+    if stamp_data.get("variant") != os.environ.get("HERMES_DESKTOP_VARIANT", ""):
+        return True
+
     saved_hash = stamp_data.get("contentHash")
     if not saved_hash:
         return True
@@ -5977,6 +5981,7 @@ def _write_desktop_build_stamp(project_root: Path, *, source_mode: bool) -> None
             "contentHash": content_hash,
             "sourceMode": source_mode,
             "builtAt": datetime.now(timezone.utc).isoformat(),
+            "variant": os.environ.get("HERMES_DESKTOP_VARIANT", "")
         }
         stamp_file.write_text(json.dumps(stamp_data, indent=2) + "\n", encoding="utf-8")
     except Exception as exc:
@@ -5988,19 +5993,24 @@ def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
     """Return the current platform's unpacked Electron app executable."""
     release_dir = desktop_dir / "release"
     if sys.platform == "darwin":
-        candidates = list(release_dir.glob("mac*/Hermes.app/Contents/MacOS/Hermes"))
+        candidates = list(release_dir.glob("mac*/Hermes*.app/Contents/MacOS/Hermes*"))
     elif sys.platform == "win32":
         candidates = [
             release_dir / "win-unpacked" / "Hermes.exe",
+            release_dir / "win-unpacked" / "Hermes Light.exe",
             release_dir / "win-ia32-unpacked" / "Hermes.exe",
+            release_dir / "win-ia32-unpacked" / "Hermes Light.exe",
             release_dir / "win-arm64-unpacked" / "Hermes.exe",
+            release_dir / "win-arm64-unpacked" / "Hermes Light.exe",
         ]
     else:
         candidates = [
             release_dir / "linux-unpacked" / "hermes",
             release_dir / "linux-unpacked" / "Hermes",
+            release_dir / "linux-unpacked" / "Hermes Light",
             release_dir / "linux-arm64-unpacked" / "hermes",
             release_dir / "linux-arm64-unpacked" / "Hermes",
+            release_dir / "linux-arm64-unpacked" / "Hermes Light",
         ]
 
     existing = [p for p in candidates if p.exists()]
