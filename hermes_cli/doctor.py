@@ -206,6 +206,52 @@ def _safe_which(cmd: str) -> str | None:
         return None
 
 
+def _check_managed_runtimes() -> None:
+    """Report the managed runtime tools from the registry's facts file.
+
+    The provisioner is the only writer of those facts, so doctor reads
+    them rather than re-deriving existence by probing paths (hermes-home
+    lifetime split, phase 3.10). Tools the registry does not know about
+    are still reported from PATH so a system copy is visible.
+    """
+    try:
+        from hermes_cli.runtime_registry import load_facts, load_pins, satisfies
+        from hermes_constants import get_runtime_dir
+
+        runtime_dir = get_runtime_dir()
+        pins = load_pins()
+        facts = load_facts(runtime_dir)
+    except Exception as exc:
+        check_warn("Managed runtimes unreadable", f"({exc})")
+        return
+
+    for tool, pin in pins.items():
+        fact = facts.get(tool)
+        if fact is None:
+            system = _safe_which("rg" if tool == "ripgrep" else tool)
+            if system:
+                check_ok(f"{tool} (system)", f"at {system}")
+            else:
+                check_warn(
+                    f"{tool} not provisioned",
+                    "(installed on the next 'hermes update')",
+                )
+            continue
+        if not (runtime_dir / fact.path).is_file():
+            check_warn(
+                f"{tool} recorded but missing",
+                "(runtime dir was modified; 'hermes update' reinstalls it)",
+            )
+            continue
+        if not satisfies(fact.version, pin["version"]):
+            check_warn(
+                f"{tool} {fact.version} is below the pin {pin['version']}",
+                "(upgraded on the next 'hermes update')",
+            )
+            continue
+        check_ok(f"{tool} {fact.version}", "(managed)")
+
+
 def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
     steps: list[str] = []
     step = 1
@@ -2000,13 +2046,11 @@ def run_doctor(args):
     else:
         check_warn("git not found", "(optional)")
     
-    # ripgrep (optional, for faster file search)
-    if _safe_which("rg"):
-        check_ok("ripgrep (rg)", "(faster file search)")
-    else:
-        check_warn("ripgrep (rg) not found", "(file search uses grep fallback)")
-        check_info(f"Install for faster search: {_system_package_install_cmd('ripgrep')}")
-    
+    # Managed runtimes: what the registry says this install provisioned.
+    # A tool that is missing here is not a "go install it yourself"
+    # problem — the provisioner owns it and retries on the next update.
+    _check_managed_runtimes()
+
     # Docker (optional)
     terminal_env = os.getenv("TERMINAL_ENV", "local")
     try:
