@@ -104,13 +104,17 @@ def _extract(archive: Path, dest: Path) -> None:
             tf.extractall(dest, filter="data")
     elif name.endswith(".zip"):
         with zipfile.ZipFile(archive) as zf:
-            zf.extractall(dest)
-            # ZipInfo drops the executable bit on extract; restore it from
-            # the archived mode so an extracted `uv`/`gh` is runnable.
             for info in zf.infolist():
+                # extract() RETURNS the path it actually wrote, with the
+                # entry name already sanitized (".." stripped, absolute
+                # paths made relative). Chmod that, never info.filename:
+                # an entry named "../../victim" chmods a file OUTSIDE the
+                # destination, which is an arbitrary chmod +x for anyone
+                # who can serve us an archive.
+                written = Path(zf.extract(info, dest))
                 mode = info.external_attr >> 16
-                if mode & 0o111:
-                    (dest / info.filename).chmod(mode & 0o777)
+                if mode & 0o111 and written.is_file():
+                    written.chmod(mode & 0o777)
     else:
         raise ValueError(f"unsupported archive: {archive.name}")
 
@@ -131,13 +135,29 @@ def _flatten_single_dir(dest: Path) -> None:
     next bump. Some archives unpack flat instead — same tool, different
     platform, in uv's case — so this keys off what is actually there.
     """
-    entries = [p for p in dest.iterdir() if not p.name.startswith(".")]
+    # EVERY entry counts, dotfiles included. Skipping them made a
+    # top-level ".config" invisible to this check, so an archive shaped
+    # {".config", "wrapper/.config"} looked like a lone wrapper and the
+    # move silently replaced the outer file.
+    entries = list(dest.iterdir())
     if len(entries) != 1 or not entries[0].is_dir():
         return
 
     inner = entries[0]
     if inner.name.lower() in _LAYOUT_DIRS:
         return
+
+    # Never overwrite. After the checks above the destination holds only
+    # `inner`, so the sole way to collide is a child named like its own
+    # parent ("gh/gh"); shutil.move's own error for that case names a
+    # temp path and reads like a bug in us. Refuse the whole flatten
+    # instead: the unflattened tree is merely ugly, a clobbered file is
+    # data loss.
+    collisions = [c.name for c in inner.iterdir() if (dest / c.name).exists()]
+    if collisions:
+        raise RuntimeError(
+            f"cannot unwrap {inner.name}/: would overwrite {', '.join(sorted(collisions))}"
+        )
 
     for child in inner.iterdir():
         shutil.move(str(child), dest / child.name)
