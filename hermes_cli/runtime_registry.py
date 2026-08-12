@@ -3,30 +3,38 @@
 The single source of truth for which tool versions THIS install of Hermes
 manages and where they live. Two files, one owner each:
 
-- ``<repo>/runtime-pins.json`` — the PINS. What versions the code wants.
+- ``<repo>/runtime-pins.json`` — the PINS. Every tool pins an EXACT
+  version plus, per target, the exact download URL and its sha256.
   Versioned in the repo, code-reviewed, updated with the code that needs
   them.
 - ``<install>/.hermes-runtime/runtimes.json`` — the FACTS. What is
-  actually installed: resolved version, path relative to the runtime dir,
-  install timestamp. Written ONLY by the provisioner
-  (``post_update.step_provision_runtimes``); everything else reads.
+  actually installed: version, path relative to the runtime dir, install
+  timestamp. Written ONLY by the provisioner; everything else reads.
 
 Readers (locators, the PATH assembler, doctor, uninstall) consume facts
 through this module instead of probing paths. No path literals anywhere
 else — that scatter is exactly what this replaces.
 
+**Exact pins only, by design.** There is no version-range grammar and no
+"resolve latest, then check it satisfies a range": that shape needs a
+GitHub API call per tool (60 requests/hour unauthenticated), makes two
+builds of the same commit disagree, and lets a tool change under users
+without a code review. A pin bump is a deliberate edit — new version, new
+urls, new digests, verified, committed.
+
 Design doc: ``.hermes/plans/2026-08-12_hermes-home-lifetime-split.md``.
 
-Pure logic (spec parsing, satisfaction checks, facts round-trip) lives in
-this module with no side effects beyond explicit ``save_facts`` calls, so
-it is fully unit-testable without a network or a real install.
+Pure logic (pin/facts parsing, target resolution, round-trip) lives here
+with no side effects beyond explicit ``save_facts`` calls, so it is fully
+unit-testable without a network or a real install.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
+import platform
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,110 +45,66 @@ from hermes_constants import get_runtime_dir
 PINS_FILENAME = "runtime-pins.json"
 FACTS_FILENAME = "runtimes.json"
 FACTS_SCHEMA_VERSION = 1
+PINS_SCHEMA_VERSION = 2
 
 __all__ = [
     "FACTS_FILENAME",
     "FACTS_SCHEMA_VERSION",
     "PINS_FILENAME",
+    "PINS_SCHEMA_VERSION",
+    "PinnedFile",
     "RuntimeFact",
-    "VersionSpec",
+    "current_target",
     "facts_path",
     "load_facts",
     "load_pins",
-    "parse_version",
+    "pinned_file",
+    "pins_path",
     "record_fact",
     "save_facts",
-    "satisfies",
     "tool_bin_dir",
     "tool_path",
 ]
 
 
-# ─── version specs ──────────────────────────────────────────────────────────
+# ─── targets ────────────────────────────────────────────────────────────────
+
+
+def current_target() -> str:
+    """This host as a pin-table target key: ``<platform>-<arch>``.
+
+    Node/Python spellings (darwin|linux|win32 x arm64|x64) so one string
+    works on both sides of the JS/Python boundary.
+    """
+    machine = platform.machine().lower()
+    if machine in ("arm64", "aarch64"):
+        arch = "arm64"
+    elif machine in ("x86_64", "amd64", "x64"):
+        arch = "x64"
+    else:
+        raise RuntimeError(f"unsupported architecture: {platform.machine()}")
+
+    if sys.platform.startswith("win"):
+        return f"win32-{arch}"
+    if sys.platform == "darwin":
+        return f"darwin-{arch}"
+    return f"linux-{arch}"
+
+
+# ─── pins (repo-owned, exact) ───────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
-class VersionSpec:
-    """A parsed pin spec.
+class PinnedFile:
+    """One tool's download for one target: exactly where and exactly what."""
 
-    Shapes (the full supported grammar — anything else raises):
-      - exact:        ``2.97.0``   → ==2.97.0
-      - minor-floor:  ``2.55.x``   → >=2.55, <2.56
-      - major-floor:  ``26.x``     → >=26, <27
-      - floor-only:   ``>=0.12``   → >=0.12
-    """
+    version: str
+    url: str
+    sha256: str
 
-    raw: str
-    floor: tuple[int, ...]
-    ceiling: Optional[tuple[int, ...]]  # exclusive; None = unbounded
-    exact: bool = False
-
-
-_SPEC_RE = re.compile(r"^(?P<floor>>=)?(?P<nums>\d+(?:\.\d+)*)(?P<wild>\.x)?$")
-
-
-def _bump_last(nums: tuple[int, ...]) -> tuple[int, ...]:
-    return nums[:-1] + (nums[-1] + 1,)
-
-
-def parse_spec(spec: str) -> VersionSpec:
-    """Parse a pin spec string. Raises ``ValueError`` on anything outside
-    the supported grammar — an unreadable pin is a build/config bug, never
-    something to guess around."""
-    m = _SPEC_RE.match(spec.strip())
-    if not m:
-        raise ValueError(f"unsupported version spec: {spec!r}")
-    nums = tuple(int(n) for n in m.group("nums").split("."))
-    if m.group("wild"):
-        if m.group("floor"):
-            raise ValueError(f"unsupported version spec (>= with .x): {spec!r}")
-        return VersionSpec(raw=spec, floor=nums, ceiling=_bump_last(nums))
-    if m.group("floor"):
-        return VersionSpec(raw=spec, floor=nums, ceiling=None)
-    return VersionSpec(raw=spec, floor=nums, ceiling=None, exact=True)
-
-
-def parse_version(version: str) -> tuple[int, ...]:
-    """Parse a resolved version string ('2.55.0.3', 'v26.5.1') to a tuple.
-
-    Tolerates a leading ``v`` and trailing non-numeric segments
-    ('2.53.0-4098283' → (2, 53, 0)); tool banners are messy, pins are not.
-    """
-    cleaned = version.strip().lstrip("vV")
-    parts: list[int] = []
-    for chunk in cleaned.split("."):
-        m = re.match(r"^\d+", chunk)
-        if not m:
-            break
-        parts.append(int(m.group(0)))
-    if not parts:
-        raise ValueError(f"unparseable version: {version!r}")
-    return tuple(parts)
-
-
-def _cmp(a: tuple[int, ...], b: tuple[int, ...]) -> int:
-    # Tuple compare with zero-padding: 2.55 == 2.55.0.
-    width = max(len(a), len(b))
-    pa = a + (0,) * (width - len(a))
-    pb = b + (0,) * (width - len(b))
-    return (pa > pb) - (pa < pb)
-
-
-def satisfies(version: str, spec: str | VersionSpec) -> bool:
-    """Does a resolved version satisfy a pin spec?"""
-    parsed_spec = parse_spec(spec) if isinstance(spec, str) else spec
-    v = parse_version(version)
-    if parsed_spec.exact:
-        return _cmp(v, parsed_spec.floor) == 0
-    if _cmp(v, parsed_spec.floor) < 0:
-        return False
-    if parsed_spec.ceiling is not None and _cmp(v, parsed_spec.ceiling) >= 0:
-        return False
-    return True
-
-
-# ─── pins (repo-owned, read-only here) ──────────────────────────────────────
-
+    @property
+    def filename(self) -> str:
+        return self.url.rsplit("/", 1)[-1]
 
 def pins_path(install_root: Path | None = None) -> Path:
     """Path to the repo's pin table.
@@ -155,22 +119,84 @@ def pins_path(install_root: Path | None = None) -> Path:
     return Path(__file__).resolve().parent.parent / PINS_FILENAME
 
 
-def load_pins(install_root: Path | None = None) -> dict[str, dict]:
-    """Load the repo's pin table: tool name → pin entry (with 'version').
+# Loopback http is allowed so tests can serve real archives from a local
+# server and exercise the true download path. Everything a user ever
+# fetches is https: a plain-http pin would let a network attacker choose
+# the bytes, and the digest check alone cannot help if the attacker also
+# picks which digest you compare against.
+_LOOPBACK_PREFIXES = ("http://127.0.0.1:", "http://localhost:", "http://[::1]:")
 
-    Raises on missing/malformed file: the pins ship with the code, so
-    absence means a broken install, not a fresh one.
+
+def _is_allowed_url(url: str) -> bool:
+    return url.startswith("https://") or url.startswith(_LOOPBACK_PREFIXES)
+
+
+def load_pins(install_root: Path | None = None) -> dict[str, dict]:
+    """Load the repo's pin table: tool name → entry with version + files.
+
+    Raises on missing/malformed: the pins ship with the code, so absence
+    means a broken install, not a fresh one. Validation is eager and
+    total — a typo in a digest should fail at load, not halfway through a
+    user's first launch.
     """
     path = pins_path(install_root)
     data = json.loads(path.read_text(encoding="utf-8"))
+
+    schema = data.get("schemaVersion")
+    if schema != PINS_SCHEMA_VERSION:
+        raise ValueError(
+            f"{path}: pins schemaVersion {schema!r}, expected {PINS_SCHEMA_VERSION}"
+        )
+
     tools = data.get("tools")
     if not isinstance(tools, dict) or not tools:
         raise ValueError(f"{path}: no 'tools' table")
+
     for name, entry in tools.items():
-        if not isinstance(entry, dict) or "version" not in entry:
-            raise ValueError(f"{path}: tool {name!r} has no version pin")
-        parse_spec(entry["version"])  # validate eagerly — fail at load, not use
+        if not isinstance(entry, dict):
+            raise ValueError(f"{path}: tool {name!r} is not an object")
+        version = entry.get("version")
+        if not isinstance(version, str) or not version:
+            raise ValueError(f"{path}: tool {name!r} has no exact version")
+        files = entry.get("files")
+        if not isinstance(files, dict) or not files:
+            raise ValueError(f"{path}: tool {name!r} has no 'files' table")
+        for target, spec in files.items():
+            if not isinstance(spec, dict):
+                raise ValueError(f"{path}: {name}/{target} is not an object")
+            url = spec.get("url")
+            sha256 = spec.get("sha256")
+            if not isinstance(url, str) or not _is_allowed_url(url):
+                raise ValueError(f"{path}: {name}/{target} needs an https url")
+            if not isinstance(sha256, str) or len(sha256) != 64:
+                raise ValueError(
+                    f"{path}: {name}/{target} sha256 must be 64 hex chars"
+                )
     return tools
+
+
+def pinned_file(
+    tool: str,
+    target: str | None = None,
+    install_root: Path | None = None,
+    pins: dict[str, dict] | None = None,
+) -> PinnedFile:
+    """The exact download for *tool* on *target* (default: this host).
+
+    Raises when the tool or target is not pinned — an unpinned platform is
+    a gap in the table to fill, not something to guess a URL for.
+    """
+    table = pins if pins is not None else load_pins(install_root)
+    entry = table.get(tool)
+    if entry is None:
+        raise KeyError(f"{tool!r} is not in the pin table")
+
+    key = target or current_target()
+    spec = entry["files"].get(key)
+    if spec is None:
+        raise KeyError(f"{tool!r} has no pinned download for {key}")
+
+    return PinnedFile(version=entry["version"], url=spec["url"], sha256=spec["sha256"])
 
 
 # ─── facts (install-owned, provisioner-written) ─────────────────────────────

@@ -11,7 +11,7 @@ import {
   pipTargetArgs,
   pythonDirPattern,
   pythonRequest,
-  payloadRuntimeFacts,
+  assertPayloadArch,
   probeElfArch,
   probeMachOArch,
   resolveTag,
@@ -272,27 +272,47 @@ test('probeElfArch returns null for a non-ELF file', () => {
   assert.equal(probeElfArch(fixture(machO({ magic: 0xfeedfacf, cpuType: 0x0100000c }))), null)
 })
 
-// ─── payload runtime facts ─────────────────────────────────────────
+// ─── the payload's arch gate ───────────────────────────────────────
 
-test('payload facts describe git and gh on every platform', () => {
-  for (const [platform, arch] of [['darwin', 'arm64'], ['linux', 'x64'], ['win32', 'x64']]) {
-    const facts = payloadRuntimeFacts(resolveTargets(platform, arch))
+test('assertPayloadArch accepts a payload whose binaries match the target', () => {
+  // The payload IS a runtime dir: its tools are staged by the Python
+  // provisioner from exact pins. This is the gate that the staged bytes
+  // are for the RIGHT platform — header inspection, because a cross-build
+  // host cannot run what it just staged.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-payload-'))
+  const target = resolveTargets('linux', 'x64')
 
-    assert.equal(facts.schemaVersion, 1)
-    for (const tool of ['node', 'uv', 'git', 'gh']) {
-      assert.ok(facts.tools[tool]?.path, `${platform} payload should record ${tool}`)
-    }
+  for (const rel of ['node/bin/node', 'uv/uv', 'git/bin/git', 'gh/bin/gh', 'ripgrep/rg']) {
+    const file = path.join(dir, rel)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, elf({ machine: 0x3e })) // EM_X86_64
   }
+
+  assert.doesNotThrow(() => assertPayloadArch(target, dir))
 })
 
-test('the two git suppliers get their own layouts', () => {
-  // PortableGit's bash and coreutils live outside cmd/, so it needs the
-  // explicit pathDirs spread; dugite-native is just bin/.
-  const win = payloadRuntimeFacts(resolveTargets('win32', 'x64')).tools.git
-  assert.equal(win.path, 'git/cmd/git.exe')
-  assert.deepEqual(win.pathDirs, ['git/cmd', 'git/bin', 'git/usr/bin'])
+test('assertPayloadArch rejects a wrong-arch binary', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-payload-'))
+  const target = resolveTargets('linux', 'x64')
 
-  const mac = payloadRuntimeFacts(resolveTargets('darwin', 'arm64')).tools.git
-  assert.equal(mac.path, 'git/bin/git')
-  assert.equal(mac.pathDirs, undefined)
+  for (const rel of ['node/bin/node', 'uv/uv', 'git/bin/git', 'gh/bin/gh', 'ripgrep/rg']) {
+    const file = path.join(dir, rel)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, elf({ machine: 0x3e }))
+  }
+  // One arm64 straggler is exactly the defect this catches.
+  fs.writeFileSync(path.join(dir, 'gh/bin/gh'), elf({ machine: 0xb7 }))
+
+  assert.throws(() => assertPayloadArch(target, dir), /gh: staged binary is arm64/)
+})
+
+test('assertPayloadArch rejects a payload missing a tool entirely', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-payload-'))
+  const target = resolveTargets('linux', 'x64')
+
+  const file = path.join(dir, 'node/bin/node')
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, elf({ machine: 0x3e }))
+
+  assert.throws(() => assertPayloadArch(target, dir), /uv: uv\/uv missing/)
 })

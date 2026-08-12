@@ -215,7 +215,7 @@ def _check_managed_runtimes() -> None:
     are still reported from PATH so a system copy is visible.
     """
     try:
-        from hermes_cli.runtime_registry import load_facts, load_pins, satisfies
+        from hermes_cli.runtime_registry import load_facts, load_pins
         from hermes_constants import get_runtime_dir
 
         runtime_dir = get_runtime_dir()
@@ -243,10 +243,12 @@ def _check_managed_runtimes() -> None:
                 "(runtime dir was modified; 'hermes update' reinstalls it)",
             )
             continue
-        if not satisfies(fact.version, pin["version"]):
+        # Pins are exact, so this is equality: anything else means the
+        # pin moved and this install has not caught up yet.
+        if fact.version != pin["version"]:
             check_warn(
-                f"{tool} {fact.version} is below the pin {pin['version']}",
-                "(upgraded on the next 'hermes update')",
+                f"{tool} {fact.version} does not match the pin {pin['version']}",
+                "(reprovisioned on the next 'hermes update')",
             )
             continue
         check_ok(f"{tool} {fact.version}", "(managed)")

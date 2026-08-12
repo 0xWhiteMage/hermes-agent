@@ -1,12 +1,20 @@
-"""Tests for hermes_cli.runtime_provisioner — the decision core.
+"""Tests for hermes_cli.runtime_provisioner.
 
-No network: downloads are faked by monkeypatching the per-tool installers
-and the salvage probe. What we prove is the CONTRACT: keep/salvage/
-download/fail decisions, per-tool failure isolation, fact recording, and
-the post_update step registration.
+The decision core runs against a LOCAL http server serving real archives,
+so download → verify → extract → run → record is exercised end to end
+without reaching the network. What is asserted is the contract: exact
+digests gate everything, a tool that cannot be verified is not recorded,
+one tool's failure does not stop the others, and nothing is ever adopted
+from disk without verification (there is no salvage).
 """
 
+import hashlib
 import json
+import tarfile
+import threading
+import zipfile
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -15,245 +23,258 @@ from hermes_cli import runtime_provisioner as rp
 from hermes_cli import runtime_registry as rr
 
 
+@pytest.fixture(scope="module")
+def served(tmp_path_factory):
+    """Serve a directory of fixture archives over http://127.0.0.1."""
+    root = tmp_path_factory.mktemp("served")
+    handler = partial(SimpleHTTPRequestHandler, directory=str(root))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield root, f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+
+
+def _script(text: str = "#!/bin/sh\necho 'tool 1.2.3'\n") -> bytes:
+    return text.encode()
+
+
+def _make_tar(root: Path, name: str, members: dict[str, bytes]) -> str:
+    """Write a .tar.gz of {relative path: bytes}, all executable."""
+    staging = root / f".stage-{name}"
+    staging.mkdir(parents=True, exist_ok=True)
+    for rel, data in members.items():
+        target = staging / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        target.chmod(0o755)
+
+    archive = root / name
+    with tarfile.open(archive, "w:gz") as tf:
+        for rel in members:
+            tf.add(staging / rel, arcname=rel)
+    return hashlib.sha256(archive.read_bytes()).hexdigest()
+
+
+def _pins_file(root: Path, tools: dict) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / rr.PINS_FILENAME).write_text(
+        json.dumps({"schemaVersion": rr.PINS_SCHEMA_VERSION, "tools": tools}),
+        encoding="utf-8",
+    )
+    return root
+
+
 @pytest.fixture
-def pins(tmp_path, monkeypatch):
-    """A minimal pins file + runtime dir, node-only by default."""
-
-    def _write(tools: dict) -> Path:
-        (tmp_path / "runtime-pins.json").write_text(
-            json.dumps({"schemaVersion": 1, "tools": tools})
-        )
-        return tmp_path
-
-    return _write
+def target():
+    """Provision for THIS host so the run-the-binary check is exercised."""
+    return rr.current_target()
 
 
-def _fake_installer(runtime_dir: Path, version: str, rel: str):
-    binary = runtime_dir / rel
-    binary.parent.mkdir(parents=True, exist_ok=True)
-    binary.write_text("#!/bin/sh\n")
-    return version
-
-
-class TestProvisionDecisions:
-    def test_fresh_install_downloads_and_records(self, pins, tmp_path, monkeypatch):
-        root = pins({"node": {"version": "26.x"}})
-        monkeypatch.setitem(
-            rp._INSTALLERS, "node", lambda rt, spec: _fake_installer(rt, "26.5.1", "node/bin/node")
-        )
-        monkeypatch.setattr(rp, "_probe_version", lambda b, a=None: "26.5.1")
-        results = rp.provision_runtimes(runtime_dir=tmp_path / "rt", install_root=root)
-        assert [(r.tool, r.action) for r in results] == [("node", "downloaded")]
-        facts = rr.load_facts(tmp_path / "rt")
-        assert facts["node"].version == "26.5.1"
-
-    def test_satisfied_fact_is_kept_no_installer_call(self, pins, tmp_path, monkeypatch):
-        root = pins({"node": {"version": "26.x"}})
-        rt = tmp_path / "rt"
-        _fake_installer(rt, "26.5.1", "node/bin/node")
-        rr.record_fact("node", "26.5.1", "node/bin/node", runtime_dir=rt)
-
-        def _boom(*a, **kw):
-            raise AssertionError("installer must not run for a satisfied pin")
-
-        monkeypatch.setitem(rp._INSTALLERS, "node", _boom)
-        results = rp.provision_runtimes(runtime_dir=rt, install_root=root)
-        assert [(r.tool, r.action) for r in results] == [("node", "kept")]
-
-    def test_stale_version_reprovisions(self, pins, tmp_path, monkeypatch):
-        root = pins({"node": {"version": "26.x"}})
-        rt = tmp_path / "rt"
-        _fake_installer(rt, "25.0.0", "node/bin/node")
-        rr.record_fact("node", "25.0.0", "node/bin/node", runtime_dir=rt)
-        monkeypatch.setitem(
-            rp._INSTALLERS, "node", lambda r, s: _fake_installer(r, "26.5.1", "node/bin/node")
-        )
-        monkeypatch.setattr(rp, "_probe_version", lambda b, a=None: "26.5.1")
-        results = rp.provision_runtimes(runtime_dir=rt, install_root=root)
-        assert results[0].action == "downloaded"
-        assert rr.load_facts(rt)["node"].version == "26.5.1"
-
-    def test_one_failure_does_not_stop_others(self, pins, tmp_path, monkeypatch):
-        root = pins({"node": {"version": "26.x"}, "ripgrep": {"version": "14.x"}})
-
-        def _fail(rt, spec):
-            raise RuntimeError("download exploded")
-
-        monkeypatch.setitem(rp._INSTALLERS, "node", _fail)
-        monkeypatch.setitem(
-            rp._INSTALLERS, "ripgrep", lambda r, s: _fake_installer(r, "14.1.0", "ripgrep/rg")
-        )
-        monkeypatch.setattr(rp, "_probe_version", lambda b, a=None: "14.1.0")
-        results = rp.provision_runtimes(runtime_dir=tmp_path / "rt", install_root=root)
-        by_tool = {r.tool: r for r in results}
-        assert not by_tool["node"].ok and "exploded" in by_tool["node"].detail
-        assert by_tool["ripgrep"].action == "downloaded"
-        # Failed tool is NOT recorded; healthy one is.
-        facts = rr.load_facts(tmp_path / "rt")
-        assert set(facts) == {"ripgrep"}
-
-    def test_unrunnable_binary_never_recorded(self, pins, tmp_path, monkeypatch):
-        root = pins({"node": {"version": "26.x"}})
-        monkeypatch.setitem(
-            rp._INSTALLERS, "node", lambda r, s: _fake_installer(r, "26.5.1", "node/bin/node")
-        )
-        monkeypatch.setattr(rp, "_probe_version", lambda b, a=None: None)
-        results = rp.provision_runtimes(runtime_dir=tmp_path / "rt", install_root=root)
-        assert results[0].action == "failed"
-        assert rr.load_facts(tmp_path / "rt") == {}
-
-    def test_git_uses_dugite_off_windows_and_portablegit_on_it(
-        self, pins, tmp_path, monkeypatch
-    ):
-        """git is managed on EVERY platform: macOS /usr/bin/git is the
-        xcode-select shim, so a bundled git is the whole point. The two
-        suppliers differ, the outcome does not."""
-        root = pins(
+class TestProvisionOneTool:
+    def test_downloads_verifies_runs_and_records(self, served, tmp_path, target):
+        root, base = served
+        sha = _make_tar(root, "gh-ok.tar.gz", {"bin/gh": _script()})
+        pins = _pins_file(
+            tmp_path / "repo",
             {
-                "git": {
-                    "version": "2.55.x",
-                    "dugiteTag": "v2.53.0-4",
-                    "dugiteAsset": "dugite-{platform}.tar.gz",
-                    "dugiteSha256": {"ubuntu-x64": "abc", "macOS-arm64": "def"},
+                "gh": {
+                    "version": "2.97.0",
+                    "files": {target: {"url": f"{base}/gh-ok.tar.gz", "sha256": sha}},
                 }
-            }
+            },
         )
-        called: list[str] = []
 
-        def _fake_dugite(rt, spec, pin):
-            called.append("dugite")
-            assert pin["dugiteTag"] == "v2.53.0-4"  # the pin dict reaches it
-            (rt / "git" / "bin").mkdir(parents=True)
-            (rt / "git" / "bin" / "git").write_text("#!/bin/sh\n")
-            return "2.55.0"
-
-        def _fake_portable(rt, spec):
-            called.append("portablegit")
-            (rt / "git" / "cmd").mkdir(parents=True)
-            (rt / "git" / "cmd" / "git.exe").write_text("")
-            return "2.55.0"
-
-        monkeypatch.setattr(rp, "_install_git_dugite", _fake_dugite)
-        monkeypatch.setattr(rp, "_install_git_windows", _fake_portable)
-        monkeypatch.setattr(rp, "_probe_version", lambda b, a=None: "2.55.0")
-        monkeypatch.setattr(rp, "_salvage", lambda *a, **kw: None)
-
-        monkeypatch.setattr(rp, "_is_windows", lambda: False)
-        posix = rp.provision_runtimes(runtime_dir=tmp_path / "posix", install_root=root)
-        assert [(r.tool, r.action) for r in posix] == [("git", "downloaded")]
-        assert rr.load_facts(tmp_path / "posix")["git"].path == "git/bin/git"
-
-        monkeypatch.setattr(rp, "_is_windows", lambda: True)
-        win = rp.provision_runtimes(runtime_dir=tmp_path / "win", install_root=root)
-        assert [(r.tool, r.action) for r in win] == [("git", "downloaded")]
-        win_fact = rr.load_facts(tmp_path / "win")["git"]
-        assert win_fact.path == "git/cmd/git.exe"
-        # PortableGit's bash and coreutils live outside cmd/.
-        assert win_fact.path_dirs == ["git/cmd", "git/bin", "git/usr/bin"]
-
-        assert called == ["dugite", "portablegit"]
-
-    def test_dugite_refuses_a_digest_mismatch(self, tmp_path, monkeypatch):
-        """The sha256 is the only thing between a CDN and a user's source
-        tree: a mismatch must abort, never install."""
-        pin = {
-            "version": "2.55.x",
-            "dugiteTag": "v2.53.0-4",
-            "dugiteAsset": "dugite-{platform}.tar.gz",
-            "dugiteSha256": {"ubuntu-x64": "e" * 64, "macOS-arm64": "e" * 64},
-        }
-        monkeypatch.setattr(rp, "_download", lambda url, dest: dest.write_bytes(b"x"))
-        extracted: list[str] = []
-        monkeypatch.setattr(rp, "_extract", lambda a, d: extracted.append(str(d)))
-
-        with pytest.raises(RuntimeError, match="sha256 mismatch"):
-            rp._install_git_dugite(tmp_path / "rt", "2.55.x", pin)
-
-        assert extracted == [], "a mismatched archive must never be extracted"
-
-    def test_dugite_refuses_an_unpinned_platform(self, tmp_path, monkeypatch):
-        pin = {
-            "version": "2.55.x",
-            "dugiteTag": "v2.53.0-4",
-            "dugiteAsset": "dugite-{platform}.tar.gz",
-            "dugiteSha256": {},
-        }
-        with pytest.raises(RuntimeError, match="no dugite-native sha256"):
-            rp._install_git_dugite(tmp_path / "rt", "2.55.x", pin)
-
-    def test_salvage_moves_legacy_tree(self, pins, tmp_path, monkeypatch):
-        root = pins({"node": {"version": "26.x"}})
-        legacy_home = tmp_path / "home"
-        legacy_node = legacy_home / "node"
-        (legacy_node / "bin").mkdir(parents=True)
-        (legacy_node / "bin" / "node").write_text("#!/bin/sh\n")
-        monkeypatch.setattr(rp, "get_hermes_home", lambda: legacy_home)
-        monkeypatch.setattr(rp, "_probe_version", lambda b, a=None: "26.4.0")
-
-        def _boom(*a, **kw):
-            raise AssertionError("must salvage, not download")
-
-        monkeypatch.setitem(rp._INSTALLERS, "node", _boom)
         rt = tmp_path / "rt"
-        results = rp.provision_runtimes(runtime_dir=rt, install_root=root)
-        assert results[0].action == "salvaged"
-        assert (rt / "node" / "bin" / "node").is_file()
-        assert not legacy_node.exists()  # moved, not copied
+        results = rp.provision_runtimes(runtime_dir=rt, install_root=pins)
 
-    def test_unsatisfying_legacy_tree_left_alone(self, pins, tmp_path, monkeypatch):
-        root = pins({"node": {"version": "26.x"}})
-        legacy_home = tmp_path / "home"
-        legacy_node = legacy_home / "node"
-        (legacy_node / "bin").mkdir(parents=True)
-        (legacy_node / "bin" / "node").write_text("#!/bin/sh\n")
-        monkeypatch.setattr(rp, "get_hermes_home", lambda: legacy_home)
-        # Legacy probes at 22 (unsatisfying); download provides 26.
-        probes = {"first": True}
+        assert [(r.tool, r.action, r.version) for r in results] == [
+            ("gh", "downloaded", "2.97.0")
+        ]
+        assert (rt / "gh" / "bin" / "gh").is_file()
+        assert rr.load_facts(rt)["gh"].path == "gh/bin/gh"
 
-        def _probe(binary, args=None):
-            if "home" in str(binary):
-                return "22.0.0"
-            return "26.5.1"
-
-        monkeypatch.setattr(rp, "_probe_version", _probe)
-        monkeypatch.setitem(
-            rp._INSTALLERS, "node", lambda r, s: _fake_installer(r, "26.5.1", "node/bin/node")
+    def test_second_run_keeps_an_exact_match(self, served, tmp_path, target):
+        """Exact pins make this an equality check, not a range check."""
+        root, base = served
+        sha = _make_tar(root, "gh-keep.tar.gz", {"bin/gh": _script()})
+        pins = _pins_file(
+            tmp_path / "repo",
+            {
+                "gh": {
+                    "version": "2.97.0",
+                    "files": {target: {"url": f"{base}/gh-keep.tar.gz", "sha256": sha}},
+                }
+            },
         )
-        results = rp.provision_runtimes(runtime_dir=tmp_path / "rt", install_root=root)
+        rt = tmp_path / "rt"
+
+        rp.provision_runtimes(runtime_dir=rt, install_root=pins)
+        again = rp.provision_runtimes(runtime_dir=rt, install_root=pins)
+
+        assert [r.action for r in again] == ["kept"]
+
+    def test_a_version_bump_reprovisions(self, served, tmp_path, target):
+        root, base = served
+        sha_old = _make_tar(root, "gh-old.tar.gz", {"bin/gh": _script()})
+        sha_new = _make_tar(root, "gh-new.tar.gz", {"bin/gh": _script()})
+        repo = tmp_path / "repo"
+        rt = tmp_path / "rt"
+
+        _pins_file(repo, {"gh": {"version": "2.97.0", "files": {
+            target: {"url": f"{base}/gh-old.tar.gz", "sha256": sha_old}}}})
+        rp.provision_runtimes(runtime_dir=rt, install_root=repo)
+
+        _pins_file(repo, {"gh": {"version": "2.98.0", "files": {
+            target: {"url": f"{base}/gh-new.tar.gz", "sha256": sha_new}}}})
+        results = rp.provision_runtimes(runtime_dir=rt, install_root=repo)
+
+        assert [(r.action, r.version) for r in results] == [("downloaded", "2.98.0")]
+        assert rr.load_facts(rt)["gh"].version == "2.98.0"
+
+    def test_nested_archives_are_flattened(self, served, tmp_path, target):
+        """node/gh/ripgrep nest under a versioned dir; uv nests on POSIX
+        and not on Windows. Flattening keys off the archive's shape, so
+        the facts path stays stable either way."""
+        root, base = served
+        sha = _make_tar(root, "gh-nested.tar.gz", {"gh_2.97.0_linux/bin/gh": _script()})
+        pins = _pins_file(tmp_path / "repo", {"gh": {"version": "2.97.0", "files": {
+            target: {"url": f"{base}/gh-nested.tar.gz", "sha256": sha}}}})
+
+        rt = tmp_path / "rt"
+        rp.provision_runtimes(runtime_dir=rt, install_root=pins)
+
+        assert (rt / "gh" / "bin" / "gh").is_file()
+
+
+class TestDigestIsTheGate:
+    def test_a_mismatched_digest_aborts_before_extracting(
+        self, served, tmp_path, target
+    ):
+        root, base = served
+        _make_tar(root, "gh-tampered.tar.gz", {"bin/gh": _script()})
+        pins = _pins_file(tmp_path / "repo", {"gh": {"version": "2.97.0", "files": {
+            target: {"url": f"{base}/gh-tampered.tar.gz", "sha256": "e" * 64}}}})
+
+        rt = tmp_path / "rt"
+        results = rp.provision_runtimes(runtime_dir=rt, install_root=pins)
+
+        assert results[0].action == "failed"
+        assert "sha256 mismatch" in (results[0].detail or "")
+        # Nothing unpacked, nothing recorded: the bytes were never trusted.
+        assert not (rt / "gh").exists()
+        assert rr.load_facts(rt) == {}
+
+    def test_a_missing_download_fails_that_tool_only(self, served, tmp_path, target):
+        root, base = served
+        sha = _make_tar(root, "ok.tar.gz", {"bin/gh": _script()})
+        pins = _pins_file(tmp_path / "repo", {
+            "gh": {"version": "1.0.0", "files": {
+                target: {"url": f"{base}/ok.tar.gz", "sha256": sha}}},
+            "ripgrep": {"version": "1.0.0", "files": {
+                target: {"url": f"{base}/absent.tar.gz", "sha256": "b" * 64}}},
+        })
+
+        rt = tmp_path / "rt"
+        results = {r.tool: r.action for r in
+                   rp.provision_runtimes(runtime_dir=rt, install_root=pins)}
+
+        # A broken ripgrep download must not stop gh from provisioning.
+        assert results == {"gh": "downloaded", "ripgrep": "failed"}
+        assert "gh" in rr.load_facts(rt)
+        assert "ripgrep" not in rr.load_facts(rt)
+
+
+class TestVerificationBeforeRecording:
+    def test_an_unrunnable_binary_is_not_recorded(self, served, tmp_path, target):
+        """Recording it would tell every reader a broken tool is ready."""
+        root, base = served
+        sha = _make_tar(root, "gh-broken.tar.gz", {"bin/gh": b"\x00\x01not a program"})
+        pins = _pins_file(tmp_path / "repo", {"gh": {"version": "2.97.0", "files": {
+            target: {"url": f"{base}/gh-broken.tar.gz", "sha256": sha}}}})
+
+        rt = tmp_path / "rt"
+        results = rp.provision_runtimes(runtime_dir=rt, install_root=pins)
+
+        assert results[0].action == "failed"
+        assert "does not run" in (results[0].detail or "")
+        assert rr.load_facts(rt) == {}
+
+    def test_an_archive_without_the_expected_binary_fails(
+        self, served, tmp_path, target
+    ):
+        root, base = served
+        sha = _make_tar(root, "gh-empty.tar.gz", {"README": b"nothing here"})
+        pins = _pins_file(tmp_path / "repo", {"gh": {"version": "2.97.0", "files": {
+            target: {"url": f"{base}/gh-empty.tar.gz", "sha256": sha}}}})
+
+        rt = tmp_path / "rt"
+        results = rp.provision_runtimes(runtime_dir=rt, install_root=pins)
+
+        assert results[0].action == "failed"
+        assert "missing after staging" in (results[0].detail or "")
+
+
+class TestNoSalvage:
+    def test_an_unverified_tree_on_disk_is_replaced_not_adopted(
+        self, served, tmp_path, target
+    ):
+        """There is no salvage: adopting bytes nobody verified would
+        defeat pinning digests at all."""
+        root, base = served
+        sha = _make_tar(root, "gh-fresh.tar.gz", {"bin/gh": _script()})
+        pins = _pins_file(tmp_path / "repo", {"gh": {"version": "2.97.0", "files": {
+            target: {"url": f"{base}/gh-fresh.tar.gz", "sha256": sha}}}})
+
+        rt = tmp_path / "rt"
+        squatter = rt / "gh" / "bin" / "gh"
+        squatter.parent.mkdir(parents=True)
+        squatter.write_text("#!/bin/sh\necho 'impostor 9.9.9'\n")
+        squatter.chmod(0o755)
+
+        results = rp.provision_runtimes(runtime_dir=rt, install_root=pins)
+
         assert results[0].action == "downloaded"
-        assert legacy_node.exists()  # untouched for doctor/uninstall
+        assert "impostor" not in squatter.read_text()
 
-    def test_emit_streams_stage_json_events(self, pins, tmp_path, monkeypatch):
-        root = pins({"node": {"version": "26.x"}})
-        monkeypatch.setitem(
-            rp._INSTALLERS, "node", lambda r, s: _fake_installer(r, "26.5.1", "node/bin/node")
+    def test_the_provisioner_exposes_no_salvage_surface(self):
+        for name in dir(rp):
+            assert "salvage" not in name.lower()
+
+
+class TestSelectiveProvisioning:
+    def test_only_provisions_the_named_tool(self, served, tmp_path, target):
+        root, base = served
+        sha = _make_tar(root, "sel.tar.gz", {"bin/gh": _script()})
+        pins = _pins_file(tmp_path / "repo", {
+            "gh": {"version": "1.0.0", "files": {
+                target: {"url": f"{base}/sel.tar.gz", "sha256": sha}}},
+            "ripgrep": {"version": "1.0.0", "files": {
+                target: {"url": f"{base}/absent.tar.gz", "sha256": "c" * 64}}},
+        })
+
+        results = rp.provision_runtimes(
+            runtime_dir=tmp_path / "rt", install_root=pins, only=["gh"]
         )
-        monkeypatch.setattr(rp, "_probe_version", lambda b, a=None: "26.5.1")
-        events = []
-        rp.provision_runtimes(
-            runtime_dir=tmp_path / "rt", install_root=root, emit=events.append
-        )
-        assert events and events[0]["type"] == "runtime-tool"
-        assert events[0]["tool"] == "node" and events[0]["action"] == "downloaded"
+
+        assert [r.tool for r in results] == ["gh"]
 
 
-class TestStepRegistration:
-    def test_step_is_registered_in_machine_steps(self):
-        from hermes_cli import post_update
+class TestLayout:
+    def test_windows_and_posix_binaries_land_where_readers_expect(self):
+        assert rp._binary_rel("node", "win32-x64") == "node/node.exe"
+        assert rp._binary_rel("node", "linux-x64") == "node/bin/node"
+        # Two git suppliers, two layouts.
+        assert rp._binary_rel("git", "win32-x64") == "git/cmd/git.exe"
+        assert rp._binary_rel("git", "darwin-arm64") == "git/bin/git"
 
-        names = [name for name, _fn in post_update.MACHINE_STEPS]
-        assert "provision_runtimes" in names
-
-    def test_step_result_shape(self, pins, tmp_path, monkeypatch):
-        root = pins({"node": {"version": "26.x"}})
-        monkeypatch.setattr(rp, "get_runtime_dir", lambda: tmp_path / "rt")
-        monkeypatch.setattr(
-            rp, "load_pins", lambda install_root=None: rr.load_pins(root)
-        )
-        monkeypatch.setitem(
-            rp._INSTALLERS, "node", lambda r, s: _fake_installer(r, "26.5.1", "node/bin/node")
-        )
-        monkeypatch.setattr(rp, "_probe_version", lambda b, a=None: "26.5.1")
-        result = rp.step_provision_runtimes()
-        assert result["ok"] is True
-        assert result["tools"] == {"node": "downloaded"}
+    def test_only_portablegit_needs_extra_path_dirs(self):
+        """bash.exe and the coreutils live outside cmd/; every other tool
+        is covered by its binary's own directory."""
+        assert rp._path_dirs("git", "win32-x64") == [
+            "git/cmd",
+            "git/bin",
+            "git/usr/bin",
+        ]
+        assert rp._path_dirs("git", "darwin-arm64") is None
+        assert rp._path_dirs("node", "win32-x64") is None

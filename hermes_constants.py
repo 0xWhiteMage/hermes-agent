@@ -406,14 +406,15 @@ def _node_target_major() -> int:
     if override:
         return int(override)
     try:
-        from hermes_cli.runtime_registry import load_pins, parse_spec
+        from hermes_cli.runtime_registry import load_pins
 
         # Pins ship WITH the code, so they are read relative to this module
         # — not from get_install_root(), which callers can point elsewhere
         # (desktop resourcesPath, tests) and which would then silently lose
         # the pin file and fall back.
         pins = load_pins(Path(__file__).resolve().parent)
-        return parse_spec(pins["node"]["version"]).floor[0]
+        # Pins are exact ("26.7.0"), so the major is just the first field.
+        return int(pins["node"]["version"].split(".")[0])
     except Exception:
         return 22
 

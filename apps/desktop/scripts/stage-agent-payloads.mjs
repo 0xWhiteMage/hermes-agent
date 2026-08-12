@@ -269,190 +269,71 @@ function loadPins() {
   return pins.tools
 }
 
-// Pinned Git for Windows release. Static download URLs from the official
-// git-for-windows GitHub releases — no API calls (rate-limited to 60/hour
-// for unauthenticated callers). Mirrors the pin in scripts/install.ps1.
-const GIT_TAG = "v2.55.0.windows.3"
-const GIT_VER = "2.55.0.3"
+/**
+ * Managed runtime tools (node, uv, git, gh, ripgrep) for the payload.
+ *
+ * The payload IS a runtime dir, so this shells out to the SAME Python
+ * provisioner a source install and `hermes update` use. Everything about
+ * a tool — its exact version, its per-target download URL and sha256, how
+ * its archive unpacks — lives in runtime-pins.json and
+ * hermes_cli/runtime_provisioner.py. A second implementation here would
+ * be a second thing to keep correct, and the digest verification is not
+ * something to reimplement twice.
+ *
+ * Cross-building is normal here (a linux runner staging the macOS
+ * payload), so `--target` is passed explicitly rather than inferred, and
+ * the provisioner skips its run-the-binary check for a foreign target.
+ * `assertPayloadArch` below re-checks the arch from the file headers,
+ * which works regardless of what can execute.
+ */
+function stageManagedRuntimes(target, outDir, pythonExe) {
+  const targetKey = `${target.platform}-${target.arch}`
 
-function dugitePlatformTag(target) {
-  if (target.platform === "darwin") {
-    return target.arch === "arm64" ? "macOS-arm64" : "macOS-x64"
-  }
-  return target.arch === "arm64" ? "ubuntu-arm64" : "ubuntu-x64"
+  run(pythonExe, [
+    "-m",
+    "hermes_cli.runtime_provisioner",
+    "--runtime-dir",
+    outDir,
+    "--target",
+    targetKey,
+  ], { cwd: REPO_ROOT })
+
+  assertPayloadArch(target, outDir)
 }
 
 /**
- * dugite-native for macOS and Linux.
+ * Confirm every staged tool binary is built for the target.
  *
- * macOS is the reason this exists: /usr/bin/git is the xcode-select SHIM,
- * so invoking it on a machine with no Command Line Tools pops a modal
- * install dialog mid-session. dugite-native is GitHub's relocatable Git
- * (what GitHub Desktop ships), built with RUNTIME_PREFIX so bin/git finds
- * libexec/git-core relative to itself wherever the .app is dragged.
+ * Header inspection, not execution: the build host usually cannot run
+ * what it just staged, and emulation would make a wrong-arch binary look
+ * fine anyway.
  */
-function stageGitDugite(target, gitDir) {
-  const pin = loadPins().git
-  const platformTag = dugitePlatformTag(target)
-  const assetName = pin.dugiteAsset.replace("{platform}", platformTag)
-  const expected = pin.dugiteSha256[platformTag]
-
-  if (!expected) {
-    throw new Error(`no dugite-native sha256 pinned for ${platformTag}`)
+export function assertPayloadArch(target, outDir) {
+  const win = target.platform === "win32"
+  const binaries = {
+    node: win ? "node/node.exe" : "node/bin/node",
+    uv: win ? "uv/uv.exe" : "uv/uv",
+    git: win ? "git/cmd/git.exe" : "git/bin/git",
+    gh: win ? "gh/bin/gh.exe" : "gh/bin/gh",
+    ripgrep: win ? "ripgrep/rg.exe" : "ripgrep/rg",
   }
 
-  const url = `https://github.com/desktop/dugite-native/releases/download/${pin.dugiteTag}/${assetName}`
-  const tmpFile = path.join(os.tmpdir(), `hermes-${assetName}`)
+  for (const [tool, rel] of Object.entries(binaries)) {
+    const binary = path.join(outDir, rel)
+    if (!fs.existsSync(binary)) {
+      throw new Error(`${tool}: ${rel} missing from the staged payload`)
+    }
 
-  console.log(`[stage-agent-payloads] downloading ${assetName} (dugite-native ${pin.dugiteTag})`)
-  run("curl", ["-fsSL", "-o", tmpFile, url])
+    const arch = win
+      ? probePeArch(binary)
+      : (probeMachOArch(binary) ?? probeElfArch(binary))
 
-  const actual = createHash("sha256").update(fs.readFileSync(tmpFile)).digest("hex")
-  if (actual !== expected) {
-    fs.rmSync(tmpFile, { force: true })
-    throw new Error(
-      `dugite-native ${platformTag} sha256 mismatch: expected ${expected}, got ${actual}`
-    )
-  }
-
-  fs.mkdirSync(gitDir, { recursive: true })
-  run("tar", ["-xzf", tmpFile, "-C", gitDir])
-  fs.rmSync(tmpFile, { force: true })
-
-  const gitBin = path.join(gitDir, "bin", "git")
-  if (!fs.existsSync(gitBin)) {
-    throw new Error(`dugite-native staged but ${gitBin} is missing`)
-  }
-
-  const arch = probeMachOArch(gitBin) ?? probeElfArch(gitBin)
-  if (arch !== "unknown" && arch !== target.arch) {
-    throw new Error(`staged git is ${arch}, expected ${target.arch}`)
-  }
-  console.log(`[stage-agent-payloads] git ok (dugite-native, ${arch})`)
-}
-
-/**
- * The GitHub CLI, on every platform.
- *
- * A single static Go binary, relocatable by construction — the easy one.
- * Bundling it removes the Program Files / WinGet / Homebrew guessing that
- * resolveGhBinary used to do, and means `gh` behaves the same for every
- * user instead of depending on what they happened to install.
- */
-function stageGh(target, outDir) {
-  const ghDir = path.join(outDir, "gh")
-  fs.rmSync(ghDir, { recursive: true, force: true })
-  fs.mkdirSync(ghDir, { recursive: true })
-
-  const pins = loadPins()
-  const version = pins.gh.version.replace(/\.x$/, "")
-  const arch = target.arch === "arm64" ? "arm64" : "amd64"
-  const isZip = target.platform === "win32" || target.platform === "darwin"
-  const osTag = { win32: "windows", darwin: "macOS", linux: "linux" }[target.platform]
-  const assetName = `gh_${version}_${osTag}_${arch}.${isZip ? "zip" : "tar.gz"}`
-  const url = `https://github.com/cli/cli/releases/download/v${version}/${assetName}`
-  const tmpFile = path.join(os.tmpdir(), `hermes-${assetName}`)
-
-  console.log(`[stage-agent-payloads] downloading ${assetName} (gh ${version})`)
-  run("curl", ["-fsSL", "-o", tmpFile, url])
-
-  if (isZip) {
-    run("unzip", ["-q", "-o", tmpFile, "-d", ghDir])
-  } else {
-    run("tar", ["-xzf", tmpFile, "-C", ghDir])
-  }
-  fs.rmSync(tmpFile, { force: true })
-
-  // gh archives nest everything under gh_<version>_<os>_<arch>/ — hoist so
-  // the facts path stays stable across version bumps.
-  flattenSingleDir(ghDir)
-
-  const ghBin = path.join(ghDir, "bin", target.platform === "win32" ? "gh.exe" : "gh")
-  if (!fs.existsSync(ghBin)) {
-    throw new Error(`gh staged but ${ghBin} is missing`)
-  }
-
-  const arch_ =
-    target.platform === "win32"
-      ? probePeArch(ghBin)
-      : (probeMachOArch(ghBin) ?? probeElfArch(ghBin))
-  if (arch_ !== "unknown" && arch_ !== target.arch) {
-    throw new Error(`staged gh is ${arch_}, expected ${target.arch}`)
-  }
-  console.log(`[stage-agent-payloads] gh ok (${version}, ${arch_})`)
-}
-
-/** Hoist a single nested top-level dir's contents up one level. */
-function flattenSingleDir(dir) {
-  const entries = fs.readdirSync(dir).filter(name => !name.startsWith("."))
-  if (entries.length !== 1) return
-  const inner = path.join(dir, entries[0])
-  if (!fs.statSync(inner).isDirectory()) return
-  for (const child of fs.readdirSync(inner)) {
-    fs.renameSync(path.join(inner, child), path.join(dir, child))
-  }
-  fs.rmdirSync(inner)
-}
-
-function stageGit(target, outDir) {
-  const gitDir = path.join(outDir, "git")
-  fs.rmSync(gitDir, { recursive: true, force: true })
-
-  // Every platform bundles a real git. On macOS this is load-bearing:
-  // /usr/bin/git is the xcode-select shim and would prompt for the CLT.
-  if (target.platform !== "win32") {
-    stageGitDugite(target, gitDir)
-    return
-  }
-
-  fs.mkdirSync(gitDir, { recursive: true })
-  const archTag = target.arch === "arm64" ? "arm64" : "64-bit"
-  const assetName = `PortableGit-${GIT_VER}-${archTag}.7z.exe`
-  const downloadUrl = `https://github.com/git-for-windows/git/releases/download/${GIT_TAG}/${assetName}`
-  // Download to os.tmpdir(), NOT inside outDir — a leftover .download-*
-  // file inside agent-payload/ gets copied into the bundle by
-  // electron-builder's extraResources and fails the arch audit.
-  const tmpFile = path.join(os.tmpdir(), `hermes-${assetName}`)
-
-  console.log(`[stage-agent-payloads] downloading ${assetName} (Git for Windows ${GIT_VER})`)
-  run("curl", ["-fsSL", "-o", tmpFile, downloadUrl])
-
-  // PortableGit is a self-extracting 7z archive. Invoke it with
-  // `-o<target> -y` (silent) to extract to gitDir. No 7z install required.
-  const extractProc = spawnSync(tmpFile, [`-o${gitDir}`, "-y"], { stdio: "inherit" })
-  // Windows: the 7z self-extractor exits before the OS releases the file
-  // handle — rmSync EPERM is the classic post-exit race. Node's built-in
-  // maxRetries handles this. The file is in tmpdir so even if cleanup
-  // fails it never lands in the payload.
-  try {
-    fs.rmSync(tmpFile, { force: true, maxRetries: 5, retryDelay: 200 })
-  } catch {
-    console.warn(`[stage-agent-payloads] could not delete ${tmpFile} — ignoring`)
-  }
-  if (extractProc.status !== 0) {
-    throw new Error(`git: PortableGit extraction failed (exit ${extractProc.status})`)
-  }
-
-  // Verify git.exe exists and is the target architecture. `git --version`
-  // prints no arch info, so probe the PE header directly — same technique
-  // as audit-bundle-arch.mjs, applied at staging time.
-  const gitExe = path.join(gitDir, "cmd", "git.exe")
-  if (!fs.existsSync(gitExe)) {
-    throw new Error(`git: PortableGit extraction did not produce git.exe at ${gitExe}`)
-  }
-  const gitArch = probePeArch(gitExe)
-  const expect = bannerExpectations(target)
-  if (!expect.pythonAny.some((word) => gitArch.includes(word))) {
-    throw new Error(
-      `git: staged git.exe reports "${gitArch}" which does not match target arch ` +
-      `${target.arch} (expected one of ${expect.pythonAny.join("|")})`
-    )
+    if (arch !== "unknown" && arch !== target.arch) {
+      throw new Error(`${tool}: staged binary is ${arch}, expected ${target.arch}`)
+    }
   }
 }
 
-// Read the PE machine field from a Windows .exe and resolve it to an arch
-// name. Returns "unknown" if the file is not a PE binary or the machine
-// code is unrecognized.
 function probePeArch(exePath) {
   const fd = fs.openSync(exePath, "r")
   try {
@@ -691,54 +572,32 @@ export function hostTarBin() {
 }
 
 function stageUvAndPython(target, outDir, { reusePython = false } = {}) {
-  const uvDir = path.join(outDir, "uv")
   const pythonDir = path.join(outDir, "python")
   // Wipe before staging (stageRepo does the same). A rerun after a failed
   // or wrong-arch attempt must not leave a stale interpreter beside the
-  // new one — the banner probe would find the old build first. The uv
-  // stage is a cheap copy and is never reused; the python install is the
-  // expensive half, and a cache-key match (main) skips its reinstall.
-  fs.rmSync(uvDir, { recursive: true, force: true })
-  fs.mkdirSync(uvDir, { recursive: true })
+  // new one — the banner probe would find the old build first. The
+  // python install is the expensive half, and a cache-key match (main)
+  // skips its reinstall.
   if (!reusePython) {
     fs.rmSync(pythonDir, { recursive: true, force: true })
     fs.mkdirSync(pythonDir, { recursive: true })
   }
-  // Native runner: the uv that runs this build IS the target-platform uv.
-  // HERMES_PAYLOAD_UV overrides this for unusual setups. The default is
-  // `uv` on PATH.
-  const uvName = target.platform === "win32" ? "uv.exe" : "uv"
-  const uvSource =
-    process.env.HERMES_PAYLOAD_UV ||
-    execSync(
-      target.platform === "win32" ? "where uv" : "command -v uv",
-      { encoding: "utf8" }
-    ).split(/\r?\n/)[0].trim()
-  const uvStaged = path.join(uvDir, uvName)
-  fs.copyFileSync(uvSource, uvStaged)
+
+  // The uv that INSTALLS the payload interpreter is a BUILD tool: it runs
+  // here, on the build host, so it comes from PATH (HERMES_PAYLOAD_UV
+  // overrides). The uv that SHIPS in the payload is a managed runtime
+  // built for the target — the provisioner stages that one from the pin
+  // table, and on a cross-build the two are not the same architecture.
+  const buildUv = process.env.HERMES_PAYLOAD_UV || "uv"
 
   const expect = bannerExpectations(target)
-
-  // The staged uv must be built FOR the target triple, not merely run on
-  // this host (emulation makes a wrong-arch binary run fine here).
-  // uv prints its build triple in --version from 0.12 on; an older uv
-  // prints only the version number, which is unverifiable — refuse it
-  // with a message that says so instead of claiming a wrong arch.
-  const uvBanner = probe(uvStaged, ["--version"])
-  if (/^uv \d[\d.]*\s*$/.test(uvBanner.trim())) {
-    throw new Error(
-      `uv: "${uvBanner.trim()}" prints no build triple, so its architecture ` +
-        `cannot be verified. Use uv 0.12 or newer.`
-    )
-  }
-  assertBanner("uv", uvBanner, expect.uv)
 
   // --no-bin: staging must not write launcher shims into the build
   // host's ~/.local/bin (it collided with a preexisting python3.11.exe
   // on the Windows test box). On reuse the install is already on disk;
   // the probes below still run against it.
   if (!reusePython) {
-    run("uv", ["python", "install", "--no-bin", "--install-dir", pythonDir, pythonRequest(target)])
+    run(buildUv, ["python", "install", "--no-bin", "--install-dir", pythonDir, pythonRequest(target)])
   }
 
   // uv leaves two things beside the versioned install that must not ship:
@@ -918,92 +777,6 @@ function writeBundlePth(outDir, pythonBinary) {
   )
 }
 
-function stageNode(target, outDir) {
-  const nodeDir = path.join(outDir, "node")
-  // Idempotent: a leftover tree from an interrupted run makes cpSync
-  // throw EEXIST on directory merges; start clean every time.
-  fs.rmSync(nodeDir, { recursive: true, force: true })
-  fs.mkdirSync(nodeDir, { recursive: true })
-  const src = process.env.HERMES_PAYLOAD_NODE_DIST
-  if (!src) {
-    throw new Error("HERMES_PAYLOAD_NODE_DIST must point at the extracted node dist for the target")
-  }
-  fs.cpSync(src, nodeDir, { recursive: true })
-
-  // The dist must be FOR the target. Running the staged node is not a
-  // valid probe here: a wrong-arch binary can still run through the
-  // build host's emulation. `node -p process.arch` names the arch the
-  // binary was BUILT for, so execute it only to read that value; when
-  // the binary cannot run at all, that is the same wrong-arch verdict.
-  const nodeBinary = target.platform === "win32" ? path.join(nodeDir, "node.exe") : path.join(nodeDir, "bin", "node")
-  let reportedArch = null
-  try {
-    reportedArch = probe(nodeBinary, ["-p", "process.arch"]).trim()
-  } catch {
-    // Unrunnable on this host — for example an arm64 dist on an x64
-    // builder with no emulation. That is not proof of a wrong payload,
-    // but it IS unverifiable; refuse rather than ship unchecked.
-    throw new Error(`node: staged binary at ${nodeBinary} did not run, so its architecture is unverified`)
-  }
-  assertBanner("node", reportedArch, bannerExpectations(target).node)
-}
-
-/**
- * The runtime-registry facts for a staged payload. Same schema
- * hermes_cli/runtime_registry.py writes for a source install, so the
- * desktop's backend-env reads BOTH artifact kinds through one code path
- * (paths are relative to the payload dir, keeping it relocatable).
- *
- * Versions come from the staged binaries themselves where cheap, and are
- * omitted otherwise: the desktop only uses path/pathDirs, and a lie about
- * a version is worse than its absence.
- */
-export function payloadRuntimeFacts(
-  target,
-  { nodeVersion = "0", uvVersion = "0", gitVersion = "0", ghVersion = "0" } = {}
-) {
-  const win = target.platform === "win32"
-  const tools = {
-    node: { version: nodeVersion, path: win ? "node/node.exe" : "node/bin/node" },
-    uv: { version: uvVersion, path: win ? "uv/uv.exe" : "uv/uv" },
-    gh: { version: ghVersion, path: win ? "gh/bin/gh.exe" : "gh/bin/gh" },
-  }
-  // Two git suppliers, two layouts: PortableGit's surface spans three
-  // dirs (bash and the coreutils live outside cmd/), dugite-native is
-  // just bin/, which dirname() of the binary already covers.
-  tools.git = win
-    ? {
-        version: gitVersion,
-        path: "git/cmd/git.exe",
-        pathDirs: ["git/cmd", "git/bin", "git/usr/bin"],
-      }
-    : { version: gitVersion, path: "git/bin/git" }
-  return { schemaVersion: 1, tools }
-}
-
-function writeRuntimeFacts(target, outDir) {
-  const probeVersion = (binary, args = ["--version"]) => {
-    try {
-      const out = spawnSync(binary, args, { encoding: "utf8" })
-      const match = /\d+(?:\.\d+)+/.exec(out.stdout || "")
-      return match ? match[0] : "0"
-    } catch {
-      return "0"
-    }
-  }
-  const win = target.platform === "win32"
-  const facts = payloadRuntimeFacts(target, {
-    nodeVersion: probeVersion(path.join(outDir, win ? "node/node.exe" : "node/bin/node")),
-    uvVersion: probeVersion(path.join(outDir, win ? "uv/uv.exe" : "uv/uv")),
-    gitVersion: probeVersion(path.join(outDir, win ? "git/cmd/git.exe" : "git/bin/git")),
-    ghVersion: probeVersion(path.join(outDir, win ? "gh/bin/gh.exe" : "gh/bin/gh")),
-  })
-  fs.writeFileSync(
-    path.join(outDir, "runtimes.json"),
-    JSON.stringify(facts, null, 2) + "\n"
-  )
-}
-
 function main() {
   if (process.env.HERMES_DESKTOP_VARIANT !== "bundled") {
     // bootstrap and light artifacts carry no payload: write a stub
@@ -1072,18 +845,10 @@ function main() {
   // exist so a failed staging run never leaves a .pth that points at
   // nothing.
   writeBundlePth(OUT_DIR, payloadPython)
-  console.log(`[stage-agent-payloads] staging: node (${target.key}, ${tag})`)
-  stageNode(target, OUT_DIR)
-  console.log(`[stage-agent-payloads] staging: git (${target.key}, ${tag})`)
-  stageGit(target, OUT_DIR)
-  console.log(`[stage-agent-payloads] staging: gh (${target.key}, ${tag})`)
-  stageGh(target, OUT_DIR)
-  // The payload IS a runtime dir: the desktop reads runtimes.json to build
-  // the backend PATH, exactly as it does for a source install's
-  // .hermes-runtime. Written here rather than hand-listed in main.ts so
-  // both artifact kinds go through one assembler.
-  console.log(`[stage-agent-payloads] writing runtimes.json`)
-  writeRuntimeFacts(target, OUT_DIR)
+  // node, uv, git, gh, ripgrep in one call, from the pinned URLs and
+  // digests, writing the runtimes.json the desktop reads at launch.
+  console.log(`[stage-agent-payloads] staging: managed runtimes (${target.key}, ${tag})`)
+  stageManagedRuntimes(target, OUT_DIR, payloadPython)
   console.log(`[stage-agent-payloads] sanitizing symlinks`)
   sanitizeSymlinks(OUT_DIR)
 
