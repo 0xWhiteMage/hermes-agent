@@ -290,6 +290,11 @@ jobs:
           # two phases that were silent for 55 minutes before the darwin
           # timeouts: per-file codesign and the notarytool submission.
           DEBUG: 'electron-builder,electron-osx-sign*,electron-notarize*'
+          # TEMPORARY diagnostic (msix signing 0x800700C1): AppxSIP logs the
+          # exact inner PE with the malformed certificate to the console when
+          # this is set — signtool's failing output lands in the step log.
+          # Remove once the corrupt file is identified and fixed.
+          APPXSIP_LOG: '1'
           HERMES_BUNDLE_TAG: ${{ env.HERMES_PAYLOAD_TAG }}
           # macOS signing and notarization (electron-builder builtin).
           # APPLE_API_KEY is intentionally NOT set here: the write-key
