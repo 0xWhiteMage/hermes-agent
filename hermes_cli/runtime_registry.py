@@ -177,9 +177,21 @@ class RuntimeFact:
     installed_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
+    # Optional override: PATH dirs (relative to the runtime dir) for tools
+    # whose surface spans several bin dirs (PortableGit: cmd, bin,
+    # usr/bin). When None, the assembler derives the single dir containing
+    # `path`.
+    path_dirs: Optional[list[str]] = None
 
     def to_json(self) -> dict:
-        return {"version": self.version, "path": self.path, "installedAt": self.installed_at}
+        data: dict[str, object] = {
+            "version": self.version,
+            "path": self.path,
+            "installedAt": self.installed_at,
+        }
+        if self.path_dirs is not None:
+            data["pathDirs"] = self.path_dirs
+        return data
 
     @classmethod
     def from_json(cls, data: dict) -> "RuntimeFact":
@@ -187,6 +199,7 @@ class RuntimeFact:
             version=data["version"],
             path=data["path"],
             installed_at=data.get("installedAt", ""),
+            path_dirs=data.get("pathDirs"),
         )
 
 
