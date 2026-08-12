@@ -263,22 +263,17 @@ export function stageCacheKey({ target, pythonVersion, requirementsText }) {
 }
 
 // ─── impure staging steps (they shell out, have no unit tests, and run in CI) ──────
+function loadPins() {
+  const pins = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "runtime-pins.json"), "utf8"))
+
+  return pins.tools
+}
 
 // Pinned Git for Windows release. Static download URLs from the official
 // git-for-windows GitHub releases — no API calls (rate-limited to 60/hour
 // for unauthenticated callers). Mirrors the pin in scripts/install.ps1.
 const GIT_TAG = "v2.55.0.windows.3"
 const GIT_VER = "2.55.0.3"
-
-/**
- * The POSIX git supplier, read from the SAME pin table the Python
- * provisioner uses (runtime-pins.json) so a bundled desktop and a source
- * install cannot drift onto different Gits.
- */
-function dugitePin() {
-  const pins = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "runtime-pins.json"), "utf8"))
-  return pins.git
-}
 
 function dugitePlatformTag(target) {
   if (target.platform === "darwin") {
@@ -297,7 +292,7 @@ function dugitePlatformTag(target) {
  * libexec/git-core relative to itself wherever the .app is dragged.
  */
 function stageGitDugite(target, gitDir) {
-  const pin = dugitePin()
+  const pin = loadPins().git
   const platformTag = dugitePlatformTag(target)
   const assetName = pin.dugiteAsset.replace("{platform}", platformTag)
   const expected = pin.dugiteSha256[platformTag]
@@ -349,7 +344,7 @@ function stageGh(target, outDir) {
   fs.rmSync(ghDir, { recursive: true, force: true })
   fs.mkdirSync(ghDir, { recursive: true })
 
-  const pins = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "runtime-pins.json"), "utf8"))
+  const pins = loadPins()
   const version = pins.gh.version.replace(/\.x$/, "")
   const arch = target.arch === "arm64" ? "arm64" : "amd64"
   const isZip = target.platform === "win32" || target.platform === "darwin"
