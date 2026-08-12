@@ -143,6 +143,7 @@ jobs:
           # version number and fails the guard.
           version: '0.12.1'
           enable-cache: true
+          cache-suffix: -${{ matrix.variant }}
           cache-dependency-glob: |
             pyproject.toml
             uv.lock
