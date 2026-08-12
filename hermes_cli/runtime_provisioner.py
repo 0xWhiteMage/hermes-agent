@@ -17,6 +17,7 @@ GUI install driver renders provisioning natively.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -149,9 +150,10 @@ def _binary_rel(tool: str) -> str:
     """The facts `path` for each tool in OUR layout (relative, stable)."""
     ext = ".exe" if _is_windows() else ""
     return {
-        "node": f"node/bin/node{ext}" if not _is_windows() else "node/node.exe",
+        "node": "node/node.exe" if _is_windows() else "node/bin/node",
         "uv": f"uv/uv{ext}",
-        "git": "git/cmd/git.exe",  # windows-only tool for now (phase 16+ adds dugite)
+        # PortableGit puts git.exe in cmd/; dugite-native uses bin/git.
+        "git": "git/cmd/git.exe" if _is_windows() else "git/bin/git",
         "gh": f"gh/bin/gh{ext}",
         "ripgrep": f"ripgrep/rg{ext}",
     }[tool]
@@ -159,7 +161,10 @@ def _binary_rel(tool: str) -> str:
 
 def _path_dirs(tool: str) -> Optional[list[str]]:
     if tool == "git":
-        return ["git/cmd", "git/bin", "git/usr/bin"]
+        # PortableGit's surface spans three dirs (bash and the coreutils
+        # live outside cmd/); dugite-native is just bin/, which the
+        # default dirname() of the binary already covers.
+        return ["git/cmd", "git/bin", "git/usr/bin"] if _is_windows() else None
     return None
 
 
@@ -299,9 +304,69 @@ def _install_ripgrep(runtime_dir: Path, spec: str) -> str:
     return tag
 
 
+def _dugite_platform() -> str:
+    """dugite-native's asset platform tag for this host."""
+    arch = _machine_arch()
+    if sys.platform == "darwin":
+        return "macOS-arm64" if arch == "arm64" else "macOS-x64"
+    return "ubuntu-arm64" if arch == "arm64" else "ubuntu-x64"
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _install_git_dugite(runtime_dir: Path, spec: str, pin: dict) -> str:
+    """Portable Git for darwin/linux via dugite-native.
+
+    dugite-native is GitHub's own relocatable Git build (what GitHub
+    Desktop embeds): compiled with RUNTIME_PREFIX so bin/git finds its
+    libexec/git-core relative to itself, no matter where the tree lands.
+
+    On macOS this is the whole point of the feature: /usr/bin/git is the
+    xcode-select shim, and invoking it without the Command Line Tools
+    installed pops a modal install dialog. A bundled git means Hermes
+    never asks the shim anything.
+
+    Unlike the other tools this pins an exact release tag + sha256 rather
+    than resolving "latest": a Git that silently changes under users is
+    worse than one that needs a pin bump, and the digest is the only
+    thing standing between a CDN and our users' source trees.
+    """
+    tag = pin["dugiteTag"]
+    platform_tag = _dugite_platform()
+    asset = pin["dugiteAsset"].format(platform=platform_tag)
+    expected = pin["dugiteSha256"].get(platform_tag)
+    if not expected:
+        raise RuntimeError(f"no dugite-native sha256 pinned for {platform_tag}")
+
+    url = f"https://github.com/desktop/dugite-native/releases/download/{tag}/{asset}"
+    dest = runtime_dir / "git"
+    with tempfile.TemporaryDirectory() as td:
+        archive = Path(td) / asset
+        _download(url, archive)
+        actual = _sha256(archive)
+        if actual != expected:
+            raise RuntimeError(
+                f"dugite-native {platform_tag} sha256 mismatch: "
+                f"expected {expected}, got {actual}"
+            )
+        _extract(archive, dest)
+
+    version = _probe_version(dest / "bin" / "git")
+    if version is None:
+        raise RuntimeError("extracted git does not run")
+    if not satisfies(version, spec):
+        raise RuntimeError(f"dugite-native git {version} does not satisfy {spec!r}")
+    return version
+
+
 def _install_git_windows(runtime_dir: Path, spec: str) -> str:
-    """PortableGit for win32 (mirrors the install.ps1 pin this replaces).
-    darwin/linux git arrives with dugite-native in phase 17."""
+    """PortableGit for win32 (mirrors the install.ps1 pin this replaces)."""
     # Pin lives in runtime-pins.json as 2.55.x; PortableGit assets need
     # the full tag. Resolve from the git-for-windows latest release and
     # check satisfaction — same shape as gh/rg.
@@ -344,9 +409,10 @@ _INSTALLERS: dict[str, Callable[[Path, str], str]] = {
 
 
 def _tool_applies(tool: str) -> bool:
-    # git is provisioned on Windows only until dugite lands (phase 17).
-    if tool == "git":
-        return _is_windows()
+    # Every pinned tool is managed on every platform. git in particular:
+    # macOS's /usr/bin/git is the xcode-select SHIM, so invoking it on a
+    # machine without the Command Line Tools pops an install dialog. A
+    # bundled git is how that never happens.
     return True
 
 
@@ -355,11 +421,21 @@ def _tool_applies(tool: str) -> bool:
 
 def _provision_one(
     tool: str,
-    spec: str,
+    pin: dict,
     rt: Path,
     facts: dict[str, RuntimeFact],
 ) -> ToolResult:
-    """Bring ONE tool to a satisfying state. Never raises."""
+    """Bring ONE tool to a satisfying state. Never raises.
+
+    Takes the whole pin entry, not just its version: git carries the
+    dugite release tag and per-platform digests alongside the spec.
+    """
+    # git ships from two suppliers on two cadences; windowsVersion lets the
+    # faster one (git-for-windows) keep a higher floor than dugite-native
+    # without failing every POSIX install.
+    spec = pin["version"]
+    if tool == "git" and _is_windows() and pin.get("windowsVersion"):
+        spec = pin["windowsVersion"]
     if not _tool_applies(tool):
         return ToolResult(tool, "skipped", detail="not managed on this platform")
 
@@ -373,10 +449,17 @@ def _provision_one(
         if salvaged is not None:
             action, version = "salvaged", salvaged
         else:
-            installer = _INSTALLERS.get(tool) if tool != "git" else _install_git_windows
-            if installer is None:
-                return ToolResult(tool, "failed", detail="no installer")
-            version = installer(rt, spec)
+            if tool == "git":
+                version = (
+                    _install_git_windows(rt, spec)
+                    if _is_windows()
+                    else _install_git_dugite(rt, spec, pin)
+                )
+            else:
+                installer = _INSTALLERS.get(tool)
+                if installer is None:
+                    return ToolResult(tool, "failed", detail="no installer")
+                version = installer(rt, spec)
             action = "downloaded"
         # Verify by running THE binary we recorded, not trusting the
         # installer's word.
@@ -407,7 +490,7 @@ def provision_tool(
     entry = pins.get(tool)
     if entry is None:
         return ToolResult(tool, "failed", detail=f"{tool} is not pinned")
-    return _provision_one(tool, entry["version"], rt, load_facts(rt))
+    return _provision_one(tool, entry, rt, load_facts(rt))
 
 
 def provision_runtimes(
@@ -425,7 +508,7 @@ def provision_runtimes(
     results: list[ToolResult] = []
 
     for tool, entry in pins.items():
-        result = _provision_one(tool, entry["version"], rt, facts)
+        result = _provision_one(tool, entry, rt, facts)
         results.append(result)
         if emit:
             emit(

@@ -12,12 +12,21 @@
       "$comment": "0.12+ prints the build triple in --version; the desktop payload arch guard requires it."
     },
     "git": {
-      "version": "2.55.x",
-      "$comment": "win32: PortableGit (mirrors scripts/install.ps1 pin). darwin/linux: dugite-native, pending phases 16-17."
+      "version": "2.53.x",
+      "$comment": "Two suppliers on two release cadences, so the floor is the SLOWER one: win32 gets PortableGit (git-for-windows tracks upstream within days), darwin/linux get dugite-native, GitHub's portable relocatable Git — a real git that never touches macOS's /usr/bin/git xcode-select shim. Raising this above what dugite ships would fail every POSIX install.",
+      "windowsVersion": "2.55.x",
+      "dugiteTag": "v2.53.0-4",
+      "dugiteAsset": "dugite-native-v2.53.0-4098283-{platform}.tar.gz",
+      "dugiteSha256": {
+        "macOS-arm64": "f9dc64635a5b62fbd7ad95db73268bbb8912255ac516d65d37bf7af22fcb8ffe",
+        "macOS-x64": "ae6686718aa34f4140424db16b92a47dcffd6d1f312eb8b5f3b267f7404e2680",
+        "ubuntu-x64": "cca76aa31ad9e835e771ee7f55b73934777fbd8d16757a10d307ba06de860901",
+        "ubuntu-arm64": "a161f45af4626bb7e0c688854bd4a9aee47cc514bca404cff0a5e3536ef1c0af"
+      }
     },
     "gh": {
       "version": "2.97.x",
-      "$comment": "cli/cli release assets; single Go binary, all platforms. Pending phases 16-18."
+      "$comment": "cli/cli release assets; a single static Go binary, relocatable by construction, on every platform."
     },
     "ripgrep": {
       "version": "14.x",

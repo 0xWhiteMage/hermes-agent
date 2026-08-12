@@ -72,6 +72,14 @@ def managed_tool_env(runtime_dir: Path | None = None) -> dict[str, str]:
 
     - npm_config_cache: npm's package cache → install-keyed cache dir,
       only when node is managed (a system node keeps the user's ~/.npm).
+    - GIT_EXEC_PATH / GIT_TEMPLATE_DIR / GIT_CONFIG_SYSTEM / GIT_SSL_CAINFO:
+      the portable-git contract. A relocatable git finds its own helpers
+      relative to the binary, but pointing at them explicitly also makes
+      the managed git immune to a child process rewriting PATH, and stops
+      it reading /etc/gitconfig from whatever machine it landed on. Only
+      emitted for a layout that actually has these dirs (dugite-native /
+      PortableGit both do); a system git is left entirely alone, because
+      exporting GIT_EXEC_PATH at a git we do not own breaks it.
     """
     base = runtime_dir if runtime_dir is not None else get_runtime_dir()
     facts = load_facts(base)
@@ -79,6 +87,19 @@ def managed_tool_env(runtime_dir: Path | None = None) -> dict[str, str]:
     node = facts.get("node")
     if node is not None and (base / node.path).is_file():
         env["npm_config_cache"] = str(runtime_cache_dir(base) / "npm")
+
+    git = facts.get("git")
+    if git is not None and (base / git.path).is_file():
+        root = (base / git.path).parent.parent
+        for key, relative in (
+            ("GIT_EXEC_PATH", Path("libexec") / "git-core"),
+            ("GIT_TEMPLATE_DIR", Path("share") / "git-core" / "templates"),
+            ("GIT_CONFIG_SYSTEM", Path("etc") / "gitconfig"),
+            ("GIT_SSL_CAINFO", Path("ssl") / "cacert.pem"),
+        ):
+            target = root / relative
+            if target.exists():
+                env[key] = str(target)
     return env
 
 

@@ -102,11 +102,84 @@ class TestProvisionDecisions:
         assert results[0].action == "failed"
         assert rr.load_facts(tmp_path / "rt") == {}
 
-    def test_git_skipped_off_windows(self, pins, tmp_path, monkeypatch):
-        root = pins({"git": {"version": "2.55.x"}})
+    def test_git_uses_dugite_off_windows_and_portablegit_on_it(
+        self, pins, tmp_path, monkeypatch
+    ):
+        """git is managed on EVERY platform: macOS /usr/bin/git is the
+        xcode-select shim, so a bundled git is the whole point. The two
+        suppliers differ, the outcome does not."""
+        root = pins(
+            {
+                "git": {
+                    "version": "2.55.x",
+                    "dugiteTag": "v2.53.0-4",
+                    "dugiteAsset": "dugite-{platform}.tar.gz",
+                    "dugiteSha256": {"ubuntu-x64": "abc", "macOS-arm64": "def"},
+                }
+            }
+        )
+        called: list[str] = []
+
+        def _fake_dugite(rt, spec, pin):
+            called.append("dugite")
+            assert pin["dugiteTag"] == "v2.53.0-4"  # the pin dict reaches it
+            (rt / "git" / "bin").mkdir(parents=True)
+            (rt / "git" / "bin" / "git").write_text("#!/bin/sh\n")
+            return "2.55.0"
+
+        def _fake_portable(rt, spec):
+            called.append("portablegit")
+            (rt / "git" / "cmd").mkdir(parents=True)
+            (rt / "git" / "cmd" / "git.exe").write_text("")
+            return "2.55.0"
+
+        monkeypatch.setattr(rp, "_install_git_dugite", _fake_dugite)
+        monkeypatch.setattr(rp, "_install_git_windows", _fake_portable)
+        monkeypatch.setattr(rp, "_probe_version", lambda b, a=None: "2.55.0")
+        monkeypatch.setattr(rp, "_salvage", lambda *a, **kw: None)
+
         monkeypatch.setattr(rp, "_is_windows", lambda: False)
-        results = rp.provision_runtimes(runtime_dir=tmp_path / "rt", install_root=root)
-        assert [(r.tool, r.action) for r in results] == [("git", "skipped")]
+        posix = rp.provision_runtimes(runtime_dir=tmp_path / "posix", install_root=root)
+        assert [(r.tool, r.action) for r in posix] == [("git", "downloaded")]
+        assert rr.load_facts(tmp_path / "posix")["git"].path == "git/bin/git"
+
+        monkeypatch.setattr(rp, "_is_windows", lambda: True)
+        win = rp.provision_runtimes(runtime_dir=tmp_path / "win", install_root=root)
+        assert [(r.tool, r.action) for r in win] == [("git", "downloaded")]
+        win_fact = rr.load_facts(tmp_path / "win")["git"]
+        assert win_fact.path == "git/cmd/git.exe"
+        # PortableGit's bash and coreutils live outside cmd/.
+        assert win_fact.path_dirs == ["git/cmd", "git/bin", "git/usr/bin"]
+
+        assert called == ["dugite", "portablegit"]
+
+    def test_dugite_refuses_a_digest_mismatch(self, tmp_path, monkeypatch):
+        """The sha256 is the only thing between a CDN and a user's source
+        tree: a mismatch must abort, never install."""
+        pin = {
+            "version": "2.55.x",
+            "dugiteTag": "v2.53.0-4",
+            "dugiteAsset": "dugite-{platform}.tar.gz",
+            "dugiteSha256": {"ubuntu-x64": "e" * 64, "macOS-arm64": "e" * 64},
+        }
+        monkeypatch.setattr(rp, "_download", lambda url, dest: dest.write_bytes(b"x"))
+        extracted: list[str] = []
+        monkeypatch.setattr(rp, "_extract", lambda a, d: extracted.append(str(d)))
+
+        with pytest.raises(RuntimeError, match="sha256 mismatch"):
+            rp._install_git_dugite(tmp_path / "rt", "2.55.x", pin)
+
+        assert extracted == [], "a mismatched archive must never be extracted"
+
+    def test_dugite_refuses_an_unpinned_platform(self, tmp_path, monkeypatch):
+        pin = {
+            "version": "2.55.x",
+            "dugiteTag": "v2.53.0-4",
+            "dugiteAsset": "dugite-{platform}.tar.gz",
+            "dugiteSha256": {},
+        }
+        with pytest.raises(RuntimeError, match="no dugite-native sha256"):
+            rp._install_git_dugite(tmp_path / "rt", "2.55.x", pin)
 
     def test_salvage_moves_legacy_tree(self, pins, tmp_path, monkeypatch):
         root = pins({"node": {"version": "26.x"}})
