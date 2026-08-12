@@ -271,6 +271,13 @@ def _stage(tool: str, pin: PinnedFile, dest: Path, tmp: Path, target: str) -> No
         return
 
     _stage_archive(pin, dest, tmp)
+    if tool == "git" and not target.startswith("win32"):
+        # delete useless DLLs
+        dlls_dir = dest / "libexec" / "git-core"
+
+        for dll_file in dlls_dir.rglob("*.dll"):
+            print(f"deleted unused git dll: {dll_file}")
+            dll_file.unlink()
 
 
 # ─── the provisioning loop ──────────────────────────────────────────────────
