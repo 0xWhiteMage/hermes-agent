@@ -58,6 +58,22 @@ describe('translucency store', () => {
     setTranslucencyMode('clear')
     expect(document.documentElement.hasAttribute('data-hermes-glass')).toBe(false)
   })
+
+  it('marks clear mode on <html> so the overlay scrim can compensate', () => {
+    setTranslucency(50)
+    setTranslucencyMode('clear')
+    expect(document.documentElement.hasAttribute('data-hermes-clear')).toBe(true)
+
+    setTranslucency(0)
+    expect(document.documentElement.hasAttribute('data-hermes-clear')).toBe(false)
+
+    setTranslucency(50)
+
+    if (GLASS_SUPPORTED) {
+      setTranslucencyMode('glass')
+      expect(document.documentElement.hasAttribute('data-hermes-clear')).toBe(false)
+    }
+  })
 })
 
 describe('glassSurfaceKeep', () => {
