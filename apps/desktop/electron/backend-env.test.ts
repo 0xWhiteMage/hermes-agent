@@ -12,8 +12,8 @@ import {
   managedRuntimePathEntries,
   normalizeHermesHomeRoot,
   pathEnvKey,
-  readRuntimeFacts,
-  POSIX_SANE_PATH_ENTRIES
+  POSIX_SANE_PATH_ENTRIES,
+  readRuntimeFacts
 } from './backend-env'
 
 /**
@@ -28,12 +28,14 @@ function fakeFs(files: Record<string, string>, dirsWithBinaries: string[] = []) 
       if (!(target in files)) {
         throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
       }
+
       return files[target]
     },
     statSync(target: string) {
       if (!binaries.has(target)) {
         throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
       }
+
       return { isFile: () => true }
     }
   } as never
@@ -154,6 +156,7 @@ test('every managed dir outranks the inherited PATH on both platforms', () => {
     const firstInherited = Math.min(...inherited.split(delimiter).map(entry => entries.indexOf(entry)))
 
     assert.ok(managed.length > 0, `${platform} should resolve a managed dir`)
+
     for (const dir of managed) {
       assert.ok(
         entries.indexOf(dir) >= 0 && entries.indexOf(dir) < firstInherited,
@@ -274,6 +277,7 @@ test('Windows PATH casing and delimiter are preserved without POSIX sane entries
   assert.ok(env.Path.startsWith('C:\\rt\\node;'))
   assert.ok(env.Path.includes('\\venv\\Scripts;'))
   assert.ok(env.Path.includes(';C:\\Windows\\System32;C:\\Windows'))
+
   for (const posixEntry of POSIX_SANE_PATH_ENTRIES) {
     assert.ok(!env.Path.includes(posixEntry), `${posixEntry} must not leak into a Windows PATH`)
   }
