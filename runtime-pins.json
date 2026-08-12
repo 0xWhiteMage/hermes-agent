@@ -1,12 +1,10 @@
 {
-  "$schema": "Exact, verifiable pins for every tool Hermes manages per-install.",
+  "$schema": "./runtime-pins.schema.json",
   "$comment": "ONE source of truth, read by the Python provisioner (hermes_cli/runtime_provisioner.py) and by the desktop payload staging, which shells out to it. Every entry pins an EXACT version plus, per target, the exact download URL and its sha256. No ranges, no 'resolve latest and hope': a build is reproducible, needs no GitHub API (unauthenticated callers get 60 requests/hour), and a tool cannot silently change under users. Bump deliberately: change the version, refresh every url+sha256 for that tool, verify, commit.",
-  "$targets": "<platform>-<arch> using Node/Python spellings: darwin|linux|win32 x arm64|x64.",
   "schemaVersion": 2,
   "tools": {
     "node": {
       "version": "26.7.0",
-      "$comment": "Browser tools, the TUI, and the WhatsApp bridge. Windows ships a zip with node.exe at the root; POSIX ships bin/node.",
       "files": {
         "darwin-arm64": {
           "url": "https://nodejs.org/dist/v26.7.0/node-v26.7.0-darwin-arm64.tar.gz",
@@ -36,7 +34,6 @@
     },
     "uv": {
       "version": "0.12.3",
-      "$comment": "Python package manager. Also the installer's ONLY bootstrap dependency \u2014 everything below this line is provisioned by Hermes itself.",
       "files": {
         "darwin-arm64": {
           "url": "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-apple-darwin.tar.gz",
@@ -66,7 +63,7 @@
     },
     "git": {
       "version": "2.53.0",
-      "$comment": "Both suppliers are pinned to the same git version so behaviour does not fork by platform. POSIX: dugite-native, GitHub's relocatable build (what GitHub Desktop embeds), compiled with RUNTIME_PREFIX so bin/git finds libexec/git-core relative to itself. On macOS this is load-bearing: /usr/bin/git is the xcode-select SHIM and invoking it without the Command Line Tools pops a modal install dialog. Windows: PortableGit, NOT dugite's windows build and NOT MinGit \u2014 Hermes needs bash.exe (find-git-bash.ts) and only PortableGit ships it. PortableGit is a self-extracting 7z, so it is the one asset that is not a plain archive.",
+      "$comment": "On Windows, we need git bash. On MacOS, we avoid using system git because it causes xcode commandline tools installation (big and heavy). On Linux, it's possible to not have a bundled git.",
       "files": {
         "darwin-arm64": {
           "url": "https://github.com/desktop/dugite-native/releases/download/v2.53.0-4/dugite-native-v2.53.0-4098283-macOS-arm64.tar.gz",
@@ -96,7 +93,7 @@
     },
     "gh": {
       "version": "2.97.0",
-      "$comment": "GitHub CLI. A single static Go binary, relocatable by construction.",
+      "$comment": "GitHub CLI.",
       "files": {
         "darwin-arm64": {
           "url": "https://github.com/cli/cli/releases/download/v2.97.0/gh_2.97.0_macOS_arm64.zip",
