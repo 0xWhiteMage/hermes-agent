@@ -666,3 +666,84 @@ class TestWslPathTranslation:
         assert hermes_constants.translate_cwd_for_wsl_backend(r"\\wsl.localhost\Ubuntu\home\alex") == "/home/alex"
         # Already-POSIX paths pass through untouched.
         assert hermes_constants.translate_cwd_for_wsl_backend("/home/alex") == "/home/alex"
+
+
+class TestInstallRootAndRuntimeDir:
+    """Install-scoped runtime dir resolvers (hermes-home lifetime split)."""
+
+    def test_default_install_root_is_the_checkout(self, monkeypatch):
+        monkeypatch.delenv("HERMES_INSTALL_ROOT", raising=False)
+        # Rung 3: the directory containing hermes_constants.py IS the repo
+        # root in a source checkout — the invariant, not a snapshot path.
+        expected = Path(hermes_constants.__file__).resolve().parent
+        assert hermes_constants.get_install_root() == expected
+
+    def test_env_var_wins(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(tmp_path / "payload"))
+        assert hermes_constants.get_install_root() == tmp_path / "payload"
+
+    def test_context_override_wins_over_default_but_not_env(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_INSTALL_ROOT", raising=False)
+        token = hermes_constants.set_install_root_override(tmp_path / "ctx")
+        try:
+            assert hermes_constants.get_install_root() == tmp_path / "ctx"
+            # Env var beats the context override: children inherit env,
+            # so it is the stronger, cross-process signal.
+            monkeypatch.setenv("HERMES_INSTALL_ROOT", str(tmp_path / "env"))
+            assert hermes_constants.get_install_root() == tmp_path / "env"
+        finally:
+            hermes_constants.reset_install_root_override(token)
+
+    def test_override_reset_restores_default(self, monkeypatch):
+        monkeypatch.delenv("HERMES_INSTALL_ROOT", raising=False)
+        default = hermes_constants.get_install_root()
+        token = hermes_constants.set_install_root_override("/elsewhere")
+        hermes_constants.reset_install_root_override(token)
+        assert hermes_constants.get_install_root() == default
+
+    def test_none_override_restores_default_derivation(self, monkeypatch):
+        monkeypatch.delenv("HERMES_INSTALL_ROOT", raising=False)
+        default = hermes_constants.get_install_root()
+        outer = hermes_constants.set_install_root_override("/elsewhere")
+        inner = hermes_constants.set_install_root_override(None)
+        try:
+            assert hermes_constants.get_install_root() == default
+        finally:
+            hermes_constants.reset_install_root_override(inner)
+            hermes_constants.reset_install_root_override(outer)
+
+    def test_runtime_dir_nests_in_install_root(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(tmp_path))
+        assert (
+            hermes_constants.get_runtime_dir()
+            == tmp_path / hermes_constants.RUNTIME_DIR_NAME
+        )
+
+    def test_runtime_dir_explicit_root_bypasses_resolution(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(tmp_path / "ignored"))
+        explicit = tmp_path / "other-install"
+        assert (
+            hermes_constants.get_runtime_dir(explicit)
+            == explicit / hermes_constants.RUNTIME_DIR_NAME
+        )
+
+    def test_runtime_dir_name_matches_managed_uv_convention(self):
+        # managed_uv.py predates these resolvers and already nests its
+        # python store under <checkout>/.hermes-runtime — the two must
+        # agree or the install grows two runtime dirs.
+        from hermes_cli import managed_uv
+
+        assert hermes_constants.RUNTIME_DIR_NAME == managed_uv._RUNTIME_DIR_NAME
+
+    def test_runtime_dir_is_not_under_hermes_home(self, tmp_path, monkeypatch):
+        # The design invariant: install artifacts never nest in profile
+        # state. A checkout that happens to live under ~/.hermes (the
+        # curl|bash layout: $HERMES_HOME/hermes-agent) is fine — the
+        # runtime dir keys off the INSTALL root, not off HERMES_HOME.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(tmp_path / "home" / "hermes-agent"))
+        runtime = hermes_constants.get_runtime_dir()
+        assert runtime == tmp_path / "home" / "hermes-agent" / ".hermes-runtime"
+        # ...and changing HERMES_HOME alone must not move it.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "other-home"))
+        assert hermes_constants.get_runtime_dir() == runtime
