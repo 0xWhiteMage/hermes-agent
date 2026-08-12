@@ -49,12 +49,6 @@ if (!["bundled", "light"].includes(variant)) {
   fail(`--variant must be 'bundled' or 'light', got '${variant}'`)
 }
 
-for (const retired of ["--no-install", "--no-package"]) {
-  if (args.includes(retired)) {
-    fail(`${retired} is retired: the build always runs every step`)
-  }
-}
-
 function fail(message) {
   console.error(`[build-bundled] ${message}`)
   process.exit(1)
