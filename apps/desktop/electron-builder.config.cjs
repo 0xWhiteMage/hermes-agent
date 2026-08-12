@@ -25,43 +25,24 @@
 const fs = require('node:fs')
 const path = require('node:path')
 
+const { light, displayName, appId, channel, protocolScheme, msixAppIdWithOrg, msixAppId } = require('./product-identity.cjs')
+
 /** @typedef {import("app-builder-lib").Configuration} Configuration */
-
-const light = process.env.HERMES_DESKTOP_VARIANT === 'light'
-
-// master product id, used for all sorts of markers
-const variant = light ? ['Hermes', 'Light'] : ['Hermes']
-// variant in various cases
-const name = {
-  display: variant.join(' '),
-  kebab: variant.join('-').toLowerCase(),
-  train: variant.join('-'),
-  pascal: variant.join('')
-}
-
-// distinct for the OS (settings, installs, etc)
-const appId = `com.nousresearch.${name.kebab}`
-
-// distinct for release channels
-const channel = light ? 'light' : 'latest'
-
-// distinct for deep link schemes
-const protocolScheme = name.kebab
 
 /** @type {Configuration} */
 module.exports = {
   electronVersion: '40.10.2',
   appId,
-  productName: name.display,
-  executableName: name.display,
+  productName: displayName,
+  executableName: displayName,
   protocols: [
     {
-      name: `${name.display} Protocol`,
+      name: `${displayName} Protocol`,
       schemes: [protocolScheme]
     }
   ],
   // separate variants for release filenames
-  artifactName: `${name.train}-\${version}-\${os}-\${arch}.\${ext}`,
+  artifactName: `${appId}-\${version}-\${os}-\${arch}.\${ext}`,
   icon: 'assets/icon',
   publish: [
     {
@@ -73,7 +54,7 @@ module.exports = {
   ],
   extraMetadata: {
     // separate variants for electron-updater download cache dirs
-    name: name.kebab
+    name: appId
   },
   directories: {
     output: 'release'
@@ -98,12 +79,12 @@ module.exports = {
   mac: {
     category: 'public.app-category.developer-tools',
     extendInfo: {
-      CFBundleDisplayName: name.display,
-      CFBundleExecutable: name.display,
-      CFBundleName: name.display,
-      NSAudioCaptureUsageDescription: `${name.display} uses audio capture for voice conversations.`,
-      NSCameraUsageDescription: `${name.display} uses the camera when a plugin or feature you enable requests it.`,
-      NSMicrophoneUsageDescription: `${name.display} uses the microphone for voice input and voice conversations.`
+      CFBundleDisplayName: displayName,
+      CFBundleExecutable: displayName,
+      CFBundleName: displayName,
+      NSAudioCaptureUsageDescription: `${displayName} uses audio capture for voice conversations.`,
+      NSCameraUsageDescription: `${displayName} uses the camera when a plugin or feature you enable requests it.`,
+      NSMicrophoneUsageDescription: `${displayName} uses the microphone for voice input and voice conversations.`
     },
     target: ['dmg', 'zip'],
     sign: {
@@ -129,7 +110,7 @@ module.exports = {
     }
   },
   dmg: {
-    title: `Install ${name.display}`,
+    title: `Install ${displayName}`,
     backgroundColor: '#f5f5f7',
     iconSize: 96,
     window: {
@@ -151,7 +132,7 @@ module.exports = {
     ]
   },
   win: {
-    legalTrademarks: name.display,
+    legalTrademarks: displayName,
     target: ['nsis', 'msix'],
     ...windowsSigning()
   },
@@ -160,9 +141,9 @@ module.exports = {
   // Windows Copilot hardware key.
   // electron-updater does not update MSIX installs.
   msix: {
-    identityName: `NousResearch.${name.pascal}`,
-    applicationId: name.pascal,
-    displayName: name.display,
+    identityName: `NousResearch.${msixAppIdWithOrg}`,
+    applicationId: msixAppId,
+    displayName: displayName,
     publisher: 'CN=Nous Research Inc., O=Nous Research Inc., L=Austin, S=Texas, C=US',
     publisherDisplayName: 'Nous Research',
     // Floor Windows 11 22H2. Two reasons: below build 18307 the manifest
@@ -187,8 +168,8 @@ module.exports = {
     installerIcon: 'assets/icon.ico',
     uninstallerIcon: 'assets/icon.ico',
     installerHeaderIcon: 'assets/icon.ico',
-    shortcutName: name.display,
-    uninstallDisplayName: name.display,
+    shortcutName: displayName,
+    uninstallDisplayName: displayName,
     warningsAsErrors: false
   }
 }
@@ -212,9 +193,9 @@ function copilotKeyFragmentPath() {
     Category="windows.appExtension">
   <uap3:AppExtension
       Name="com.microsoft.windows.copilotkeyprovider"
-      Id="${name.pascal}CopilotKeyProvider"
-      DisplayName="${name.display}"
-      Description="Launch ${name.display} with the Copilot key"
+      Id="${msixAppId}CopilotKeyProvider"
+      DisplayName="${displayName}"
+      Description="Launch ${displayName} with the Copilot key"
       PublicFolder="Public">
     <uap3:Properties>
       <SingleTap>${protocolScheme}://copilot-key/start?state=Tap</SingleTap>

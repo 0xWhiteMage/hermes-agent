@@ -24,16 +24,3 @@ export function routeDeepLink(kind: string, name: string): DeepLinkRoute {
 
   return 'renderer'
 }
-
-/**
- * The deep-link protocol scheme this artifact owns. Each variant gets its
- * own: with a shared scheme the two side-by-side apps fight over the OS
- * handler registration and the Copilot key's activation URI can launch
- * the wrong app. Derived from the baked install stamp's payload — the
- * builder config derives the same value from its `light` flag
- * (electron-builder.config.cjs protocolScheme), so keep the two
- * derivations in agreement.
- */
-export function deepLinkScheme(stampPayload: string | null | undefined): string {
-  return stampPayload === 'light' ? 'hermes-light' : 'hermes'
-}

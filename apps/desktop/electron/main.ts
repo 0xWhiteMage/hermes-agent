@@ -82,7 +82,7 @@ import {
 } from './connection-config'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
-import { type DeepLinkRoute, deepLinkScheme, routeDeepLink } from './deep-link-route'
+import { type DeepLinkRoute, routeDeepLink } from './deep-link-route'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import {
   allowedUninstallModes,
@@ -171,6 +171,7 @@ import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { createKeepAwake } from './power-save'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
+import { PRODUCT_IDENTITY } from './product-identity'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import { fetchPrimaryProfileSessions } from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
@@ -648,7 +649,10 @@ const BOOT_FAKE_STEP_MS = (() => {
   return Math.max(120, raw)
 })()
 
-const APP_NAME = process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
+// The app name keys Electron's userData dir and the single-instance lock,
+// so it comes from the baked product identity (light/normal hermes must not share state).
+// The env override is a dev-only escape hatch.
+const APP_NAME: string = process.env.HERMES_DESKTOP_APP_NAME || PRODUCT_IDENTITY.appIdPascal
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 
@@ -12767,9 +12771,9 @@ ipcMain.handle('hermes:vscode-theme:search', async (_event, query) => searchMark
 // Win/Linux running-app 'second-instance' (argv), Win/Linux cold-start argv.
 // ---------------------------------------------------------------------------
 // Variant-owned scheme (hermes:// vs hermes-light://): side-by-side installs
-// must not fight over one OS handler registration. Contract with the build:
-// deep-link-route.ts deepLinkScheme.
-const HERMES_PROTOCOL: string = deepLinkScheme(INSTALL_STAMP?.payload)
+// must not fight over one OS handler registration. From the baked product
+// identity — the same module electron-builder packaged the artifact with.
+const HERMES_PROTOCOL: string = PRODUCT_IDENTITY.protocolScheme
 let _pendingDeepLink = null
 let _rendererReadyForDeepLink = false
 
