@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from hermes_constants import get_install_root, get_runtime_dir
+from hermes_constants import get_runtime_dir
 
 PINS_FILENAME = "runtime-pins.json"
 FACTS_FILENAME = "runtimes.json"
@@ -143,8 +143,16 @@ def satisfies(version: str, spec: str | VersionSpec) -> bool:
 
 
 def pins_path(install_root: Path | None = None) -> Path:
-    root = install_root if install_root is not None else get_install_root()
-    return root / PINS_FILENAME
+    """Path to the repo's pin table.
+
+    Pins ship WITH the code, so the default is this package's parent (the
+    repo root for a checkout, the payload's repo/ dir for the desktop
+    bundle) rather than ``get_install_root()`` — the install root is where
+    tools get INSTALLED, and callers may point it elsewhere.
+    """
+    if install_root is not None:
+        return install_root / PINS_FILENAME
+    return Path(__file__).resolve().parent.parent / PINS_FILENAME
 
 
 def load_pins(install_root: Path | None = None) -> dict[str, dict]:

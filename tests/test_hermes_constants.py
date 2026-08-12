@@ -218,7 +218,7 @@ class TestNodeToolRunnable:
 
     def test_outdated_managed_node_heals_to_target_major(self, tmp_path, monkeypatch):
         """A healthy managed tree below the target major upgrades on next resolve."""
-        target = hermes_constants._HERMES_NODE_TARGET_MAJOR
+        target = hermes_constants._node_target_major()
         profile_home = tmp_path / "profiles" / "assistant"
         managed_bin = profile_home / ".hermes-runtime" / "node" / "bin"
         managed_bin.mkdir(parents=True)
@@ -246,7 +246,7 @@ class TestNodeToolRunnable:
 
     def test_outdated_managed_node_survives_failed_heal(self, tmp_path, monkeypatch):
         """Offline heal failure keeps serving the old tree — old Node beats no Node."""
-        target = hermes_constants._HERMES_NODE_TARGET_MAJOR
+        target = hermes_constants._node_target_major()
         profile_home = tmp_path / "profiles" / "assistant"
         managed_bin = profile_home / ".hermes-runtime" / "node" / "bin"
         managed_bin.mkdir(parents=True)
@@ -264,7 +264,7 @@ class TestNodeToolRunnable:
 
     def test_target_major_managed_node_does_not_heal(self, tmp_path, monkeypatch):
         """A tree already at the target major never triggers the heal."""
-        target = hermes_constants._HERMES_NODE_TARGET_MAJOR
+        target = hermes_constants._node_target_major()
         profile_home = tmp_path / "profiles" / "assistant"
         managed_bin = profile_home / ".hermes-runtime" / "node" / "bin"
         managed_bin.mkdir(parents=True)

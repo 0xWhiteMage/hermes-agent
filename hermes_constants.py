@@ -393,9 +393,32 @@ def _candidate_node_command_names(command: str) -> list[str]:
     return [f"{base}.cmd", f"{base}.exe", base]
 
 
-_HERMES_NODE_TARGET_MAJOR = int(os.environ.get("HERMES_NODE_TARGET_MAJOR", "22"))
+def _node_target_major() -> int:
+    """The Node major this install expects, from runtime-pins.json.
+
+    One source of truth: the pin file the provisioner installs from. The
+    constant this replaced said 22 while the pins said 26 — exactly the
+    drift a second source invites. HERMES_NODE_TARGET_MAJOR still wins for
+    ad-hoc overrides; a broken/absent pin file falls back to the historical
+    floor rather than crashing a resolver.
+    """
+    override = os.environ.get("HERMES_NODE_TARGET_MAJOR", "").strip()
+    if override:
+        return int(override)
+    try:
+        from hermes_cli.runtime_registry import load_pins, parse_spec
+
+        # Pins ship WITH the code, so they are read relative to this module
+        # — not from get_install_root(), which callers can point elsewhere
+        # (desktop resourcesPath, tests) and which would then silently lose
+        # the pin file and fall back.
+        pins = load_pins(Path(__file__).resolve().parent)
+        return parse_spec(pins["node"]["version"]).floor[0]
+    except Exception:
+        return 22
+
+
 _managed_node_heal_attempted = False
-_NODE_BOOTSTRAP_SCRIPT = Path(__file__).resolve().parent / "scripts" / "lib" / "node-bootstrap.sh"
 
 
 def node_tool_runnable(path: str | None) -> bool:
@@ -525,7 +548,7 @@ def _managed_node_tree_outdated(home: Path | None = None) -> bool:
     An outdated managed Node (e.g. a 22 tree from an older install) heals the
     same way a broken one does: :func:`find_hermes_node_executable` triggers
     the once-per-process heal, which redownloads
-    ``latest-v{_HERMES_NODE_TARGET_MAJOR}.x`` — so existing users are upgraded
+    the pinned Node major — so existing users are upgraded
     on next launch, not just on the next installer re-run. Mirrors
     ``_nb_managed_node_outdated`` in ``scripts/lib/node-bootstrap.sh``.
     """
@@ -550,14 +573,14 @@ def _managed_node_tree_outdated(home: Path | None = None) -> bool:
                 major = int(result.stdout.decode().strip().lstrip("v").split(".")[0])
             except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
                 return False  # broken, not outdated — the runnable probe handles it
-            return major < _HERMES_NODE_TARGET_MAJOR
+            return major < _node_target_major()
     return False
 
 
 def find_hermes_node_executable(command: str) -> str | None:
     """Return a Hermes-managed Node/npm executable path, healing broken trees.
 
-    Outdated trees (node major below ``_HERMES_NODE_TARGET_MAJOR``) heal the
+    Outdated trees (node major below the pinned major) heal the
     same way broken ones do — the once-per-process heal redownloads the target
     major, upgrading existing users on next launch rather than next reinstall.
     When the heal fails (offline, download error), an outdated-but-runnable
