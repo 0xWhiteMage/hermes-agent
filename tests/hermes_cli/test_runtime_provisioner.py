@@ -185,6 +185,59 @@ class TestDigestIsTheGate:
         assert "ripgrep" not in rr.load_facts(rt)
 
 
+class TestScratchCleanupIsNotAFailure:
+    """The scratch dir is a convenience, never a gate.
+
+    On Windows the downloaded artifact is routinely still held open when
+    cleanup runs: the PortableGit self-extractor outlives its own exit,
+    and Defender cannot be disabled on the windows-11-arm image, so it
+    scans the .exe. The delete then fails with WinError 5 AFTER the tool
+    is already staged and verified. These tests drive the real cleanup
+    with a real undeletable file (a read-only parent dir) instead of
+    faking the host.
+    """
+
+    def test_discarding_an_undeletable_scratch_dir_does_not_raise(self, tmp_path):
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        (scratch / "held-open.exe").write_bytes(b"still open elsewhere")
+        scratch.chmod(0o500)  # unlinking a child now raises PermissionError
+        try:
+            rp._discard_scratch(scratch)
+        finally:
+            scratch.chmod(0o700)
+
+    def test_an_undeletable_scratch_file_still_provisions(
+        self, served, tmp_path, target, monkeypatch
+    ):
+        root, base = served
+        sha = _make_tar(root, "gh-locked.tar.gz", {"bin/gh": _script()})
+        pins = _pins_file(tmp_path / "repo", {"gh": {"version": "2.97.0", "files": {
+            target: {"url": f"{base}/gh-locked.tar.gz", "sha256": sha}}}})
+
+        real_stage = rp._stage
+        locked: list[Path] = []
+
+        def stage_then_lock(tool, pin, dest, tmp, tgt):
+            real_stage(tool, pin, dest, tmp, tgt)
+            (tmp / "held-open.exe").write_bytes(b"still open elsewhere")
+            tmp.chmod(0o500)
+            locked.append(tmp)
+
+        monkeypatch.setattr(rp, "_stage", stage_then_lock)
+
+        rt = tmp_path / "rt"
+        try:
+            results = rp.provision_runtimes(runtime_dir=rt, install_root=pins)
+        finally:
+            for tmp in locked:
+                tmp.chmod(0o700)
+
+        assert [(r.tool, r.action) for r in results] == [("gh", "downloaded")]
+        assert (rt / "gh" / "bin" / "gh").is_file()
+        assert rr.load_facts(rt)["gh"].version == "2.97.0"
+
+
 class TestVerificationBeforeRecording:
     def test_an_unrunnable_binary_is_not_recorded(self, served, tmp_path, target):
         """Recording it would tell every reader a broken tool is ready."""

@@ -283,6 +283,26 @@ def _stage(tool: str, pin: PinnedFile, dest: Path, tmp: Path, target: str) -> No
 # ─── the provisioning loop ──────────────────────────────────────────────────
 
 
+def _discard_scratch(scratch: Path) -> None:
+    """Delete a provisioning scratch dir, and shrug when the OS says no.
+
+    A scratch file we cannot delete is not a provisioning failure: by
+    the time this runs the tool is already unpacked into the runtime
+    dir, and the OS reclaims its own temp dir later. On Windows the
+    deleter races whatever still holds the artifact open — the
+    PortableGit self-extractor outlives its own exit, and Defender
+    cannot be disabled on the windows-11-arm image, so it scans the
+    downloaded .exe and holds it too. Both surface as WinError 5, which
+    used to abort the whole tool AFTER it had been staged.
+    """
+    # ignore_errors, not onerror/onexc: the callback spelling changed in
+    # 3.12 and the deprecated one is removed in 3.14, and nothing here
+    # needs the per-file exception — only whether anything survived.
+    shutil.rmtree(scratch, ignore_errors=True)
+    if scratch.exists():
+        logger.debug("scratch dir %s could not be removed — leaving it", scratch)
+
+
 def _provision_one(
     tool: str,
     entry: dict,
@@ -306,8 +326,11 @@ def _provision_one(
         return ToolResult(tool, "failed", detail=str(exc))
 
     try:
-        with tempfile.TemporaryDirectory() as td:
+        td = Path(tempfile.mkdtemp(prefix="hermes-provision-"))
+        try:
             _stage(tool, pin, rt / tool, Path(td), target)
+        finally:
+            _discard_scratch(td)
 
         binary = rt / rel
         if not binary.is_file():
