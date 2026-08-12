@@ -2243,11 +2243,15 @@ def run_doctor(args):
             except Exception:
                 return None
 
-        _managed_ab = (
-            _which_in(HERMES_HOME / "node" / "bin")
-            or _which_in(HERMES_HOME / "node")
+        # One resolver owns where managed Node lives (hermes-home lifetime
+        # split); the pre-managed-Node $HERMES_HOME/node_modules/.bin rung
+        # is gone — no installer has written it for several releases.
+        from hermes_constants import iter_hermes_node_dirs
+
+        _managed_ab = next(
+            (found for found in (_which_in(d) for d in iter_hermes_node_dirs()) if found),
+            None,
         )
-        _legacy_ab = _which_in(HERMES_HOME / "node_modules" / ".bin")
         if agent_browser_path.exists():
             check_ok("agent-browser (Node.js)", "(browser automation)")
             agent_browser_ok = True
@@ -2255,9 +2259,6 @@ def run_doctor(args):
             check_ok("agent-browser", "(browser automation)")
             agent_browser_ok = True
         elif _managed_ab and agent_browser_runnable(_managed_ab):
-            check_ok("agent-browser", "(browser automation)")
-            agent_browser_ok = True
-        elif _legacy_ab and agent_browser_runnable(_legacy_ab):
             check_ok("agent-browser", "(browser automation)")
             agent_browser_ok = True
         elif _which_ab:

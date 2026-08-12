@@ -313,6 +313,19 @@ def ensure_uv(
     return _UvResult(result)
 
 
+def _uv_self_update_stamp_path() -> Path:
+    """Freshness stamp for ``uv self update``.
+
+    Install-scoped: it describes THIS install's managed uv binary, so two
+    installs sharing a home must not share it (one's update would silence
+    the other's for a week). Lives in the runtime dir's cache beside the
+    binary it is about (hermes-home lifetime split, phase 5.13).
+    """
+    from hermes_cli.runtime_env import runtime_cache_dir
+
+    return runtime_cache_dir() / ".uv_self_update_stamp"
+
+
 def _uv_self_update_is_fresh(now: float | None = None) -> bool:
     """Return True when ``uv self update`` ran recently enough to skip.
 
@@ -324,7 +337,7 @@ def _uv_self_update_is_fresh(now: float | None = None) -> bool:
     try:
         from hermes_constants import get_hermes_home
 
-        stamp = get_hermes_home() / "cache" / ".uv_self_update_stamp"
+        stamp = _uv_self_update_stamp_path()
         age = (now if now is not None else time.time()) - stamp.stat().st_mtime
         return 0 <= age < UV_SELF_UPDATE_INTERVAL_SECONDS
     except Exception:
@@ -335,7 +348,7 @@ def _touch_uv_self_update_stamp() -> None:
     try:
         from hermes_constants import get_hermes_home
 
-        stamp = get_hermes_home() / "cache" / ".uv_self_update_stamp"
+        stamp = _uv_self_update_stamp_path()
         stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp.touch()
     except OSError:
