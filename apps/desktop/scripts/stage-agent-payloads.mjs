@@ -761,6 +761,54 @@ function stageNode(target, outDir) {
   assertBanner("node", reportedArch, bannerExpectations(target).node)
 }
 
+/**
+ * The runtime-registry facts for a staged payload. Same schema
+ * hermes_cli/runtime_registry.py writes for a source install, so the
+ * desktop's backend-env reads BOTH artifact kinds through one code path
+ * (paths are relative to the payload dir, keeping it relocatable).
+ *
+ * Versions come from the staged binaries themselves where cheap, and are
+ * omitted otherwise: the desktop only uses path/pathDirs, and a lie about
+ * a version is worse than its absence.
+ */
+export function payloadRuntimeFacts(target, { nodeVersion = "0", uvVersion = "0", gitVersion = "0" } = {}) {
+  const win = target.platform === "win32"
+  const tools = {
+    node: { version: nodeVersion, path: win ? "node/node.exe" : "node/bin/node" },
+    uv: { version: uvVersion, path: win ? "uv/uv.exe" : "uv/uv" },
+  }
+  if (win) {
+    tools.git = {
+      version: gitVersion,
+      path: "git/cmd/git.exe",
+      pathDirs: ["git/cmd", "git/bin", "git/usr/bin"],
+    }
+  }
+  return { schemaVersion: 1, tools }
+}
+
+function writeRuntimeFacts(target, outDir) {
+  const probeVersion = (binary, args = ["--version"]) => {
+    try {
+      const out = spawnSync(binary, args, { encoding: "utf8" })
+      const match = /\d+(?:\.\d+)+/.exec(out.stdout || "")
+      return match ? match[0] : "0"
+    } catch {
+      return "0"
+    }
+  }
+  const win = target.platform === "win32"
+  const facts = payloadRuntimeFacts(target, {
+    nodeVersion: probeVersion(path.join(outDir, win ? "node/node.exe" : "node/bin/node")),
+    uvVersion: probeVersion(path.join(outDir, win ? "uv/uv.exe" : "uv/uv")),
+    gitVersion: win ? probeVersion(path.join(outDir, "git/cmd/git.exe")) : "0",
+  })
+  fs.writeFileSync(
+    path.join(outDir, "runtimes.json"),
+    JSON.stringify(facts, null, 2) + "\n"
+  )
+}
+
 function main() {
   if (process.env.HERMES_DESKTOP_VARIANT !== "bundled") {
     // bootstrap and light artifacts carry no payload: write a stub
@@ -833,6 +881,12 @@ function main() {
   stageNode(target, OUT_DIR)
   console.log(`[stage-agent-payloads] staging: git (${target.key}, ${tag})`)
   stageGit(target, OUT_DIR)
+  // The payload IS a runtime dir: the desktop reads runtimes.json to build
+  // the backend PATH, exactly as it does for a source install's
+  // .hermes-runtime. Written here rather than hand-listed in main.ts so
+  // both artifact kinds go through one assembler.
+  console.log(`[stage-agent-payloads] writing runtimes.json`)
+  writeRuntimeFacts(target, OUT_DIR)
   console.log(`[stage-agent-payloads] sanitizing symlinks`)
   sanitizeSymlinks(OUT_DIR)
 

@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import path from 'node:path'
 
 // Match the POSIX fallback surface used by the Python terminal environment.
@@ -60,47 +61,127 @@ function appendUniquePathEntries(entries, { delimiter = path.delimiter } = {}) {
   return ordered.join(delimiter)
 }
 
+/** One managed tool as recorded in `<runtime dir>/runtimes.json`. */
+export type RuntimeFact = {
+  version: string
+  /** Binary path, RELATIVE to the runtime dir. */
+  path: string
+  installedAt?: string
+  /** Optional multi-dir PATH surface (PortableGit: cmd, bin, usr/bin). */
+  pathDirs?: string[]
+}
+
+export type RuntimeFacts = {
+  schemaVersion: number
+  tools: Record<string, RuntimeFact>
+}
+
 /**
- * Hermes-managed Node.js directories, in preferred lookup order.
- *
- * There are two on-disk layouts. `scripts/install.ps1` unpacks portable Node
- * straight into `%LOCALAPPDATA%\hermes\node` (node.exe at the root, no `bin\`);
- * `scripts/install.sh` and the node-bootstrap helper use the POSIX
- * `$HERMES_HOME/node/bin`. Emit BOTH on every platform so mixed and migrated
- * installs resolve, leading with the layout native to the current platform.
- *
- * This is the single source of truth for the ordering rule on the Node side —
- * `main.ts` imports it rather than keeping its own copy. Mirrors
- * `iter_hermes_node_dirs()` in hermes_constants.py, which the Electron main
- * process cannot import.
+ * PATH assembly order for managed runtimes. MUST match `_PATH_ORDER` in
+ * hermes_cli/runtime_env.py — a cross-language test reads the Python-written
+ * facts file through this module to keep the two honest.
  */
-function hermesManagedNodePathEntries(
-  hermesHome,
-  { platform = process.platform, pathModule = pathModuleForPlatform(platform) }: any = {}
-) {
-  if (!hermesHome) {
-    return []
+const MANAGED_TOOL_ORDER = Object.freeze(['node', 'uv', 'git', 'gh', 'ripgrep'])
+
+/** The facts file the provisioner writes; the ONLY writer. */
+export const RUNTIME_FACTS_FILENAME = 'runtimes.json'
+export const RUNTIME_FACTS_SCHEMA_VERSION = 1
+
+/**
+ * Read the runtime registry's facts. Missing/foreign-schema/malformed all
+ * mean "nothing provisioned" — the desktop then falls back to system tools,
+ * which is a degrade, not a break.
+ */
+export function readRuntimeFacts(
+  runtimeDir: string,
+  { fsImpl = fs, pathModule = path }: { fsImpl?: typeof fs; pathModule?: typeof path } = {}
+): Record<string, RuntimeFact> {
+  if (!runtimeDir) {
+    return {}
   }
 
-  const root = pathModule.join(hermesHome, 'node')
-  const bin = pathModule.join(root, 'bin')
+  try {
+    const raw = fsImpl.readFileSync(pathModule.join(runtimeDir, RUNTIME_FACTS_FILENAME), 'utf8')
+    const parsed = JSON.parse(raw) as RuntimeFacts
 
-  return platform === 'win32' ? [root, bin] : [bin, root]
+    if (parsed?.schemaVersion !== RUNTIME_FACTS_SCHEMA_VERSION) {
+      return {}
+    }
+
+    return parsed.tools || {}
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Managed runtime bin dirs, in assembly order.
+ *
+ * The registry's facts file decides WHICH tools exist and WHERE — this is a
+ * reader of the same data hermes_cli/runtime_env.py serves to the Python
+ * side, not a second copy of the layout rules. That mattered: the previous
+ * version hard-coded `$HERMES_HOME/node{,/bin}` and had to be kept in sync
+ * with `iter_hermes_node_dirs()` by comment.
+ *
+ * `main.ts` imports this rather than keeping its own copy.
+ */
+export function managedRuntimePathEntries(
+  runtimeDir: string,
+  {
+    fsImpl = fs,
+    pathModule = path
+  }: { fsImpl?: typeof fs; pathModule?: typeof path } = {}
+): string[] {
+  const facts = readRuntimeFacts(runtimeDir, { fsImpl, pathModule })
+  const dirs: string[] = []
+
+  for (const tool of MANAGED_TOOL_ORDER) {
+    const fact = facts[tool]
+
+    if (!fact?.path) {
+      continue
+    }
+
+    const binary = pathModule.join(runtimeDir, fact.path)
+
+    // A recorded-but-vanished binary reads as unprovisioned: never emit a
+    // PATH entry for a tool that is not actually there.
+    try {
+      if (!fsImpl.statSync(binary).isFile()) {
+        continue
+      }
+    } catch {
+      continue
+    }
+
+    const entries = fact.pathDirs
+      ? fact.pathDirs.map(dir => pathModule.join(runtimeDir, dir))
+      : [pathModule.dirname(binary)]
+
+    for (const entry of entries) {
+      if (!dirs.includes(entry)) {
+        dirs.push(entry)
+      }
+    }
+  }
+
+  return dirs
 }
 
 function buildDesktopBackendPath({
-  hermesHome,
+  runtimeDir,
   venvRoot,
   currentPath = '',
   platform = process.platform,
-  pathModule = pathModuleForPlatform(platform)
+  pathModule = pathModuleForPlatform(platform),
+  fsImpl = fs
 }: any = {}) {
   const delimiter = delimiterForPlatform(platform)
-  const hermesNodeDirs = hermesManagedNodePathEntries(hermesHome, { platform, pathModule })
+  const managedDirs = runtimeDir ? managedRuntimePathEntries(runtimeDir, { fsImpl, pathModule }) : []
   const venvBin = venvRoot ? pathModule.join(venvRoot, platform === 'win32' ? 'Scripts' : 'bin') : null
   const saneEntries = platform === 'win32' ? [] : POSIX_SANE_PATH_ENTRIES
 
-  return appendUniquePathEntries([hermesNodeDirs, venvBin, currentPath, saneEntries], { delimiter })
+  return appendUniquePathEntries([managedDirs, venvBin, currentPath, saneEntries], { delimiter })
 }
 
 function normalizeHermesHomeRoot(hermesHome, { pathModule = pathModuleForPlatform(process.platform) }: any = {}) {
@@ -120,11 +201,13 @@ function normalizeHermesHomeRoot(hermesHome, { pathModule = pathModuleForPlatfor
 
 function buildDesktopBackendEnv({
   hermesHome,
+  runtimeDir,
   pythonPathEntries = [],
   venvRoot,
   currentEnv = process.env,
   platform = process.platform,
-  pathModule = pathModuleForPlatform(platform)
+  pathModule = pathModuleForPlatform(platform),
+  fsImpl = fs
 }: any = {}) {
   const delimiter = delimiterForPlatform(platform)
   const currentPythonPath = currentEnv?.PYTHONPATH || ''
@@ -140,11 +223,12 @@ function buildDesktopBackendEnv({
     // this. User's explicit setting wins. Re-port of PR #56499 (echoriver89).
     PYTHONUTF8: currentEnv?.PYTHONUTF8 ?? '1',
     [key]: buildDesktopBackendPath({
-      hermesHome,
+      runtimeDir,
       venvRoot,
       currentPath: currentPathValue(currentEnv, platform),
       platform,
-      pathModule
+      pathModule,
+      fsImpl
     })
   }
 }
@@ -154,7 +238,6 @@ export {
   buildDesktopBackendEnv,
   buildDesktopBackendPath,
   delimiterForPlatform,
-  hermesManagedNodePathEntries,
   normalizeHermesHomeRoot,
   pathEnvKey,
   POSIX_SANE_PATH_ENTRIES
