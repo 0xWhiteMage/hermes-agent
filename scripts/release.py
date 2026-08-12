@@ -33,6 +33,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = REPO_ROOT / "hermes_cli" / "__init__.py"
 PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
+UV_LOCK_FILE = REPO_ROOT / "uv.lock"
+DESKTOP_PKG_FILE = REPO_ROOT / "apps" / "desktop" / "package.json"
+PKG_LOCK_FILE = REPO_ROOT / "package-lock.json"
 
 # ──────────────────────────────────────────────────────────────────────
 # Git email → GitHub username mapping
@@ -2231,8 +2234,8 @@ def bump_version(current: str, part: str) -> str:
     return f"{major}.{minor}.{patch}"
 
 
-def update_version_files(semver: str, calver_date: str):
-    """Update version strings in source files."""
+def update_version_files(semver: str, calver_date: str) -> list[str]:
+    """Update version strings in source files. returns a list of updates files."""
     # Update __init__.py
     content = VERSION_FILE.read_text(encoding="utf-8")
     content = re.sub(
@@ -2270,16 +2273,45 @@ def update_version_files(semver: str, calver_date: str):
     # Python package version. The desktop About panel reads the live Hermes
     # version at runtime, but app.getVersion()/packaging metadata still come
     # from this field, so it must track pyproject to avoid drift.
-    desktop_pkg = REPO_ROOT / "apps" / "desktop" / "package.json"
-    if desktop_pkg.exists():
-        pkg_text = desktop_pkg.read_text(encoding="utf-8")
-        pkg_text = re.sub(
-            r'("version"\s*:\s*)"[^"]+"',
-            rf'\g<1>"{semver}"',
-            pkg_text,
-            count=1,
-        )
-        desktop_pkg.write_text(pkg_text, encoding="utf-8")
+    pkg_text = DESKTOP_PKG_FILE.read_text(encoding="utf-8")
+    pkg_text = re.sub(
+        r'("version"\s*:\s*)"[^"]+"',
+        rf'\g<1>"{semver}"',
+        pkg_text,
+        count=1,
+    )
+    DESKTOP_PKG_FILE.write_text(pkg_text, encoding="utf-8")
+
+    # npm mirrors each workspace package's version into the root lockfile.
+    # Update the apps/desktop entry so `npm ci`/`npm install` do not see the
+    # lockfile as out of date and rewrite it (or fail in CI) after a bump.
+    lock_text = PKG_LOCK_FILE.read_text(encoding="utf-8")
+    lock_text = re.sub(
+        r'("apps/desktop"\s*:\s*\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"version"\s*:\s*)"[^"]+"',
+        rf'\g<1>"{semver}"',
+        lock_text,
+        count=1,
+    )
+    PKG_LOCK_FILE.write_text(lock_text, encoding="utf-8")
+
+    # uv.lock records the editable root package's version from pyproject.
+    # Update it in place so a post-release `uv sync`/`uv lock` is a no-op.
+    uv_text = UV_LOCK_FILE.read_text(encoding="utf-8")
+    uv_text = re.sub(
+        r'(name = "hermes-agent"\nversion = )"[^"]+"',
+        rf'\g<1>"{semver}"',
+        uv_text,
+        count=1,
+    )
+    UV_LOCK_FILE.write_text(uv_text, encoding="utf-8")
+
+    return [
+        str(VERSION_FILE),
+        str(PYPROJECT_FILE),
+        str(DESKTOP_PKG_FILE),
+        str(PKG_LOCK_FILE),
+        str(UV_LOCK_FILE),
+    ]
 
 
 def resolve_author(name: str, email: str) -> str:
@@ -2621,11 +2653,10 @@ def main():
 
         # Update version files
         if args.bump:
-            update_version_files(new_version, calver_date)
+            add_files = update_version_files(new_version, calver_date)
             print(f"  ✓ Updated version files to v{new_version} ({calver_date})")
 
             # Commit version bump
-            add_files = [str(VERSION_FILE), str(PYPROJECT_FILE)]
             add_result = git_result("add", *add_files)
             if add_result.returncode != 0:
                 print(f"  ✗ Failed to stage version files: {add_result.stderr.strip()}")
