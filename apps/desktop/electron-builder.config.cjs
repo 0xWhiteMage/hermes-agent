@@ -165,7 +165,14 @@ module.exports = {
     displayName: name.display,
     publisher: 'CN=Nous Research Inc., O=Nous Research Inc., L=Austin, S=Texas, C=US',
     publisherDisplayName: 'Nous Research',
-    customManifestPath: msixManifestTemplatePath(),
+    // Floor Windows 11 22H2. Two reasons: below build 18307 the manifest
+    // schema caps AppExtension Name at 39 chars and Microsoft's own
+    // "com.microsoft.windows.copilotkeyprovider" is 40 (makeappx
+    // 0x80080204 — A/B-verified against the 26100 kit; 18307 exactly
+    // still failed on it, 22621 passes), and 22621 is the documented
+    // Copilot hardware key floor anyway.
+    minVersion: '10.0.22621.0',
+    maxVersionTested: '10.0.26100.0',
     customExtensionsPath: copilotKeyFragmentPath()
   },
   linux: {
@@ -186,21 +193,23 @@ module.exports = {
   }
 }
 
-// ── copilot key provider fragment + manifest template ───────────────────────
+// ── copilot key provider fragment ───────────────────────────────────────────
 
 // The uap3:AppExtension fragment that registers the app as a Windows
 // Copilot hardware key provider.
 // The press activates <scheme>://copilot-key/start.
 //
-// Namespace rules (each violation is an opaque makeappx 0x80080204):
-//   * uap3 is NOT declared here — manifest namespaces belong on the root
-//     <Package> element, which is why msixManifestTemplatePath ships a
-//     template with uap3 added at the root. A mid-document declaration
-//     passes plain XSD validation but not makeappx.
+// Content rules (violations are an opaque makeappx 0x80080204; the full
+// reasons only surface when makeappx runs against a plain directory):
+//   * xmlns:uap3 rides on the fragment root — the stock manifest template
+//     declares no uap3 prefix. A/B-verified fine (namespace placement is
+//     NOT what 0x80080204 was about; msix.minVersion was).
 //   * children of uap3:Properties are UNPREFIXED (xs:any content, per
 //     Microsoft's copilot-key-state sample).
 function copilotKeyFragmentPath() {
-  const fragment = `<uap3:Extension Category="windows.appExtension">
+  const fragment = `<uap3:Extension
+    xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+    Category="windows.appExtension">
   <uap3:AppExtension
       Name="com.microsoft.windows.copilotkeyprovider"
       Id="${name.pascal}CopilotKeyProvider"
@@ -219,45 +228,6 @@ function copilotKeyFragmentPath() {
   const abs = path.join(__dirname, rel)
   fs.mkdirSync(path.dirname(abs), { recursive: true })
   fs.writeFileSync(abs, fragment)
-  return rel
-}
-
-// The manifest template for MsixTarget.writeManifest: the STOCK template
-// from the installed app-builder-lib with xmlns:uap3 injected into the
-// root <Package> element, so the fragment's uap3 prefix resolves from the
-// root (see the namespace rule above). Deriving from the installed
-// template at require time keeps us tracking upstream template changes
-// instead of pinning a stale copy; ${...} macro substitution applies to a
-// custom manifest identically.
-function msixManifestTemplatePath() {
-  // app-builder-lib's exports map blocks require.resolve of any file path
-  // (even ./package.json); resolve the entry module and walk up to the
-  // package root — same pattern as scripts/run-electron-builder.mjs.
-  let libRoot = path.dirname(require.resolve('app-builder-lib'))
-  while (!fs.existsSync(path.join(libRoot, 'package.json'))) {
-    const parent = path.dirname(libRoot)
-    if (parent === libRoot) {
-      throw new Error('app-builder-lib package root not found')
-    }
-    libRoot = parent
-  }
-  const stock = path.join(libRoot, 'templates', 'msix', 'appxmanifest.xml')
-  const template = fs.readFileSync(stock, 'utf8')
-  if (template.includes('xmlns:uap3=')) {
-    throw new Error('stock msix template now declares uap3 itself — drop msixManifestTemplatePath')
-  }
-  const marker = 'xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"'
-  if (!template.includes(marker)) {
-    throw new Error('stock msix template changed shape — cannot inject the uap3 namespace')
-  }
-  const patched = template.replace(
-    marker,
-    `${marker}\n   xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"`
-  )
-  const rel = path.join('build', 'msix-appxmanifest.xml')
-  const abs = path.join(__dirname, rel)
-  fs.mkdirSync(path.dirname(abs), { recursive: true })
-  fs.writeFileSync(abs, patched)
   return rel
 }
 
