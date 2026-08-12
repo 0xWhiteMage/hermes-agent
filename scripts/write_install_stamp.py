@@ -193,7 +193,7 @@ def build_stamp(
         )
     payload = variant or "bootstrap"
     tag = os.environ.get("HERMES_PAYLOAD_TAG") or None
-    if payload != "bootstrap" and not (tag and re.match(r"^v(0|[1-9]\d{0,2})\.\d+\.\d+$", tag)):
+    if payload != "bootstrap" and payload != "light" and not (tag and re.match(r"^v(0|[1-9]\d{0,2})\.\d+\.\d+$", tag)):
         raise SystemExit(
             f"write_install_stamp: HERMES_DESKTOP_VARIANT={payload} requires "
             f"HERMES_PAYLOAD_TAG=vX.Y.Z (got {tag!r})"

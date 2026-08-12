@@ -60,9 +60,12 @@ module.exports = {
       channel
     }
   ],
+  // overrides package.json
   extraMetadata: {
     // separate variants for electron-updater download cache dirs
-    name: appNamePascal
+    name: appNamePascal,
+    // for .desktop file on linux
+    desktopName: appId
   },
   directories: {
     output: 'release'
