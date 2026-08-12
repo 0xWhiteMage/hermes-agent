@@ -61,6 +61,58 @@ function appendUniquePathEntries(entries, { delimiter = path.delimiter } = {}) {
   return ordered.join(delimiter)
 }
 
+/**
+ * Paths that are the macOS xcode-select STUB rather than a real git.
+ *
+ * `/usr/bin/git` on a Mac without the Command Line Tools is a shim whose
+ * only behaviour is to pop a modal "install developer tools?" dialog.
+ * `/usr/bin/xcrun` fronts the same mechanism. A background process must
+ * never invoke either: the user gets a dialog they did not ask for, from
+ * an app that looks idle.
+ */
+const MACOS_XCODE_SHIM_PATHS = Object.freeze(['/usr/bin/git', '/usr/bin/xcrun'])
+
+export function isMacosXcodeShim(binaryPath: string | null | undefined): boolean {
+  if (!binaryPath) {
+    return false
+  }
+
+  return MACOS_XCODE_SHIM_PATHS.includes(binaryPath)
+}
+
+/**
+ * The first real git on PATH, skipping the xcode-select shim.
+ *
+ * Returns null when the only git available is the shim — callers must
+ * treat that as "no git", because using it is worse than not having one.
+ */
+export function gitOnPathSkippingShim(
+  pathValue: string,
+  {
+    delimiter = path.delimiter,
+    pathModule = path,
+    exists
+  }: { delimiter?: string; pathModule?: typeof path; exists: (candidate: string) => boolean }
+): string | null {
+  for (const entry of String(pathValue || '').split(delimiter)) {
+    if (!entry) {
+      continue
+    }
+
+    const candidate = pathModule.join(entry, 'git')
+
+    if (isMacosXcodeShim(candidate)) {
+      continue
+    }
+
+    if (exists(candidate)) {
+      return candidate
+    }
+  }
+
+  return null
+}
+
 /** One managed tool as recorded in `<runtime dir>/runtimes.json`. */
 export type RuntimeFact = {
   version: string

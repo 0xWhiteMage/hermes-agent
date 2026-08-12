@@ -270,17 +270,143 @@ export function stageCacheKey({ target, pythonVersion, requirementsText }) {
 const GIT_TAG = "v2.55.0.windows.3"
 const GIT_VER = "2.55.0.3"
 
+/**
+ * The POSIX git supplier, read from the SAME pin table the Python
+ * provisioner uses (runtime-pins.json) so a bundled desktop and a source
+ * install cannot drift onto different Gits.
+ */
+function dugitePin() {
+  const pins = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "runtime-pins.json"), "utf8"))
+  return pins.git
+}
+
+function dugitePlatformTag(target) {
+  if (target.platform === "darwin") {
+    return target.arch === "arm64" ? "macOS-arm64" : "macOS-x64"
+  }
+  return target.arch === "arm64" ? "ubuntu-arm64" : "ubuntu-x64"
+}
+
+/**
+ * dugite-native for macOS and Linux.
+ *
+ * macOS is the reason this exists: /usr/bin/git is the xcode-select SHIM,
+ * so invoking it on a machine with no Command Line Tools pops a modal
+ * install dialog mid-session. dugite-native is GitHub's relocatable Git
+ * (what GitHub Desktop ships), built with RUNTIME_PREFIX so bin/git finds
+ * libexec/git-core relative to itself wherever the .app is dragged.
+ */
+function stageGitDugite(target, gitDir) {
+  const pin = dugitePin()
+  const platformTag = dugitePlatformTag(target)
+  const assetName = pin.dugiteAsset.replace("{platform}", platformTag)
+  const expected = pin.dugiteSha256[platformTag]
+
+  if (!expected) {
+    throw new Error(`no dugite-native sha256 pinned for ${platformTag}`)
+  }
+
+  const url = `https://github.com/desktop/dugite-native/releases/download/${pin.dugiteTag}/${assetName}`
+  const tmpFile = path.join(os.tmpdir(), `hermes-${assetName}`)
+
+  console.log(`[stage-agent-payloads] downloading ${assetName} (dugite-native ${pin.dugiteTag})`)
+  run("curl", ["-fsSL", "-o", tmpFile, url])
+
+  const actual = createHash("sha256").update(fs.readFileSync(tmpFile)).digest("hex")
+  if (actual !== expected) {
+    fs.rmSync(tmpFile, { force: true })
+    throw new Error(
+      `dugite-native ${platformTag} sha256 mismatch: expected ${expected}, got ${actual}`
+    )
+  }
+
+  fs.mkdirSync(gitDir, { recursive: true })
+  run("tar", ["-xzf", tmpFile, "-C", gitDir])
+  fs.rmSync(tmpFile, { force: true })
+
+  const gitBin = path.join(gitDir, "bin", "git")
+  if (!fs.existsSync(gitBin)) {
+    throw new Error(`dugite-native staged but ${gitBin} is missing`)
+  }
+
+  const arch = probeMachOArch(gitBin) ?? probeElfArch(gitBin)
+  if (arch !== "unknown" && arch !== target.arch) {
+    throw new Error(`staged git is ${arch}, expected ${target.arch}`)
+  }
+  console.log(`[stage-agent-payloads] git ok (dugite-native, ${arch})`)
+}
+
+/**
+ * The GitHub CLI, on every platform.
+ *
+ * A single static Go binary, relocatable by construction — the easy one.
+ * Bundling it removes the Program Files / WinGet / Homebrew guessing that
+ * resolveGhBinary used to do, and means `gh` behaves the same for every
+ * user instead of depending on what they happened to install.
+ */
+function stageGh(target, outDir) {
+  const ghDir = path.join(outDir, "gh")
+  fs.rmSync(ghDir, { recursive: true, force: true })
+  fs.mkdirSync(ghDir, { recursive: true })
+
+  const pins = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "runtime-pins.json"), "utf8"))
+  const version = pins.gh.version.replace(/\.x$/, "")
+  const arch = target.arch === "arm64" ? "arm64" : "amd64"
+  const isZip = target.platform === "win32" || target.platform === "darwin"
+  const osTag = { win32: "windows", darwin: "macOS", linux: "linux" }[target.platform]
+  const assetName = `gh_${version}_${osTag}_${arch}.${isZip ? "zip" : "tar.gz"}`
+  const url = `https://github.com/cli/cli/releases/download/v${version}/${assetName}`
+  const tmpFile = path.join(os.tmpdir(), `hermes-${assetName}`)
+
+  console.log(`[stage-agent-payloads] downloading ${assetName} (gh ${version})`)
+  run("curl", ["-fsSL", "-o", tmpFile, url])
+
+  if (isZip) {
+    run("unzip", ["-q", "-o", tmpFile, "-d", ghDir])
+  } else {
+    run("tar", ["-xzf", tmpFile, "-C", ghDir])
+  }
+  fs.rmSync(tmpFile, { force: true })
+
+  // gh archives nest everything under gh_<version>_<os>_<arch>/ — hoist so
+  // the facts path stays stable across version bumps.
+  flattenSingleDir(ghDir)
+
+  const ghBin = path.join(ghDir, "bin", target.platform === "win32" ? "gh.exe" : "gh")
+  if (!fs.existsSync(ghBin)) {
+    throw new Error(`gh staged but ${ghBin} is missing`)
+  }
+
+  const arch_ =
+    target.platform === "win32"
+      ? probePeArch(ghBin)
+      : (probeMachOArch(ghBin) ?? probeElfArch(ghBin))
+  if (arch_ !== "unknown" && arch_ !== target.arch) {
+    throw new Error(`staged gh is ${arch_}, expected ${target.arch}`)
+  }
+  console.log(`[stage-agent-payloads] gh ok (${version}, ${arch_})`)
+}
+
+/** Hoist a single nested top-level dir's contents up one level. */
+function flattenSingleDir(dir) {
+  const entries = fs.readdirSync(dir).filter(name => !name.startsWith("."))
+  if (entries.length !== 1) return
+  const inner = path.join(dir, entries[0])
+  if (!fs.statSync(inner).isDirectory()) return
+  for (const child of fs.readdirSync(inner)) {
+    fs.renameSync(path.join(inner, child), path.join(dir, child))
+  }
+  fs.rmdirSync(inner)
+}
+
 function stageGit(target, outDir) {
   const gitDir = path.join(outDir, "git")
   fs.rmSync(gitDir, { recursive: true, force: true })
 
-  // Windows-only: macOS has /usr/bin/git (Xcode CLT), Linux has system git.
-  // Write a marker so the directory exists on every platform — the
-  // EMBEDDED_RUNTIME_ITEMS check requires it — but only download
-  // PortableGit where it is needed.
+  // Every platform bundles a real git. On macOS this is load-bearing:
+  // /usr/bin/git is the xcode-select shim and would prompt for the CLT.
   if (target.platform !== "win32") {
-    fs.mkdirSync(gitDir, { recursive: true })
-    fs.writeFileSync(path.join(gitDir, ".platform-native"), "system\n")
+    stageGitDugite(target, gitDir)
     return
   }
 
@@ -355,6 +481,72 @@ const PE_MACHINES = {
   0x01c4: "arm",
   0x8664: "x64",
   0xaa64: "arm64",
+}
+
+// Mach-O cputype values (mach/machine.h). CPU_ARCH_ABI64 (0x01000000) is
+// OR'd into the 64-bit variants.
+const MACHO_CPU_TYPES = {
+  0x01000007: "x64", // CPU_TYPE_X86_64
+  0x0100000c: "arm64", // CPU_TYPE_ARM64
+  0x00000007: "ia32", // CPU_TYPE_X86
+  0x0000000c: "arm", // CPU_TYPE_ARM
+}
+
+/**
+ * Architecture of a Mach-O binary, or null when it is not Mach-O.
+ *
+ * Handles thin binaries (both endiannesses) and universal/fat archives.
+ * A fat binary reports "universal" rather than a single arch: shipping
+ * one is not wrong, it just is not a single-arch answer, and the caller
+ * decides whether that is acceptable.
+ */
+export function probeMachOArch(binaryPath) {
+  const fd = fs.openSync(binaryPath, "r")
+  try {
+    const head = Buffer.alloc(8)
+    if (fs.readSync(fd, head, 0, 8, 0) < 8) return null
+    const magic = head.readUInt32BE(0)
+
+    // Universal binary: 0xcafebabe (fat) / 0xcafebabf (fat64), big-endian.
+    if (magic === 0xcafebabe || magic === 0xcafebabf) return "universal"
+
+    // Thin: 0xfeedface/0xfeedfacf, either byte order.
+    const le = head.readUInt32LE(0)
+    if (le === 0xfeedface || le === 0xfeedfacf) {
+      return MACHO_CPU_TYPES[head.readUInt32LE(4) >>> 0] || "unknown"
+    }
+    if (magic === 0xfeedface || magic === 0xfeedfacf) {
+      return MACHO_CPU_TYPES[head.readUInt32BE(4) >>> 0] || "unknown"
+    }
+    return null
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
+// ELF e_machine values (elf.h).
+const ELF_MACHINES = {
+  0x03: "ia32", // EM_386
+  0x28: "arm", // EM_ARM
+  0x3e: "x64", // EM_X86_64
+  0xb7: "arm64", // EM_AARCH64
+}
+
+/** Architecture of an ELF binary, or null when it is not ELF. */
+export function probeElfArch(binaryPath) {
+  const fd = fs.openSync(binaryPath, "r")
+  try {
+    const head = Buffer.alloc(20)
+    if (fs.readSync(fd, head, 0, 20, 0) < 20) return null
+    if (head[0] !== 0x7f || head[1] !== 0x45 || head[2] !== 0x4c || head[3] !== 0x46) {
+      return null
+    }
+    // e_ident[EI_DATA]: 1 = little-endian, 2 = big-endian.
+    const machine = head[5] === 2 ? head.readUInt16BE(18) : head.readUInt16LE(18)
+    return ELF_MACHINES[machine] || "unknown"
+  } finally {
+    fs.closeSync(fd)
+  }
 }
 
 function run(cmd, args, opts = {}) {
@@ -771,19 +963,26 @@ function stageNode(target, outDir) {
  * omitted otherwise: the desktop only uses path/pathDirs, and a lie about
  * a version is worse than its absence.
  */
-export function payloadRuntimeFacts(target, { nodeVersion = "0", uvVersion = "0", gitVersion = "0" } = {}) {
+export function payloadRuntimeFacts(
+  target,
+  { nodeVersion = "0", uvVersion = "0", gitVersion = "0", ghVersion = "0" } = {}
+) {
   const win = target.platform === "win32"
   const tools = {
     node: { version: nodeVersion, path: win ? "node/node.exe" : "node/bin/node" },
     uv: { version: uvVersion, path: win ? "uv/uv.exe" : "uv/uv" },
+    gh: { version: ghVersion, path: win ? "gh/bin/gh.exe" : "gh/bin/gh" },
   }
-  if (win) {
-    tools.git = {
-      version: gitVersion,
-      path: "git/cmd/git.exe",
-      pathDirs: ["git/cmd", "git/bin", "git/usr/bin"],
-    }
-  }
+  // Two git suppliers, two layouts: PortableGit's surface spans three
+  // dirs (bash and the coreutils live outside cmd/), dugite-native is
+  // just bin/, which dirname() of the binary already covers.
+  tools.git = win
+    ? {
+        version: gitVersion,
+        path: "git/cmd/git.exe",
+        pathDirs: ["git/cmd", "git/bin", "git/usr/bin"],
+      }
+    : { version: gitVersion, path: "git/bin/git" }
   return { schemaVersion: 1, tools }
 }
 
@@ -801,7 +1000,8 @@ function writeRuntimeFacts(target, outDir) {
   const facts = payloadRuntimeFacts(target, {
     nodeVersion: probeVersion(path.join(outDir, win ? "node/node.exe" : "node/bin/node")),
     uvVersion: probeVersion(path.join(outDir, win ? "uv/uv.exe" : "uv/uv")),
-    gitVersion: win ? probeVersion(path.join(outDir, "git/cmd/git.exe")) : "0",
+    gitVersion: probeVersion(path.join(outDir, win ? "git/cmd/git.exe" : "git/bin/git")),
+    ghVersion: probeVersion(path.join(outDir, win ? "gh/bin/gh.exe" : "gh/bin/gh")),
   })
   fs.writeFileSync(
     path.join(outDir, "runtimes.json"),
@@ -881,6 +1081,8 @@ function main() {
   stageNode(target, OUT_DIR)
   console.log(`[stage-agent-payloads] staging: git (${target.key}, ${tag})`)
   stageGit(target, OUT_DIR)
+  console.log(`[stage-agent-payloads] staging: gh (${target.key}, ${tag})`)
+  stageGh(target, OUT_DIR)
   // The payload IS a runtime dir: the desktop reads runtimes.json to build
   // the backend PATH, exactly as it does for a source install's
   // .hermes-runtime. Written here rather than hand-listed in main.ts so

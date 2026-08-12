@@ -76,16 +76,20 @@ test('resolvePayload returns dir + tag for a complete payload', () => {
 })
 
 test('the required items include uv — plugin lazy installs are mandatory', () => {
-  assert.deepEqual([...embeddedRuntimeItems('darwin')].sort(), ['node', 'python', 'repo', 'site-packages', 'uv'])
+  // A payload without uv cannot lazy-install plugin deps into the
+  // writable overlay: incomplete artifact, not a degraded one.
+  assert.ok(embeddedRuntimeItems('darwin').includes('uv'))
 })
 
-test('the required items include git on Windows', () => {
-  assert.deepEqual([...embeddedRuntimeItems('win32')].sort(), ['git', 'node', 'python', 'repo', 'site-packages', 'uv'])
-})
+test('every platform requires git and gh in the payload', () => {
+  // git is not optional on macOS: /usr/bin/git is the xcode-select shim,
+  // so a payload leaning on it would pop a Command Line Tools dialog on a
+  // clean Mac. A payload without git is incomplete, not degraded.
+  const expected = ['gh', 'git', 'node', 'python', 'repo', 'site-packages', 'uv']
 
-test('the required items exclude git on non-Windows', () => {
-  assert.ok(!embeddedRuntimeItems('darwin').includes('git'))
-  assert.ok(!embeddedRuntimeItems('linux').includes('git'))
+  for (const platform of ['win32', 'darwin', 'linux'] as const) {
+    assert.deepEqual([...embeddedRuntimeItems(platform)].sort(), expected, platform)
+  }
 })
 
 // ─── findEmbeddedPython ────────────────────────────────────────────

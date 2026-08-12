@@ -7,6 +7,8 @@ import {
   appendUniquePathEntries,
   buildDesktopBackendEnv,
   buildDesktopBackendPath,
+  gitOnPathSkippingShim,
+  isMacosXcodeShim,
   managedRuntimePathEntries,
   normalizeHermesHomeRoot,
   pathEnvKey,
@@ -275,6 +277,39 @@ test('Windows PATH casing and delimiter are preserved without POSIX sane entries
   for (const posixEntry of POSIX_SANE_PATH_ENTRIES) {
     assert.ok(!env.Path.includes(posixEntry), `${posixEntry} must not leak into a Windows PATH`)
   }
+})
+
+test('the macOS xcode-select shim is never treated as a real git', () => {
+  // /usr/bin/git on a Mac without the Command Line Tools does nothing but
+  // pop a modal install dialog. A background app must not invoke it.
+  assert.equal(isMacosXcodeShim('/usr/bin/git'), true)
+  assert.equal(isMacosXcodeShim('/usr/bin/xcrun'), true)
+  assert.equal(isMacosXcodeShim('/opt/homebrew/bin/git'), false)
+  assert.equal(isMacosXcodeShim(null), false)
+})
+
+test('gitOnPathSkippingShim walks past the shim to a real git', () => {
+  const present = new Set(['/usr/bin/git', '/opt/homebrew/bin/git'])
+
+  const found = gitOnPathSkippingShim('/usr/bin:/opt/homebrew/bin', {
+    delimiter: ':',
+    pathModule: path.posix,
+    exists: candidate => present.has(candidate)
+  })
+
+  assert.equal(found, '/opt/homebrew/bin/git')
+})
+
+test('gitOnPathSkippingShim returns null when only the shim exists', () => {
+  // "No git" is the correct answer here: using the shim is worse than
+  // reporting the absence, because it hijacks the user's screen.
+  const found = gitOnPathSkippingShim('/usr/bin:/somewhere/else', {
+    delimiter: ':',
+    pathModule: path.posix,
+    exists: candidate => candidate === '/usr/bin/git'
+  })
+
+  assert.equal(found, null)
 })
 
 test('appendUniquePathEntries flattens arrays and strings alike', () => {

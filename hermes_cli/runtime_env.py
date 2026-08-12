@@ -16,6 +16,7 @@ Design doc: .hermes/plans/2026-08-12_hermes-home-lifetime-split.md (phase 1).
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Mapping, Optional
 
@@ -65,6 +66,37 @@ def managed_path_dirs(runtime_dir: Path | None = None) -> list[Path]:
             if d.is_dir() and d not in dirs:
                 dirs.append(d)
     return dirs
+
+
+# macOS paths that are the xcode-select STUB, not a real tool. On a Mac
+# without the Command Line Tools these do nothing but pop a modal
+# "install developer tools?" dialog — which a background agent process
+# must never trigger.
+_MACOS_XCODE_SHIMS = frozenset({"/usr/bin/git", "/usr/bin/xcrun"})
+
+
+def is_macos_xcode_shim(binary: str | Path | None) -> bool:
+    """True when *binary* is the macOS developer-tools stub."""
+    if not binary or sys.platform != "darwin":
+        return False
+    return str(binary) in _MACOS_XCODE_SHIMS
+
+
+def managed_tool_binary(
+    tool: str, runtime_dir: Path | None = None
+) -> Optional[Path]:
+    """The managed binary for *tool*, or None when it is not provisioned.
+
+    The single lookup every locator should use before falling back to a
+    system copy — resolves from the registry facts, so it knows about a
+    tool the moment the provisioner records it.
+    """
+    base = runtime_dir if runtime_dir is not None else get_runtime_dir()
+    fact = load_facts(base).get(tool)
+    if fact is None:
+        return None
+    binary = base / fact.path
+    return binary if binary.is_file() else None
 
 
 def managed_tool_env(runtime_dir: Path | None = None) -> dict[str, str]:

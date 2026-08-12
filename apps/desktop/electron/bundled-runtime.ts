@@ -82,12 +82,13 @@ export const PAYLOAD_SCHEMA_VERSION = 3
 // never installs the runtime (site-packages ships prebuilt), but runtime
 // lazy installs for plugins are a mandatory feature, and uv is what
 // installs them into the writable overlay. A payload without uv is an
-// incomplete artifact, not a degraded one. git is Windows-only: macOS has
-// /usr/bin/git (Xcode CLT) and Linux has system git, so the staging script
-// only downloads PortableGit for win32.
-export function embeddedRuntimeItems(platform: NodeJS.Platform = process.platform): readonly string[] {
-  const base = ['repo', 'uv', 'python', 'site-packages', 'node'] as const
-  return platform === 'win32' ? [...base, 'git'] : base
+// incomplete artifact, not a degraded one.
+//
+// git and gh are on EVERY platform now. git in particular is not optional
+// on macOS: /usr/bin/git is the xcode-select shim, so a payload that
+// leaned on it would pop a Command Line Tools dialog on a clean Mac.
+export function embeddedRuntimeItems(_platform: NodeJS.Platform = process.platform): readonly string[] {
+  return ['repo', 'uv', 'python', 'site-packages', 'node', 'git', 'gh']
 }
 
 /**

@@ -194,7 +194,14 @@ const EXEMPT_PATTERNS = [
   /^resources[/\\]elevate\.exe$/i,
   // PortableGit — see comment above. The staging script's own PE probe on
   // cmd/git.exe is the authoritative arch check for the bundled git.
-  /agent-payload[/\\]git[/\\]/i,
+  //
+  // Scoped to the WINDOWS layout (mingw64/, usr/, cmd/) rather than the
+  // whole git/ tree: the .NET-assembly and MSYS2-helper reasoning is
+  // PortableGit's alone. dugite-native (macOS/Linux) is plain Mach-O and
+  // ELF with no format-neutral binaries in it, so exempting it would hide
+  // a genuinely wrong-arch git — the exact defect this audit exists to
+  // catch, in the payload that cannot fall back to a system git.
+  /agent-payload[/\\]git[/\\](mingw64|usr|cmd)[/\\]/i,
 ]
 
 export function isExemptPath(relPath) {
