@@ -1,7 +1,9 @@
 """Hermes-managed uv and Python runtime repair.
 
-Hermes owns its own uv binary at ``$HERMES_HOME/bin/uv`` (or ``uv.exe`` on
-Windows).  Every code path that needs uv resolves it from that single location.
+Hermes owns its own uv binary at ``<install>/.hermes-runtime/uv/uv`` (or
+``uv.exe`` on Windows) — install-scoped, never shared between two installs.
+Legacy ``$HERMES_HOME/bin/uv`` binaries are salvaged on first touch.
+Every code path that needs uv resolves it from that single location.
 If the binary is missing, ``ensure_uv()`` bootstraps it via the official
 standalone installer with ``UV_UNMANAGED_INSTALL`` / ``UV_INSTALL_DIR`` pointed
 at ``$HERMES_HOME/bin`` so the installer writes directly there — no PATH
@@ -24,6 +26,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -53,14 +56,17 @@ _REPAIR_LOCK_NAME = "runtime-repair.lock"
 def managed_uv_path() -> Path:
     """Return the path where Hermes keeps *its* uv binary.
 
-    ``$HERMES_HOME/bin/uv`` on POSIX, ``$HERMES_HOME\\bin\\uv.exe`` on
-    Windows.  The directory may not exist yet — callers should use
-    ``ensure_uv()`` to bootstrap it.
+    ``<install>/.hermes-runtime/uv/uv`` (``uv.exe`` on Windows) — the
+    install-scoped runtime dir (hermes-home lifetime split, phase 2.5).
+    Previously ``$HERMES_HOME/bin/uv``, which two installs sharing one
+    home would fight over; ``_ensure_uv_path`` salvages a healthy legacy
+    binary from there on first touch. The directory may not exist yet —
+    callers should use ``ensure_uv()`` to bootstrap it.
     """
-    home = get_hermes_home()
-    if platform.system() == "Windows":
-        return home / "bin" / "uv.exe"
-    return home / "bin" / "uv"
+    from hermes_constants import get_runtime_dir
+
+    name = "uv.exe" if platform.system() == "Windows" else "uv"
+    return get_runtime_dir() / "uv" / name
 
 
 def resolve_uv() -> Optional[str]:
@@ -72,6 +78,24 @@ def resolve_uv() -> Optional[str]:
     if p.is_file() and os.access(p, os.X_OK):
         return str(p)
     return None
+
+
+def _record_uv_fact(binary: Path) -> None:
+    """Record uv in the install's runtimes.json facts. Best-effort: the
+    facts file improves doctor/uninstall fidelity but a recording failure
+    must never break a working uv."""
+    try:
+        from hermes_cli.runtime_registry import record_fact
+
+        version_out = subprocess.run(
+            [str(binary), "--version"],
+            capture_output=True, text=True, timeout=30, check=False,
+        ).stdout
+        m = re.search(r"\d+(?:\.\d+)+", version_out or "")
+        if m:
+            record_fact("uv", m.group(0), f"uv/{binary.name}")
+    except Exception as exc:
+        logger.debug("uv fact recording failed: %s", exc)
 
 
 def managed_python_install_dir(project_root: Path | None = None) -> Path:
@@ -204,6 +228,19 @@ def _ensure_uv_path(
 
     target = managed_uv_path()
     target.parent.mkdir(parents=True, exist_ok=True)
+
+    # Salvage a healthy pre-split binary ($HERMES_HOME/bin/uv) before
+    # downloading: mv beats redownload, and the legacy location is dead
+    # to every reader from this release on (phase 2.5).
+    legacy = get_hermes_home() / "bin" / target.name
+    if legacy.is_file() and os.access(legacy, os.X_OK):
+        try:
+            shutil.move(str(legacy), target)
+        except OSError as exc:
+            logger.debug("legacy uv salvage failed, downloading instead: %s", exc)
+    if resolve_uv():
+        _record_uv_fact(target)
+        return str(target)
 
     print(f"  → Installing managed uv into {target.parent} ...")
 

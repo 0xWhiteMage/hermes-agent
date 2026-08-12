@@ -231,31 +231,21 @@ def _install_node(runtime_dir: Path, spec: str) -> str:
 
 
 def _install_uv(runtime_dir: Path, spec: str) -> str:
-    """uv installs via its official standalone installer, pointed at our
-    dir (same mechanism managed_uv.py uses today — UV_UNMANAGED_INSTALL)."""
-    dest = runtime_dir / "uv"
-    dest.mkdir(parents=True, exist_ok=True)
-    if _is_windows():
-        script = _download_text("https://astral.sh/uv/install.ps1")
-        cmd = ["powershell", "-NoProfile", "-Command", script]
-        env = {**os.environ, "UV_INSTALL_DIR": str(dest), "UV_NO_MODIFY_PATH": "1"}
-    else:
-        script = _download_text("https://astral.sh/uv/install.sh")
-        cmd = ["sh", "-c", script]
-        env = {**os.environ, "UV_UNMANAGED_INSTALL": str(dest)}
-    subprocess.run(cmd, env=env, check=True, capture_output=True, timeout=600)
-    binary = runtime_dir / _binary_rel("uv")
+    """uv provisioning delegates to managed_uv.ensure_uv — the ONE uv
+    installer (it owns the astral-installer dance, CVE runtime repair,
+    and now targets the runtime dir per phase 2.5). Duplicating its
+    download here would be exactly the two-implementations sin this
+    module exists to kill."""
+    from hermes_cli.managed_uv import ensure_uv, managed_uv_path
+
+    result = ensure_uv()
+    if not result:
+        raise RuntimeError("managed uv bootstrap failed")
+    binary = managed_uv_path()
     version = _probe_version(binary)
     if version is None or not satisfies(version, spec):
         raise RuntimeError(f"installed uv reports {version!r}, want {spec!r}")
     return version
-
-
-def _download_text(url: str) -> str:
-    with urllib.request.urlopen(
-        urllib.request.Request(url, headers=_UA), timeout=60
-    ) as resp:
-        return resp.read().decode("utf-8")
 
 
 def _install_gh(runtime_dir: Path, spec: str) -> str:

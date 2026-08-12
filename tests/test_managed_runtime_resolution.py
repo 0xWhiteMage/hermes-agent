@@ -200,4 +200,6 @@ def test_managed_uv_helpers_exist():
 
     assert callable(resolve_uv)
     assert callable(ensure_uv)
-    assert managed_uv_path().parent.name == "bin"
+    # Install-scoped layout (hermes-home lifetime split): .hermes-runtime/uv/
+    assert managed_uv_path().parent.name == "uv"
+    assert managed_uv_path().parent.parent.name == ".hermes-runtime"
