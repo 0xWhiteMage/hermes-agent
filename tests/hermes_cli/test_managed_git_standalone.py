@@ -32,25 +32,24 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def provisioned_git(tmp_path_factory) -> Path:
-    runtime_dir = tmp_path_factory.mktemp("runtime")
-    pin = load_pins()["git"]
-    try:
-        version = rp._install_git_dugite(runtime_dir, pin["version"], pin)
-    except Exception as exc:  # offline CI, GitHub outage
-        pytest.skip(f"could not fetch dugite-native: {exc}")
-        raise  # unreachable; keeps `version` bound for type checkers
+    """A real, digest-verified git from the pin table.
 
-    facts = load_facts(runtime_dir)
-    facts["git"] = RuntimeFact(version=version, path="git/bin/git")
-    save_facts(facts, runtime_dir)
+    Goes through the normal provisioner: this is the path users get, and
+    a fixture that shortcut it would prove less.
+    """
+    runtime_dir = tmp_path_factory.mktemp("runtime")
+    result = rp.provision_tool("git", runtime_dir=runtime_dir)
+    if not result.ok:  # offline CI, GitHub outage
+        pytest.skip(f"could not provision git: {result.detail}")
     return runtime_dir
 
 
 class TestManagedGitStandsAlone:
-    def test_the_pinned_archive_matches_its_digest(self, provisioned_git):
-        """Provisioning at all proves it: _install_git_dugite raises on a
-        mismatch before extracting."""
+    def test_the_pinned_archive_matched_its_digest(self, provisioned_git):
+        """Provisioning at all proves it: the provisioner aborts on a
+        digest mismatch before extracting anything."""
         assert (provisioned_git / "git" / "bin" / "git").is_file()
+        assert load_facts(provisioned_git)["git"].version == load_pins()["git"]["version"]
 
     def test_git_runs_with_an_empty_environment(self, provisioned_git):
         git = provisioned_git / "git" / "bin" / "git"

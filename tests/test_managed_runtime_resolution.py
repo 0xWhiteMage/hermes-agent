@@ -51,6 +51,10 @@ _EXEMPT_DIRS = (
     ".venv",
     "venv",
     ".worktrees",
+    # Staged desktop payloads are a COPY of the repo, so every source
+    # file appears twice and the lint reports the copy's line numbers.
+    # Gitignored build output, not source to review.
+    "build",
 )
 
 # Call sites where a bare PATH lookup is the correct answer. Each entry is
@@ -118,7 +122,9 @@ def _source_files() -> list[Path]:
     files: list[Path] = []
     for path in REPO_ROOT.rglob("*.py"):
         rel = path.relative_to(REPO_ROOT)
-        if rel.parts and rel.parts[0] in _EXEMPT_DIRS:
+        # Match ANY component, not just the first: staged payloads live at
+        # apps/desktop/build/, and node_modules nests arbitrarily deep.
+        if any(part in _EXEMPT_DIRS for part in rel.parts):
             continue
         files.append(path)
     return files
