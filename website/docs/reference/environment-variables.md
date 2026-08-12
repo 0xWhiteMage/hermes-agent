@@ -682,7 +682,7 @@ Connect Hermes to [X Chat](https://docs.x.com/xchat/introduction) — X's end-to
 | `XCHAT_CLIENT_SECRET` | X app OAuth2 client secret (confidential clients only). |
 | `XCHAT_USER_ID` | The bot account's numeric X user id (derived automatically by `hermes xchat setup`). |
 | `XCHAT_SIGNING_KEY_VERSION` | Registered public-key version for message signing (written by `hermes xchat setup`). |
-| `XCHAT_PRIVATE_KEYS_B64` | Base64 private-key blob override — takes precedence over `~/.hermes/xchat/private_keys.b64`. |
+| `XCHAT_PRIVATE_KEYS_B64` | Base64 private-key blob override — takes precedence over `~/.hermes/xchat/private_keys.b64`. ⚠️ The blob is the bot's entire E2EE identity (no forward secrecy): a compromised blob exposes all past and future messages. |
 | `XCHAT_ALLOWED_USERS` | Comma-separated numeric X user ids allowed to talk to the bot. |
 | `XCHAT_ALLOW_ALL_USERS` | Allow any sender to trigger the bot (dev only — disables allowlist). |
 | `XCHAT_CONVERSATION_IDS` | Comma-separated conversation ids to poll (omit to auto-discover all conversations). |
