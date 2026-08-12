@@ -1,0 +1,27 @@
+{
+  "$comment": "Central version pins for every tool Hermes manages per-install. Source of truth, code-reviewed; pins ride with the code that needs them. The post-update provisioner (hermes_cli/post_update.py step_provision_runtimes, phase 1 of the hermes-home lifetime split) compares these against the facts in <install>/.hermes-runtime/runtimes.json and installs anything missing or stale. Spec syntax: exact ('2.97.0'), minor-floor ('2.55.x' = >=2.55.0,<2.56), major-floor ('26.x' = >=26,<27), or floor-only ('>=0.12'). Design doc: .hermes/plans/2026-08-12_hermes-home-lifetime-split.md.",
+  "schemaVersion": 1,
+  "tools": {
+    "node": {
+      "version": "26.x",
+      "npm": "12.x",
+      "$comment": "install.sh NODE_VERSION=26; package.json engines is the compat FLOOR (>=22.22), the pin is what we PROVISION."
+    },
+    "uv": {
+      "version": ">=0.12",
+      "$comment": "0.12+ prints the build triple in --version; the desktop payload arch guard requires it."
+    },
+    "git": {
+      "version": "2.55.x",
+      "$comment": "win32: PortableGit (mirrors scripts/install.ps1 pin). darwin/linux: dugite-native, pending phases 16-17."
+    },
+    "gh": {
+      "version": "2.97.x",
+      "$comment": "cli/cli release assets; single Go binary, all platforms. Pending phases 16-18."
+    },
+    "ripgrep": {
+      "version": "14.x",
+      "$comment": "Previously a system-package hope in install.sh with no version control; now pinned."
+    }
+  }
+}
