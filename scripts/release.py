@@ -2689,12 +2689,16 @@ def main():
             print("    Continue manually after fixing access:")
             print(f"    git push {push_remote} HEAD --tags")
 
-        # Create GitHub release
+        # Create the GitHub release as a DRAFT. The tag push above triggers
+        # the desktop-bundled-release workflow, which attaches the installers
+        # and electron-updater feed files to this draft. Publishing now would
+        # expose an artifact-less release; publish after that matrix is green.
         changelog_file = REPO_ROOT / ".release_notes.md"
         changelog_file.write_text(changelog, encoding="utf-8")
 
         gh_cmd = [
             "gh", "release", "create", tag_name,
+            "--draft",
             "--title", f"Hermes Agent v{new_version} ({calver_date})",
             "--notes-file", str(changelog_file),
         ]
@@ -2715,18 +2719,22 @@ def main():
 
         if result and result.returncode == 0:
             changelog_file.unlink(missing_ok=True)
-            print(f"  ✓ GitHub release created: {result.stdout.strip()}")
-            print(f"\n  🎉 Release v{new_version} ({tag_name}) published!")
+            print(f"  ✓ GitHub draft release created: {result.stdout.strip()}")
+            print(f"\n  🎉 Release v{new_version} ({tag_name}) drafted!")
+            print("     The Desktop Bundled Release workflow attaches installers to the draft.")
+            print("     Publish once it is green:")
+            repo_flag = f" --repo {gh_repo}" if gh_repo else ""
+            print(f"     gh release edit {tag_name}{repo_flag} --draft=false")
         else:
             if result is None:
                 print("  ✗ GitHub release skipped: `gh` CLI not found.")
             else:
                 print(f"  ✗ GitHub release failed: {result.stderr.strip()}")
             print(f"    Release notes kept at: {changelog_file}")
-            print("    Tag was created locally. Create the release manually:")
+            print("    Tag was created locally. Create the draft release manually:")
             repo_flag = f" --repo {gh_repo}" if gh_repo else ""
             print(
-                f"    gh release create {tag_name}{repo_flag} --title 'Hermes Agent v{new_version} ({calver_date})' "
+                f"    gh release create {tag_name}{repo_flag} --draft --title 'Hermes Agent v{new_version} ({calver_date})' "
                 f"--notes-file .release_notes.md"
             )
             print(f"\n  ✓ Release v{new_version} ({tag_name}) prepared for manual publish.")
