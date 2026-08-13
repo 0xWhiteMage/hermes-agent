@@ -133,6 +133,22 @@ export function activeGateway(): HermesGateway | null {
   return g.secondaries.get(g.activeKey)?.gateway ?? g.primaryGateway
 }
 
+/** The open socket for a specific profile — primary or secondary — or null.
+ *  Unlike activeGateway() this never falls back to the primary: a group-chat
+ *  turn for `babe` must reach babe's backend or fail visibly, not silently
+ *  run against whichever profile happens to be active. */
+export function gatewayForProfileKey(profile: string): HermesGateway | null {
+  const key = normKey(profile)
+
+  if (key === g.primaryProfile) {
+    return g.primaryGateway
+  }
+
+  const entry = g.secondaries.get(key)
+
+  return entry && isOpen(entry.gateway) ? entry.gateway : null
+}
+
 // Mirror a backend's connection state into the global composer state, but only
 // when that backend is the one the user is currently looking at. Lets the
 // composer reflect the active profile's socket without a background reconnect

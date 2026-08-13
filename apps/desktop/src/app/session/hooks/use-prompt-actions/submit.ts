@@ -18,6 +18,7 @@ import {
   type ComposerAttachment,
   terminalContextBlocksFromDraft
 } from '@/store/composer'
+import { maybeRouteGroupMentions, prepareGroupSubmit } from '@/store/group-chat'
 import { $hudMode } from '@/store/hud'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
@@ -616,9 +617,16 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         rewriteOptimistic(liveSessionId)
         const text = buildContextText(syncedAttachments)
 
+        // Group upgrade, pre-submit half: mentioning another profile turns
+        // this chat into a room NOW, and the returned note rides this very
+        // submit as model-input-only context — so the host agent knows about
+        // the room on the invite turn itself, not one turn late.
+        const groupNote = prepareGroupSubmit(liveSessionId, text)
+
         const submitParams = (targetId: string) => ({
           session_id: targetId,
           text,
+          ...(groupNote && { group_note: groupNote }),
           ...(interrupted && { interrupted }),
           // Typed into the floating HUD, so the user is looking at another app
           // rather than at Hermes. The gateway turns this into a per-turn hint
@@ -681,6 +689,12 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         if (usingComposerAttachments) {
           scope.clearAttachments()
         }
+
+        // Group upgrade: a user message that addresses another profile turns
+        // this chat into a room (idempotent) and fans out their turns. After
+        // the submit above so the host's own turn is already in flight — the
+        // router skips the host for user messages for exactly that reason.
+        maybeRouteGroupMentions(sessionId, text)
 
         // Submit landed — the turn now runs (busy stays true), but the submit
         // window is closed, so release the lock for the next (sequential) send.
