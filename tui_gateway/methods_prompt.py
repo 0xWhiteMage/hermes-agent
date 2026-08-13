@@ -118,6 +118,13 @@ def _(rid, params: dict) -> dict:
     # in turn: a stale "hud" would tell the model the user is still floating
     # over another app when they are back in Hermes.
     session["client_surface"] = "hud" if params.get("surface") == "hud" else ""
+    # Per-turn group-chat note (desktop rooms): context the model needs about
+    # the room THIS turn — who was invited, who the members are. Same channel
+    # as reaction notes: model input only, never persisted, so the transcript
+    # stays clean and the cached prefix survives. Rewritten (not setdefault)
+    # every submit so a stale note can't outlive the room state it described.
+    _group_note = params.get("group_note")
+    session["group_note"] = _group_note.strip() if isinstance(_group_note, str) else ""
     if truncate_user_ordinal is not None and isinstance(text, str):
         # A rewind/regenerate replays a turn from what the transcript shows. A
         # skill turn shows its invocation, so re-expand it here — otherwise

@@ -9961,6 +9961,11 @@ def _run_prompt_submit(
             # Reactions the user added since the last turn.
             run_message = _prepend_note(run_message, _pending_reaction_notes(session))
 
+            # Desktop group-chat room note (who's in the room / who was just
+            # invited) — per-turn state, so it cannot live in the (byte-stable)
+            # system prompt. Consumed on read: one submit, one note.
+            run_message = _prepend_note(run_message, str(session.pop("group_note", "") or ""))
+
             # Which window the message was typed into. HUD mode is per-turn
             # state, so it cannot live in the (byte-stable) system prompt.
             run_message = _prepend_note(run_message, _hud_surface_note(session))
