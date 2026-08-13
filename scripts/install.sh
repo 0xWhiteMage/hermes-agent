@@ -833,7 +833,7 @@ provision_managed_runtimes() {
     # "download the pinned tools", in Python, reading runtime-pins.json.
     # The installer's job ends at "python can run"; everything below that
     # line (node, git, gh, ripgrep) belongs to the provisioner.
-    log_info "Provisioning managed runtimes (node, git, gh, ripgrep)..."
+    log_info "Provisioning managed runtimes (node, npm, git, gh, ripgrep)..."
 
     local py="$INSTALL_DIR/venv/bin/python"
     if [ ! -x "$py" ]; then

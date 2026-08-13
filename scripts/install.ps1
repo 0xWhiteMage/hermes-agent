@@ -1532,7 +1532,7 @@ function Invoke-RuntimeProvisioning {
     # "download the pinned tools", in Python, reading runtime-pins.json.
     # This installer's job ends at "python can run"; node, git, gh and
     # ripgrep below that line belong to the provisioner.
-    Write-Info "Provisioning managed runtimes (node, git, gh, ripgrep)..."
+    Write-Info "Provisioning managed runtimes (node, npm, git, gh, ripgrep)..."
 
     $py = Join-Path $InstallDir "venv\Scripts\python.exe"
     if (-not (Test-Path $py)) {

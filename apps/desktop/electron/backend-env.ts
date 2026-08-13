@@ -125,15 +125,10 @@ export type RuntimeFact = {
 
 export type RuntimeFacts = {
   schemaVersion: number
+  /** PATH assembly order, derived from the pin table's `extends` edges. */
+  pathOrder?: string[]
   tools: Record<string, RuntimeFact>
 }
-
-/**
- * PATH assembly order for managed runtimes. MUST match `_PATH_ORDER` in
- * hermes_cli/runtime_env.py — a cross-language test reads the Python-written
- * facts file through this module to keep the two honest.
- */
-const MANAGED_TOOL_ORDER = Object.freeze(['node', 'uv', 'git', 'gh', 'ripgrep'])
 
 /** The facts file the provisioner writes; the ONLY writer. */
 export const RUNTIME_FACTS_FILENAME = 'runtimes.json'
@@ -148,8 +143,20 @@ export function readRuntimeFacts(
   runtimeDir: string,
   { fsImpl = fs, pathModule = path }: { fsImpl?: typeof fs; pathModule?: typeof path } = {}
 ): Record<string, RuntimeFact> {
+  return readRuntimeFactsFile(runtimeDir, { fsImpl, pathModule })?.tools || {}
+}
+
+/**
+ * The whole parsed facts file, or null when there is nothing usable.
+ * Callers that need the recorded PATH order read this; `readRuntimeFacts`
+ * stays the narrow tools-only accessor it always was.
+ */
+function readRuntimeFactsFile(
+  runtimeDir: string,
+  { fsImpl = fs, pathModule = path }: { fsImpl?: typeof fs; pathModule?: typeof path } = {}
+): RuntimeFacts | null {
   if (!runtimeDir) {
-    return {}
+    return null
   }
 
   try {
@@ -157,23 +164,26 @@ export function readRuntimeFacts(
     const parsed = JSON.parse(raw) as RuntimeFacts
 
     if (parsed?.schemaVersion !== RUNTIME_FACTS_SCHEMA_VERSION) {
-      return {}
+      return null
     }
 
-    return parsed.tools || {}
+    return parsed
   } catch {
-    return {}
+    return null
   }
 }
 
 /**
  * Managed runtime bin dirs, in assembly order.
  *
- * The registry's facts file decides WHICH tools exist and WHERE — this is a
- * reader of the same data hermes_cli/runtime_env.py serves to the Python
- * side, not a second copy of the layout rules. That mattered: the previous
- * version hard-coded `$HERMES_HOME/node{,/bin}` and had to be kept in sync
- * with `iter_hermes_node_dirs()` by comment.
+ * The registry's facts file decides WHICH tools exist, WHERE, and in WHAT
+ * ORDER — this is a reader of the same data hermes_cli/runtime_env.py
+ * serves to the Python side, not a second copy of the layout rules. That
+ * mattered twice: an earlier version hard-coded `$HERMES_HOME/node{,/bin}`
+ * and had to be kept in sync with `iter_hermes_node_dirs()` by comment,
+ * and the order was a literal array here that a test could only police by
+ * reading this file's source text. Both are data now; the provisioner
+ * derives the order from the pin table's `extends` edges and records it.
  *
  * `main.ts` imports this rather than keeping its own copy.
  */
@@ -184,10 +194,14 @@ export function managedRuntimePathEntries(
     pathModule = path
   }: { fsImpl?: typeof fs; pathModule?: typeof path } = {}
 ): string[] {
-  const facts = readRuntimeFacts(runtimeDir, { fsImpl, pathModule })
+  const parsed = readRuntimeFactsFile(runtimeDir, { fsImpl, pathModule })
+  const facts = parsed?.tools || {}
+  // A hand-edited facts file may predate pathOrder; its own key order is
+  // the only remaining signal, and matches what Python falls back to.
+  const order = parsed?.pathOrder || Object.keys(facts)
   const dirs: string[] = []
 
-  for (const tool of MANAGED_TOOL_ORDER) {
+  for (const tool of order) {
     const fact = facts[tool]
 
     if (!fact?.path) {

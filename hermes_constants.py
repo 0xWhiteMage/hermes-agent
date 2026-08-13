@@ -255,7 +255,7 @@ def get_install_root() -> Path:
 def get_runtime_dir(install_root: Path | None = None) -> Path:
     """Return the install-scoped runtime directory ``<root>/.hermes-runtime``.
 
-    Holds managed binaries (node, uv, git, gh, ripgrep), install-keyed
+    Holds managed binaries (node, npm, uv, git, gh, ripgrep), install-keyed
     caches, and the ``runtimes.json`` facts manifest. Callers must treat
     the location as opaque and go through the runtime registry for tool
     lookup — no path literals.

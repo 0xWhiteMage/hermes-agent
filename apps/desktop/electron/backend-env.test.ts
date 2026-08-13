@@ -41,22 +41,26 @@ function fakeFs(files: Record<string, string>, dirsWithBinaries: string[] = []) 
   } as never
 }
 
-function factsFile(tools: Record<string, unknown>, schemaVersion = 1) {
-  return JSON.stringify({ schemaVersion, tools })
+function factsFile(tools: Record<string, unknown>, schemaVersion = 1, pathOrder?: string[]) {
+  return JSON.stringify({ schemaVersion, pathOrder, tools })
 }
 
 const RUNTIME = '/install/.hermes-runtime'
 const FACTS_PATH = '/install/.hermes-runtime/runtimes.json'
 
-test('managed runtime dirs come from the registry facts, in assembly order', () => {
-  // Recorded out of order on purpose: the ORDER is ours, not the file's.
+test('managed runtime dirs come from the registry facts, in the recorded order', () => {
+  // Recorded out of order on purpose: pathOrder decides, not the tools map.
   const fsImpl = fakeFs(
     {
-      [FACTS_PATH]: factsFile({
-        ripgrep: { version: '14.1.0', path: 'ripgrep/rg' },
-        node: { version: '26.5.1', path: 'node/bin/node' },
-        uv: { version: '0.12.1', path: 'uv/uv' }
-      })
+      [FACTS_PATH]: factsFile(
+        {
+          ripgrep: { version: '14.1.0', path: 'ripgrep/rg' },
+          node: { version: '26.5.1', path: 'node/bin/node' },
+          uv: { version: '0.12.1', path: 'uv/uv' }
+        },
+        1,
+        ['node', 'uv', 'ripgrep']
+      )
     },
     ['/install/.hermes-runtime/node/bin/node', '/install/.hermes-runtime/uv/uv', '/install/.hermes-runtime/ripgrep/rg']
   )
@@ -65,6 +69,49 @@ test('managed runtime dirs come from the registry facts, in assembly order', () 
     '/install/.hermes-runtime/node/bin',
     '/install/.hermes-runtime/uv',
     '/install/.hermes-runtime/ripgrep'
+  ])
+})
+
+test('an extender is assembled ahead of what it extends', () => {
+  // npm extends node in the pin table, so the provisioner records npm
+  // first. It has to win on PATH or node's bundled npm shadows it — and
+  // this module must take that from the file, never from a list of its own.
+  const fsImpl = fakeFs(
+    {
+      [FACTS_PATH]: factsFile(
+        {
+          node: { version: '26.7.0', path: 'node/bin/node' },
+          npm: { version: '12.0.2', path: 'npm/bin/npm' }
+        },
+        1,
+        ['npm', 'node']
+      )
+    },
+    ['/install/.hermes-runtime/node/bin/node', '/install/.hermes-runtime/npm/bin/npm']
+  )
+
+  assert.deepEqual(managedRuntimePathEntries(RUNTIME, { fsImpl, pathModule: path.posix }), [
+    '/install/.hermes-runtime/npm/bin',
+    '/install/.hermes-runtime/node/bin'
+  ])
+})
+
+test('a facts file with no recorded order still yields every provisioned tool', () => {
+  // Hand-edited files predate pathOrder. An empty PATH would be a worse
+  // answer than an arbitrary order, so fall back to the tools map's keys.
+  const fsImpl = fakeFs(
+    {
+      [FACTS_PATH]: factsFile({
+        node: { version: '26.7.0', path: 'node/bin/node' },
+        uv: { version: '0.12.3', path: 'uv/uv' }
+      })
+    },
+    ['/install/.hermes-runtime/node/bin/node', '/install/.hermes-runtime/uv/uv']
+  )
+
+  assert.deepEqual(managedRuntimePathEntries(RUNTIME, { fsImpl, pathModule: path.posix }), [
+    '/install/.hermes-runtime/node/bin',
+    '/install/.hermes-runtime/uv'
   ])
 })
 

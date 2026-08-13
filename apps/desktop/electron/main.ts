@@ -575,7 +575,7 @@ function resolveHermesHome() {
 
 const HERMES_HOME = resolveHermesHome()
 
-// Managed runtime tools (node, uv, git, gh, ripgrep) live in the INSTALL's
+// Managed runtime tools (node, npm, uv, git, gh, ripgrep) live in the INSTALL's
 // runtime dir, not in HERMES_HOME — profile state and install artifacts have
 // different lifetimes, and two installs sharing a home must not share
 // binaries. The registry's facts file says which tools exist and where;

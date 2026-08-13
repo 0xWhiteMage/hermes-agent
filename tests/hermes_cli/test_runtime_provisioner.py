@@ -218,8 +218,8 @@ class TestScratchCleanupIsNotAFailure:
         real_stage = rp._stage
         locked: list[Path] = []
 
-        def stage_then_lock(tool, pin, dest, tmp, tgt):
-            real_stage(tool, pin, dest, tmp, tgt)
+        def stage_then_lock(tool, pin, dest, tmp, tgt, rt):
+            real_stage(tool, pin, dest, tmp, tgt, rt)
             (tmp / "held-open.exe").write_bytes(b"still open elsewhere")
             tmp.chmod(0o500)
             locked.append(tmp)
@@ -320,6 +320,10 @@ class TestLayout:
         # Two git suppliers, two layouts.
         assert rp._binary_rel("git", "win32-x64") == "git/cmd/git.exe"
         assert rp._binary_rel("git", "darwin-arm64") == "git/bin/git"
+        # npm is installed by npm, which writes .cmd shims in the prefix
+        # root on Windows and POSIX shims in bin/.
+        assert rp._binary_rel("npm", "win32-x64") == "npm/npm.cmd"
+        assert rp._binary_rel("npm", "darwin-arm64") == "npm/bin/npm"
 
     def test_only_portablegit_needs_extra_path_dirs(self):
         """bash.exe and the coreutils live outside cmd/; every other tool
@@ -331,3 +335,72 @@ class TestLayout:
         ]
         assert rp._path_dirs("git", "darwin-arm64") is None
         assert rp._path_dirs("node", "win32-x64") is None
+
+
+class TestExtendsOrdering:
+    """`extends` in the pin table drives provisioning order and the
+    recorded PATH order — the provisioner never restates either.
+
+    These use gh/ripgrep rather than the real npm/node pair: the edge is
+    generic machinery, and naming npm would drag in its bespoke staging
+    (which needs a real node) and test two things at once.
+    """
+
+    def test_a_tool_is_provisioned_after_what_it_extends(self, served, tmp_path, target):
+        """Declared in the wrong order on purpose: the edge decides, not
+        the order someone happened to type the entries in."""
+        root, base = served
+        sha = _make_tar(root, "ordering.tar.gz", {"bin/gh": _script()})
+        rg_sha = _make_tar(root, "ordering-rg.tar.gz", {"rg": _script()})
+        pins = _pins_file(tmp_path / "repo", {
+            "gh": {"version": "1.0.0", "extends": ["ripgrep"], "files": {
+                target: {"url": f"{base}/ordering.tar.gz", "sha256": sha}}},
+            "ripgrep": {"version": "1.0.0", "files": {
+                target: {"url": f"{base}/ordering-rg.tar.gz", "sha256": rg_sha}}},
+        })
+
+        results = rp.provision_runtimes(runtime_dir=tmp_path / "rt", install_root=pins)
+
+        assert [r.tool for r in results] == ["ripgrep", "gh"]
+
+    def test_the_recorded_path_order_puts_the_extender_first(
+        self, served, tmp_path, target
+    ):
+        """An extender has to be FOUND before what it extends (npm before
+        node, or node's bundled npm wins); readers get that from the
+        facts file, not from a list of their own."""
+        root, base = served
+        sha = _make_tar(root, "recorded.tar.gz", {"bin/gh": _script()})
+        rg_sha = _make_tar(root, "recorded-rg.tar.gz", {"rg": _script()})
+        pins = _pins_file(tmp_path / "repo", {
+            "ripgrep": {"version": "1.0.0", "files": {
+                target: {"url": f"{base}/recorded-rg.tar.gz", "sha256": rg_sha}}},
+            "gh": {"version": "1.0.0", "extends": ["ripgrep"], "files": {
+                target: {"url": f"{base}/recorded.tar.gz", "sha256": sha}}},
+        })
+
+        rt = tmp_path / "rt"
+        rp.provision_runtimes(runtime_dir=rt, install_root=pins)
+
+        order = rr.load_path_order(rt)
+        assert order.index("gh") < order.index("ripgrep")
+
+    def test_an_extender_fails_cleanly_when_what_it_extends_is_absent(
+        self, served, tmp_path, target
+    ):
+        """node failing must not produce a half-installed npm recorded as
+        ready — the reader would then put a broken shim on PATH."""
+        root, base = served
+        pins = _pins_file(tmp_path / "repo", {
+            "node": {"version": "1.0.0", "files": {
+                target: {"url": f"{base}/absent.tar.gz", "sha256": "d" * 64}}},
+            "npm": {"version": "1.0.0", "extends": ["node"], "files": {
+                target: {"url": f"{base}/absent.tar.gz", "sha256": "e" * 64}}},
+        })
+
+        rt = tmp_path / "rt"
+        results = {r.tool: r.action for r in
+                   rp.provision_runtimes(runtime_dir=rt, install_root=pins)}
+
+        assert results == {"node": "failed", "npm": "failed"}
+        assert rr.load_facts(rt) == {}

@@ -100,11 +100,15 @@ You do **not** need to install Python, Node.js, ripgrep, gh, or ffmpeg manually.
 :::
 
 :::note Managed runtimes
-Node, ripgrep, gh and uv are **managed runtimes**: Hermes installs pinned versions
+Node, npm, ripgrep, gh and uv are **managed runtimes**: Hermes installs pinned versions
 (see `runtime-pins.json`) into its own install directory rather than changing your
 system toolchain, and keeps them current on every `hermes update`. They never
 shadow a tool you installed yourself outside Hermes, and two Hermes installs on
 one machine keep separate copies. `hermes doctor` reports the version of each.
+
+The pinned npm is newer than the one bundled inside the pinned Node, so it is
+installed after Node and placed ahead of it — the pin table states that with
+`"extends": ["node"]`, and both orders are derived from it.
 :::
 
 :::tip Nix users

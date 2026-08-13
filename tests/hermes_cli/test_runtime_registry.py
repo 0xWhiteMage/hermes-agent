@@ -56,7 +56,7 @@ class TestCurrentTarget:
         target = rr.current_target()
 
         for tool, entry in rr.load_pins().items():
-            assert target in entry["files"], f"{tool} has no {target} download"
+            assert rr.pinned_file(tool, target).url, f"{tool} has no {target} download"
 
 
 class TestPinValidation:
@@ -93,6 +93,82 @@ class TestPinValidation:
         with pytest.raises(ValueError, match="64 hex chars"):
             rr.load_pins(pin_root({"node": _entry(sha="abc123")}))
 
+    def test_rejects_an_extends_edge_to_an_unpinned_tool(self, pin_root):
+        entry = _entry()
+        entry["extends"] = ["ghost"]
+
+        with pytest.raises(ValueError, match="which is not pinned"):
+            rr.load_pins(pin_root({"npm": entry}))
+
+    def test_rejects_a_self_extending_tool(self, pin_root):
+        entry = _entry()
+        entry["extends"] = ["npm"]
+
+        with pytest.raises(ValueError, match="extends itself"):
+            rr.load_pins(pin_root({"npm": entry}))
+
+    def test_rejects_an_extends_cycle_at_load(self, pin_root):
+        """Both derived orders must terminate; a cycle is caught when the
+        table is read, not when a user's first launch hangs."""
+        a, b = _entry(), _entry()
+        a["extends"] = ["b"]
+        b["extends"] = ["a"]
+
+        with pytest.raises(ValueError, match="cycle"):
+            rr.load_pins(pin_root({"a": a, "b": b}))
+
+    def test_rejects_mixing_any_with_per_target_files(self, pin_root):
+        """'any' claims one artifact serves every target. A table that
+        also names targets is stating two different things at once."""
+        entry = _entry(targets=("linux-x64",))
+        entry["files"]["any"] = {"url": "https://example.invalid/x.tgz",
+                                 "sha256": "b" * 64}
+
+        with pytest.raises(ValueError, match="mixes 'any'"):
+            rr.load_pins(pin_root({"npm": entry}))
+
+
+class TestDerivedOrder:
+    """Both orders come from one `extends` declaration, so they cannot
+    contradict each other the way two hand-kept lists could."""
+
+    def test_a_tool_installs_after_what_it_extends(self):
+        pins = {"node": {}, "npm": {"extends": ["node"]}}
+
+        assert rr.install_order(pins) == ["node", "npm"]
+
+    def test_a_tool_is_found_before_what_it_extends(self):
+        """The whole point: npm exists to supersede the npm inside node."""
+        pins = {"node": {}, "npm": {"extends": ["node"]}}
+
+        assert rr.path_order(pins) == ["npm", "node"]
+
+    def test_a_declaration_written_out_of_order_still_resolves(self):
+        pins = {"npm": {"extends": ["node"]}, "node": {}}
+
+        assert rr.install_order(pins) == ["node", "npm"]
+        assert rr.path_order(pins) == ["npm", "node"]
+
+    def test_transitive_edges_chain(self):
+        pins = {"a": {}, "b": {"extends": ["a"]}, "c": {"extends": ["b"]}}
+
+        assert rr.install_order(pins) == ["a", "b", "c"]
+        assert rr.path_order(pins) == ["c", "b", "a"]
+
+    def test_unrelated_tools_keep_the_pin_table_order(self):
+        """Between two tools with no edge the order is arbitrary, and
+        churning it would rewrite every PATH for no reason."""
+        pins = {"uv": {}, "git": {}, "gh": {}, "ripgrep": {}}
+
+        assert rr.install_order(pins) == ["uv", "git", "gh", "ripgrep"]
+        assert rr.path_order(pins) == ["uv", "git", "gh", "ripgrep"]
+
+    def test_both_orders_contain_every_tool_exactly_once(self):
+        pins = {"node": {}, "npm": {"extends": ["node"]}, "uv": {}, "gh": {}}
+
+        for order in (rr.install_order(pins), rr.path_order(pins)):
+            assert sorted(order) == sorted(pins)
+
 
 class TestPinnedFile:
     def test_resolves_url_version_and_digest_for_a_target(self, pin_root):
@@ -123,11 +199,63 @@ class TestPinnedFile:
         with pytest.raises(KeyError, match="no pinned download for darwin-arm64"):
             rr.pinned_file("gh", "darwin-arm64", install_root=root)
 
+    def test_an_any_artifact_resolves_for_every_target(self, pin_root):
+        """A registry tarball's bytes do not vary by platform, so one
+        pinned artifact serves all six targets rather than six identical
+        rows nobody can keep honest."""
+        root = pin_root({"npm": _entry("12.0.2", ("any",))})
+
+        for target in ("linux-x64", "darwin-arm64", "win32-arm64"):
+            pin = rr.pinned_file("npm", target, install_root=root)
+            assert pin.version == "12.0.2"
+            assert pin.sha256 == "a" * 64
+
+
+class TestRecordedPathOrder:
+    """The facts file carries the derived order so both language readers
+    consume one answer instead of each restating a literal."""
+
+    def test_save_records_the_order_it_was_given(self, tmp_path):
+        facts = {
+            "node": rr.RuntimeFact(version="26.7.0", path="node/bin/node"),
+            "npm": rr.RuntimeFact(version="12.0.2", path="npm/bin/npm"),
+        }
+        rr.save_facts(facts, tmp_path, path_order=["npm", "node"])
+
+        assert rr.load_path_order(tmp_path) == ["npm", "node"]
+
+    def test_an_unprovisioned_tool_is_dropped_from_the_recorded_order(self, tmp_path):
+        """The order names what to look for; a tool that failed to
+        provision has nothing to find."""
+        facts = {"node": rr.RuntimeFact(version="26.7.0", path="node/bin/node")}
+        rr.save_facts(facts, tmp_path, path_order=["npm", "node"])
+
+        assert rr.load_path_order(tmp_path) == ["node"]
+
+    def test_a_later_single_fact_update_keeps_the_recorded_order(self, tmp_path):
+        """record_fact has no pin table in hand; it must not silently
+        reset the order to insertion order."""
+        rr.save_facts(
+            {
+                "node": rr.RuntimeFact(version="26.7.0", path="node/bin/node"),
+                "npm": rr.RuntimeFact(version="12.0.2", path="npm/bin/npm"),
+            },
+            tmp_path,
+            path_order=["npm", "node"],
+        )
+
+        rr.record_fact("node", "26.8.0", "node/bin/node", tmp_path)
+
+        assert rr.load_path_order(tmp_path) == ["npm", "node"]
+
+    def test_no_facts_file_means_no_order(self, tmp_path):
+        assert rr.load_path_order(tmp_path) == []
+
 
 class TestRealPinTable:
     """The shipped table, as a contract rather than a snapshot."""
 
-    def test_every_tool_pins_every_supported_target(self):
+    def test_every_tool_resolves_on_every_supported_target(self):
         expected = {
             "darwin-arm64",
             "darwin-x64",
@@ -137,8 +265,11 @@ class TestRealPinTable:
             "win32-arm64",
         }
 
-        for tool, entry in rr.load_pins().items():
-            assert set(entry["files"]) == expected, tool
+        for tool in rr.load_pins():
+            for target in expected:
+                # Either a per-target row or a target-independent 'any'
+                # artifact — what matters is that nothing is unreachable.
+                assert rr.pinned_file(tool, target).url, f"{tool}/{target}"
 
     def test_every_download_is_https_with_a_full_digest(self):
         for tool, entry in rr.load_pins().items():
@@ -158,10 +289,31 @@ class TestRealPinTable:
     def test_digests_are_unique_per_target(self):
         """Copy-paste is the likely failure when hand-editing 30 digests,
         and a duplicated digest means one target downloads the wrong
-        file and fails verification."""
+        file and fails verification. A tool pinning one 'any' artifact
+        has nothing to copy-paste wrong."""
         for tool, entry in rr.load_pins().items():
             digests = [spec["sha256"] for spec in entry["files"].values()]
             assert len(digests) == len(set(digests)), tool
+
+    def test_every_extends_edge_names_a_pinned_tool(self):
+        """A dangling edge would silently drop out of both derived
+        orders instead of failing."""
+        pins = rr.load_pins()
+
+        for tool, entry in pins.items():
+            for dep in entry.get("extends", []):
+                assert dep in pins, f"{tool} extends unpinned {dep}"
+
+    def test_npm_is_ordered_around_the_node_it_extends(self):
+        """npm ships INSIDE node, so both derived orders have to place
+        it deliberately: installed after node (node unpacks it), found
+        before node (or node's bundled npm shadows it)."""
+        pins = rr.load_pins()
+        install = rr.install_order(pins)
+        path = rr.path_order(pins)
+
+        assert install.index("npm") > install.index("node")
+        assert path.index("npm") < path.index("node")
 
     def test_git_ships_the_same_version_from_both_suppliers(self):
         """dugite-native (POSIX) and PortableGit (Windows) are different

@@ -31,13 +31,14 @@ def _node() -> str:
     return node
 
 
-def _provision(runtime_dir: Path, name: str, rel: str, version="1.0.0", path_dirs=None):
+def _provision(runtime_dir: Path, name: str, rel: str, version="1.0.0", path_dirs=None,
+               path_order=None):
     binary = runtime_dir / rel
     binary.parent.mkdir(parents=True, exist_ok=True)
     binary.write_text("#!/bin/sh\n")
     facts = rr.load_facts(runtime_dir)
     facts[name] = rr.RuntimeFact(version=version, path=rel, path_dirs=path_dirs)
-    rr.save_facts(facts, runtime_dir)
+    rr.save_facts(facts, runtime_dir, path_order=path_order)
 
 
 def _ts_path_entries(tmp_path: Path, runtime_dir: Path) -> list[str]:
@@ -80,16 +81,39 @@ class TestCrossLanguageFactsContract:
         """Order is a contract, not an accident: it decides which copy of a
         tool wins when several are on PATH."""
         runtime_dir = tmp_path / ".hermes-runtime"
+        order = ["node", "uv", "ripgrep"]
         # Written in reverse of the expected order on purpose.
-        _provision(runtime_dir, "ripgrep", "ripgrep/rg")
-        _provision(runtime_dir, "uv", "uv/uv")
-        _provision(runtime_dir, "node", "node/bin/node")
+        _provision(runtime_dir, "ripgrep", "ripgrep/rg", path_order=order)
+        _provision(runtime_dir, "uv", "uv/uv", path_order=order)
+        _provision(runtime_dir, "node", "node/bin/node", path_order=order)
 
         python_dirs = [str(d) for d in runtime_env.managed_path_dirs(runtime_dir)]
         ts_dirs = _ts_path_entries(tmp_path, runtime_dir)
 
         assert python_dirs == ts_dirs
         assert [Path(d).name for d in python_dirs] == ["bin", "uv", "ripgrep"]
+
+    def test_both_languages_follow_a_recorded_extender_first_order(self, tmp_path):
+        """The pin table's `extends` edge reaches both readers as DATA.
+
+        npm extends node, so npm's bin dir must come first or node's
+        bundled npm shadows the pinned one. Neither language may reach
+        that conclusion from a list of its own — this asserts they both
+        take it from the facts file the provisioner wrote.
+        """
+        runtime_dir = tmp_path / ".hermes-runtime"
+        pins = {
+            "node": {"version": "26.7.0", "files": {}},
+            "npm": {"version": "12.0.2", "extends": ["node"], "files": {}},
+        }
+        order = rr.path_order(pins)
+        _provision(runtime_dir, "node", "node/bin/node", path_order=order)
+        _provision(runtime_dir, "npm", "npm/bin/npm", path_order=order)
+
+        python_dirs = [str(d) for d in runtime_env.managed_path_dirs(runtime_dir)]
+
+        assert python_dirs == _ts_path_entries(tmp_path, runtime_dir)
+        assert [Path(d).parent.name for d in python_dirs] == ["npm", "node"]
 
     def test_both_languages_spread_pathDirs(self, tmp_path):
         runtime_dir = tmp_path / ".hermes-runtime"
@@ -137,7 +161,9 @@ class TestSchemaConstantsMatch:
         ts = BACKEND_ENV_TS.read_text(encoding="utf-8")
         assert f"RUNTIME_FACTS_FILENAME = '{rr.FACTS_FILENAME}'" in ts
 
-    def test_tool_order_is_the_same_list_on_both_sides(self):
-        ts = BACKEND_ENV_TS.read_text(encoding="utf-8")
-        rendered = ", ".join(f"'{tool}'" for tool in runtime_env._PATH_ORDER)
-        assert f"MANAGED_TOOL_ORDER = Object.freeze([{rendered}])" in ts
+    # There is deliberately no test asserting a tool-order literal in the
+    # TypeScript source. There used to be one, because the order WAS a
+    # literal in both languages and reading the source was the only way to
+    # compare them. The order is data now — derived from the pin table's
+    # `extends` edges and recorded in the facts file — so the round-trip
+    # tests above check the real behaviour instead of the source text.

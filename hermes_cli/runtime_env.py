@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Mapping, Optional
 
 from hermes_constants import get_runtime_dir
-from hermes_cli.runtime_registry import RuntimeFact, load_facts
+from hermes_cli.runtime_registry import RuntimeFact, load_facts, load_path_order
 
 __all__ = [
     "managed_path_dirs",
@@ -29,11 +29,6 @@ __all__ = [
     "runtime_cache_dir",
     "with_managed_runtimes",
 ]
-
-# PATH assembly order. Deliberate, stable, and data — not emergent from
-# dict iteration. node before uv (npm shims may exec node), git's multi-dir
-# spread preserved via pathDirs.
-_PATH_ORDER: tuple[str, ...] = ("node", "uv", "git", "gh", "ripgrep")
 
 
 def runtime_cache_dir(runtime_dir: Path | None = None) -> Path:
@@ -51,6 +46,11 @@ def _dirs_for(fact: RuntimeFact, base: Path) -> list[Path]:
 def managed_path_dirs(runtime_dir: Path | None = None) -> list[Path]:
     """Existing bin dirs of every provisioned tool, in assembly order.
 
+    The order is DATA, recorded in the facts file by the provisioner from
+    the pin table's ``extends`` edges — a tool that extends another must
+    be found first, or the copy it supersedes wins (npm before node, or
+    node's bundled npm shadows the pinned one). Nothing here restates it.
+
     Tools absent from facts (or recorded but vanished) contribute nothing:
     an unprovisioned install degrades to system tools instead of shipping
     dead PATH entries.
@@ -58,7 +58,7 @@ def managed_path_dirs(runtime_dir: Path | None = None) -> list[Path]:
     base = runtime_dir if runtime_dir is not None else get_runtime_dir()
     facts = load_facts(base)
     dirs: list[Path] = []
-    for tool in _PATH_ORDER:
+    for tool in load_path_order(base):
         fact = facts.get(tool)
         if fact is None or not (base / fact.path).is_file():
             continue

@@ -270,7 +270,7 @@ function loadPins() {
 }
 
 /**
- * Managed runtime tools (node, uv, git, gh, ripgrep) for the payload.
+ * Managed runtime tools (node, npm, uv, git, gh, ripgrep) for the payload.
  *
  * The payload IS a runtime dir, so this shells out to the SAME Python
  * provisioner a source install and `hermes update` use. Everything about
@@ -280,11 +280,14 @@ function loadPins() {
  * be a second thing to keep correct, and the digest verification is not
  * something to reimplement twice.
  *
- * Cross-building is normal here (a linux runner staging the macOS
- * payload), so `--target` is passed explicitly rather than inferred, and
- * the provisioner skips its run-the-binary check for a foreign target.
- * `assertPayloadArch` below re-checks the arch from the file headers,
- * which works regardless of what can execute.
+ * The staging runner IS the target machine (see `resolveTargets`: one CI
+ * runner per (os, arch) pair, because electron-builder needs per-OS
+ * runners for signing anyway). `--target` is still passed explicitly so
+ * the payload's target is stated rather than inferred from whatever
+ * interpreter happens to run this, but it names the host, so the
+ * provisioner's run-the-binary check does execute here.
+ * `assertPayloadArch` below independently re-checks the arch from the
+ * file headers.
  */
 function stageManagedRuntimes(target, outDir, pythonExe) {
   const targetKey = `${target.platform}-${target.arch}`

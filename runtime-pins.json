@@ -1,6 +1,6 @@
 {
   "$schema": "./runtime-pins.schema.json",
-  "$comment": "ONE source of truth, read by the Python provisioner (hermes_cli/runtime_provisioner.py) and by the desktop payload staging, which shells out to it. Every entry pins an EXACT version plus, per target, the exact download URL and its sha256. No ranges, no 'resolve latest and hope': a build is reproducible, needs no GitHub API (unauthenticated callers get 60 requests/hour), and a tool cannot silently change under users. Bump deliberately: change the version, refresh every url+sha256 for that tool, verify, commit.",
+  "$comment": "ONE source of truth, read by the Python provisioner (hermes_cli/runtime_provisioner.py) and by the desktop payload staging, which shells out to it. Every entry pins an EXACT version plus, per target, the exact download URL and its sha256. No ranges, no 'resolve latest and hope': a build is reproducible, needs no GitHub API (unauthenticated callers get 60 requests/hour), and a tool cannot silently change under users. Bump deliberately: change the version, refresh every url+sha256 for that tool, verify, commit. Tool ORDER is derived from this file too — see 'extends'.",
   "schemaVersion": 2,
   "tools": {
     "node": {
@@ -29,6 +29,17 @@
         "win32-arm64": {
           "url": "https://nodejs.org/dist/v26.7.0/node-v26.7.0-win-arm64.zip",
           "sha256": "be8775204cfceca5a73c30f91bf0de5e85274c01b776dc13f16b91aa251ebb01"
+        }
+      }
+    },
+    "npm": {
+      "version": "12.0.2",
+      "extends": ["node"],
+      "$comment": "Newer than the npm bundled inside the pinned node. 'extends' says both things that follow from that: install npm AFTER node (staging runs node's own npm to unpack this tarball), and put npm's bin dir BEFORE node's on PATH, or node's bundled npm shadows this one. The registry tarball is the same bytes for every target, so it pins one 'any' artifact; the per-target part is the shim layout npm writes on install, which _binary_rel owns.",
+      "files": {
+        "any": {
+          "url": "https://registry.npmjs.org/npm/-/npm-12.0.2.tgz",
+          "sha256": "5dbb86c71d07a1957f2e90734092dd6a58bdcd9ebc2d8d41ca1c6e6a21d364e1"
         }
       }
     },

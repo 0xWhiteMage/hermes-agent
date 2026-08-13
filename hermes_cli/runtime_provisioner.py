@@ -10,6 +10,11 @@ verify by RUNNING the binary → record the fact. A tool that cannot be
 verified is not recorded: readers see it as unprovisioned and fall back
 to system PATH, and the next run retries.
 
+Tools are visited in the pin table's dependency order, so a tool that
+declares ``extends`` is staged after what it extends — npm is unpacked by
+running the node it extends. The same edge, read the other way, is the
+PATH order recorded into the facts file for both language readers.
+
 There is no salvage and no "reuse whatever is lying around". A tool is
 either the exact pinned artifact, verified by digest, or it is absent.
 Adopting an unverified tree from a previous install would defeat the
@@ -24,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -40,8 +46,10 @@ from hermes_cli.runtime_registry import (
     PinnedFile,
     RuntimeFact,
     current_target,
+    install_order,
     load_facts,
     load_pins,
+    path_order,
     pinned_file,
     save_facts,
 )
@@ -164,7 +172,9 @@ def _flatten_single_dir(dest: Path) -> None:
     inner.rmdir()
 
 
-def _probe_version(binary: Path, args: list[str] | None = None) -> Optional[str]:
+def _probe_version(
+    binary: Path, args: list[str] | None = None, env: dict[str, str] | None = None
+) -> Optional[str]:
     """Run `<binary> --version` and return the first version-shaped token.
 
     None when the binary does not run — callers treat that as
@@ -177,6 +187,7 @@ def _probe_version(binary: Path, args: list[str] | None = None) -> Optional[str]
             text=True,
             timeout=30,
             check=False,
+            env=env,
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return None
@@ -184,6 +195,22 @@ def _probe_version(binary: Path, args: list[str] | None = None) -> Optional[str]
 
     m = _re.search(r"\d+(?:\.\d+)+", out or "")
     return m.group(0) if m else None
+
+
+def _probe_env(entry: dict, rt: Path) -> Optional[dict[str, str]]:
+    """Environment for the run-the-binary check.
+
+    Most tools are self-contained executables and need nothing. A tool
+    that extends another is a script launched by it — npm's shim is
+    ``#!/usr/bin/env node`` — so the probe has to see the runtime dir's
+    own tools on PATH, or it reports "does not run" on any host without a
+    system copy and the tool is never recorded.
+    """
+    if not entry.get("extends"):
+        return None
+    from hermes_cli.runtime_env import with_managed_runtimes
+
+    return with_managed_runtimes(runtime_dir=rt)
 
 
 # ─── per-tool layout + staging ──────────────────────────────────────────────
@@ -208,6 +235,9 @@ def _binary_rel(tool: str, target: str) -> str:
     return {
         # The Windows node zip has node.exe at the root; POSIX has bin/node.
         "node": "node/node.exe" if win else "node/bin/node",
+        # `npm -g --prefix` drops .cmd shims in the prefix root on Windows
+        # and POSIX shims in bin/ (same split dep_ensure documents).
+        "npm": "npm/npm.cmd" if win else "npm/bin/npm",
         "uv": f"uv/uv{ext}",
         # PortableGit exposes cmd/git.exe; dugite-native uses bin/git.
         "git": "git/cmd/git.exe" if win else "git/bin/git",
@@ -260,7 +290,65 @@ def _stage_portable_git(pin: PinnedFile, dest: Path, tmp: Path) -> None:
         raise RuntimeError(f"PortableGit self-extractor exited {proc.returncode}")
 
 
-def _stage(tool: str, pin: PinnedFile, dest: Path, tmp: Path, target: str) -> None:
+def _stage_npm(pin: PinnedFile, dest: Path, tmp: Path, rt: Path, target: str) -> None:
+    """npm installs itself, using the node it extends.
+
+    npm is not a relocatable archive: its own ``bin/npm`` resolves the cli
+    from ``dirname(process.execPath)``, so a plain unpack on PATH finds
+    the npm BUNDLED inside node and fails outright. Letting npm do a
+    global install into a prefix produces the launchers each platform
+    actually needs (POSIX symlinks in ``bin/``, ``.cmd``/``.ps1`` shims in
+    the prefix root) instead of us hand-writing shims per OS.
+
+    The bytes are still the pinned, digest-verified tarball —
+    ``--offline`` guarantees the registry is never consulted, so this
+    installs exactly what the pin table says and nothing else.
+    """
+    tarball = _fetch_verified(pin, tmp)
+    node = rt / _binary_rel("node", target)
+    if not node.is_file():
+        raise RuntimeError("npm extends node, which is not provisioned")
+
+    # node's BUNDLED npm performs the install; the pinned npm replaces it
+    # on PATH afterwards. Driving npm-cli.js through node directly avoids
+    # depending on any npm shim already being resolvable.
+    bundled_cli = (
+        node.parent / "node_modules" / "npm" / "bin" / "npm-cli.js"
+        if target.startswith("win32")
+        else node.parent.parent / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js"
+    )
+    if not bundled_cli.is_file():
+        raise RuntimeError(f"node ships no bundled npm at {bundled_cli}")
+
+    shutil.rmtree(dest, ignore_errors=True)
+    dest.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(
+        [
+            str(node),
+            str(bundled_cli),
+            "install",
+            "--global",
+            "--prefix",
+            str(dest),
+            "--offline",
+            "--no-audit",
+            "--no-fund",
+            str(tarball),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=900,
+        # Keep the install off the user's ~/.npm: an install-scoped tool
+        # writes install-scoped state.
+        env={**os.environ, "npm_config_cache": str(rt / "cache" / "npm")},
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"npm install exited {proc.returncode}: {proc.stderr[-400:]}")
+
+
+def _stage(
+    tool: str, pin: PinnedFile, dest: Path, tmp: Path, target: str, rt: Path
+) -> None:
     """Unpack one tool into its runtime-dir home.
 
     Branching lives here and nowhere else: every tool arrives through the
@@ -268,6 +356,10 @@ def _stage(tool: str, pin: PinnedFile, dest: Path, tmp: Path, target: str) -> No
     """
     if tool == "git" and target.startswith("win32"):
         _stage_portable_git(pin, dest, tmp)
+        return
+
+    if tool == "npm":
+        _stage_npm(pin, dest, tmp, rt, target)
         return
 
     _stage_archive(pin, dest, tmp)
@@ -310,6 +402,7 @@ def _provision_one(
     facts: dict[str, RuntimeFact],
     target: str,
     verify_runs: bool = True,
+    path_order: list[str] | None = None,
 ) -> ToolResult:
     """Bring ONE tool to the pinned state. Never raises."""
     rel = _binary_rel(tool, target)
@@ -328,7 +421,7 @@ def _provision_one(
     try:
         td = Path(tempfile.mkdtemp(prefix="hermes-provision-"))
         try:
-            _stage(tool, pin, rt / tool, Path(td), target)
+            _stage(tool, pin, rt / tool, Path(td), target, rt)
         finally:
             _discard_scratch(td)
 
@@ -341,13 +434,13 @@ def _provision_one(
         # or half-extracted binary fails here rather than at first use.
         # Skipped when staging FOR another target, where the binary
         # cannot run on this host by definition.
-        if verify_runs and _probe_version(binary) is None:
+        if verify_runs and _probe_version(binary, env=_probe_env(entry, rt)) is None:
             return ToolResult(tool, "failed", detail="provisioned binary does not run")
 
         facts[tool] = RuntimeFact(
             version=pin.version, path=rel, path_dirs=_path_dirs(tool, target)
         )
-        save_facts(facts, rt)
+        save_facts(facts, rt, path_order=path_order)
         return ToolResult(tool, "downloaded", version=pin.version)
     except Exception as exc:  # noqa: BLE001 — per-tool isolation is the contract
         logger.warning("provisioning %s failed: %s", tool, exc)
@@ -367,10 +460,18 @@ def provision_tool(
     """
     rt = runtime_dir if runtime_dir is not None else get_runtime_dir()
     rt.mkdir(parents=True, exist_ok=True)
-    entry = load_pins(install_root).get(tool)
+    pins = load_pins(install_root)
+    entry = pins.get(tool)
     if entry is None:
         return ToolResult(tool, "failed", detail=f"{tool} is not pinned")
-    return _provision_one(tool, entry, rt, load_facts(rt), target or current_target())
+    return _provision_one(
+        tool,
+        entry,
+        rt,
+        load_facts(rt),
+        target or current_target(),
+        path_order=path_order(pins),
+    )
 
 
 def provision_runtimes(
@@ -385,6 +486,10 @@ def provision_runtimes(
     Never raises for a single tool — each failure is recorded and the
     rest proceed (a broken ripgrep download must not kill node).
 
+    Tools are provisioned in the pin table's dependency order, so a tool
+    that extends another is staged after it — npm is unpacked by running
+    the node it extends, which has to exist first.
+
     When *target* names a platform other than this host, the staged
     binaries cannot be executed here, so the run-the-binary check is
     skipped. That is the desktop cross-build path.
@@ -396,12 +501,19 @@ def provision_runtimes(
     pins = load_pins(install_root)
     facts = load_facts(rt)
     results: list[ToolResult] = []
+    order = path_order(pins)
 
-    for tool, entry in pins.items():
+    for tool in install_order(pins):
         if only and tool not in only:
             continue
         result = _provision_one(
-            tool, entry, rt, facts, resolved_target, verify_runs=resolved_target == host
+            tool,
+            pins[tool],
+            rt,
+            facts,
+            resolved_target,
+            verify_runs=resolved_target == host,
+            path_order=order,
         )
         results.append(result)
         if emit:
