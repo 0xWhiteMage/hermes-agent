@@ -64,7 +64,7 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
-import { dropSessionState } from '@/store/session-states'
+import { dropSessionState, unbindTileRuntime } from '@/store/session-states'
 import { pruneDelegateFallbackSubagents, pruneFinishedSessionSubagents, upsertSubagent } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
@@ -385,6 +385,15 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (reclaimedRuntimeId) {
           dropSessionState(reclaimedRuntimeId)
+          // A tile bound to the reclaimed runtime would otherwise render an
+          // empty transcript forever: its view reads $sessionStates[runtime]
+          // (just dropped) and its resume effect is gated on !runtimeId, so a
+          // bound tile never re-resumes (#82620). Unbind it so the effect
+          // refires against the intact stored session — and purge the wiring
+          // cache's entry, or resumeTile's warm path would hand the dead
+          // runtime straight back instead of cold-resuming a live one.
+          unbindTileRuntime(reclaimedRuntimeId)
+          sessionStateByRuntimeIdRef.current.delete(reclaimedRuntimeId)
         }
 
         // The row's ended_at moved, so refresh the lists that render it.
