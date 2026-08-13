@@ -2690,19 +2690,22 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     Installs that can't honor non-default branches (e.g. Docker) surface a
     one-line notice instead of silently dropping the flag.
     """
-    from hermes_cli.config import detect_install_method, recommended_update_command_for_method
+    from hermes_cli.config import detect_install_method
     method = detect_install_method(_m().PROJECT_ROOT)
-    if method == "docker":
-        # Docker can't ``git fetch`` from within the container.  Surface the
-        # same long-form ``docker pull`` guidance ``hermes update`` (apply
-        # path) uses — telling the user to "reinstall via curl" or that
-        # ".git is missing" would point them at the wrong remediation.
-        from hermes_cli.config import format_docker_update_message
-        print(format_docker_update_message())
+
+    # Sealed trees refuse the check with the same steward table the apply
+    # path uses (hermes_cli.runtime_tree) — one refusal, not per-branch
+    # prose. A misleading "Not a git repository"/"reinstall via curl" here
+    # would point users at the wrong remediation.
+    if method in ("docker", "nix", "desktop-app"):
+        from hermes_cli.runtime_tree import steward_update_message
+
+        print(steward_update_message(method))
         sys.exit(1)
 
-    if method in {"nix", "nixos", "apt"}:
-        print(recommended_update_command_for_method(method))
+    if method == "source":
+        print("✗ This is a source checkout, not the managed install.")
+        print("  Check it like any working tree: git fetch && git status")
         sys.exit(1)
 
     git_dir = _m().PROJECT_ROOT / ".git"

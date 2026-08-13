@@ -105,13 +105,6 @@ def active_profile_may_override_home(hermes_root: str) -> bool:
     return False
 
 
-def _resolved_home() -> str:
-    hermes_home = os.environ.get("HERMES_HOME", "").strip()
-    if hermes_home:
-        return hermes_home
-    return os.path.join(os.path.expanduser("~"), ".hermes")
-
-
 def container_mode_may_be_active() -> bool:
     """Conservative probe for NixOS container-mode routing.
 
@@ -163,21 +156,47 @@ def read_openai_version() -> str | None:
 
 
 def read_install_method() -> str | None:
-    """Read the installer's ``.install_method`` stamp, if present.
+    """Derive the install method with stdlib-only probes.
 
-    Only the stamp (step 1 of ``config.detect_install_method``'s resolution
-    order) — the managed/git/pip fallbacks need heavier imports and stay on
-    the slow path. On the fast path home ambiguity is already excluded:
-    ``container_mode_may_be_active()`` bails to the slow path whenever a
-    non-default profile might redirect HERMES_HOME.
-    """
-    stamp = os.path.join(_resolved_home(), ".install_method")
+    Mirrors ``config.detect_install_method`` (which delegates to
+    ``runtime_tree.install_method``) cheaply — the stamp-pure ladder:
+    a sealed tree's ``install-stamp.json`` names the steward
+    (``distribution``); a ``.git`` tree is ``git`` when its stamp says
+    ``updateMechanism: self`` and ``source`` otherwise. No path table.
+"""
+    import json
+
+    root = project_root_str()
+    stamp = None
     try:
-        with open(stamp, encoding="utf-8") as handle:
-            method = handle.read().strip().lower()
-        return method or None
-    except OSError:
+        with open(os.path.join(root, "install-stamp.json"), encoding="utf-8-sig") as handle:
+            stamp = json.load(handle)
+        if not isinstance(stamp, dict):
+            stamp = None
+    except (OSError, ValueError):
+        stamp = None
+
+    has_git = os.path.exists(os.path.join(root, ".git"))
+
+    if stamp is not None:
+        # updateMechanism is required in every stamp — mirror of
+        # installation.tree.read_build_info()'s hard-fail. The fast path
+        # must not print a classification derived from a malformed stamp.
+        if stamp.get("updateMechanism") not in ("self", "electron-updater", "external"):
+            raise RuntimeError(
+                f"install-stamp.json at {root} is missing a valid "
+                "'updateMechanism' (one of self, electron-updater, external). "
+                "The build lane that wrote this stamp must pass "
+                "--update-mechanism to scripts/write_install_stamp.py."
+            )
+        if has_git:
+            return "git" if stamp.get("updateMechanism") == "self" else "source"
+        distribution = stamp.get("distribution")
+        if isinstance(distribution, str) and distribution:
+            return distribution
         return None
+
+    return "source" if has_git else None
 
 
 def print_fast_version_info() -> None:

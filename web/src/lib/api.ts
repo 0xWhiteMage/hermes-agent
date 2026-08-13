@@ -1897,7 +1897,6 @@ export interface StatusResponse {
   /** NS-656: disk-usage rollup for the HERMES_HOME volume. Absent on
    * older gateways. */
   disk?: DiskPressureStatus;
-  release_date: string;
   version: string;
 }
 

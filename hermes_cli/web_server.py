@@ -56,7 +56,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from hermes_cli import __version__, __release_date__
+from hermes_cli import __version__
 from hermes_cli.config import (
     build_cron_model_impact,
     cfg_get,
@@ -3786,7 +3786,6 @@ async def get_status(profile: Optional[str] = None):
         # ``PUBLIC_API_PATHS`` documents this endpoint as serving.
         status = {
             "version": __version__,
-            "release_date": __release_date__,
             "config_version": current_ver,
             "latest_config_version": latest_ver,
             "can_update_hermes": not _dashboard_local_update_managed_externally(),
@@ -4776,16 +4775,14 @@ async def update_hermes():
             "update_command": recommended_update_command_for_method(install_method),
         }
 
-    if install_method in {"nix", "nixos", "apt"}:
+    if install_method in {"nix", "source"}:
         message = recommended_update_command_for_method(install_method)
         _record_completed_action("hermes-update", message, exit_code=1)
         return {
             "ok": False,
             "pid": None,
             "name": "hermes-update",
-            "error": (
-                "apt_update_required" if install_method == "apt" else "nix_update_unsupported"
-            ),
+            "error": "nix_update_unsupported" if install_method == "nix" else "source_update_unsupported",
             "message": message,
             "update_command": message,
         }
@@ -4884,7 +4881,7 @@ async def check_hermes_update(force: bool = False):
     ``POST /api/hermes/update`` actually runs ``hermes update``.
 
     Returns:
-        install_method: 'apt' | 'git' | 'docker' | 'nix' | 'nixos' | 'unknown'
+        install_method: 'git' | 'source' | 'docker' | 'nix' | 'desktop-app' | 'unknown'
         current_version: installed Hermes version string
         behind: commits behind upstream (>=1), 0 if up to date,
                 -1 if behind by an unknown count, or null if the
@@ -4930,11 +4927,6 @@ async def check_hermes_update(force: bool = False):
 
     if install_method == "docker":
         payload["message"] = format_docker_update_message()
-        return payload
-    if install_method == "apt":
-        payload["message"] = (
-            "Hermes is managed by Termux APT; run `pkg upgrade hermes-agent`."
-        )
         return payload
 
     # banner.check_for_updates() handles git / nix-revision paths and

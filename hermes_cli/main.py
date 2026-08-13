@@ -5643,14 +5643,22 @@ def cmd_import(args):
 
 
 def _print_version_info(*, check_updates: bool = True) -> None:
-    from hermes_cli.config import detect_install_method
     from hermes_cli.slash_exec import CommandContext, execute_command
+    from hermes_cli.version_info import get_version_info
 
     # Core version line is registry-owned (shared with the gateway /version);
     # the install/python/SDK detail below is CLI-only decoration.
     print(execute_command("version", CommandContext(surface="cli")).text)
+    version_info = get_version_info()
+    if version_info.branch:
+        print(f"Branch: {version_info.branch}")
+    if version_info.commit:
+        print(f"Commit: {version_info.commit}")
+    print(f"Working tree: {'dirty' if version_info.dirty else 'clean'}")
+    print(f"Source: {version_info.source}")
+    if version_info.distribution:
+        print(f"Distribution: {version_info.distribution}")
     print(f"Install directory: {PROJECT_ROOT}")
-    print(f"Install method: {detect_install_method(PROJECT_ROOT)}")
 
     # Show Python version
     print(f"Python: {sys.version.split()[0]}")
@@ -9901,31 +9909,30 @@ def cmd_update(args):
     runs the update, then restores stdio on the way out (even on
     ``sys.exit`` or unhandled exceptions).
     """
-    from hermes_cli.config import (
-        detect_install_method,
-        format_docker_update_message,
-        is_managed,
-        managed_error,
-        recommended_update_command_for_method,
-    )
+    from hermes_cli.config import detect_install_method
 
-    if is_managed():
-        managed_error("update Hermes Agent")
-        return
-
-    # Docker users can't ``git pull`` — the image excludes ``.git`` from
-    # the build context.  Bail with a friendly explanation pointing at
-    # ``docker pull`` BEFORE any of the apply-path / check-path branches
-    # below get a chance to error out with misleading "Not a git
-    # repository" text.  See format_docker_update_message() for the full
-    # rationale and tag-pinning / config-persistence notes.
+    # Sealed trees (docker, nix, desktop-app — any steward) can't `git
+    # pull`: the steward replaces the tree wholesale. ONE refusal table
+    # (installation.tree.STEWARD_UPDATE_MESSAGES) answers all of them,
+    # BEFORE any apply-path branch below can error out with misleading
+    # "Not a git repository" text. recommended_update_command_for_method
+    # stays a separate surface on purpose: it is the one-line command hint
+    # (doctor, /version), not the full refusal.
     install_method = detect_install_method(PROJECT_ROOT)
-    if install_method == "docker":
-        print(format_docker_update_message())
+    if install_method in ("docker", "nix"):
+        from installation.tree import steward_update_message
+
+        print(steward_update_message(install_method))
         sys.exit(1)
 
-    if install_method in {"nix", "nixos", "apt"}:
-        print(recommended_update_command_for_method(install_method))
+    # A random source checkout (a .git tree outside the managed install
+    # roots) is somebody's working tree. `hermes update` would stash local
+    # changes and yank it to the update branch — refuse and point at git.
+    # --eject on a source tree is also a no-op, so refuse before it too.
+    if install_method == "source":
+        print(f"✗ This is a git checkout at {PROJECT_ROOT},")
+        print("  not the managed install. Update it like any working tree:")
+        print("    git pull")
         sys.exit(1)
 
     if getattr(args, "check", False):

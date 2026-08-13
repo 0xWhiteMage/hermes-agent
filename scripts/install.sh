@@ -1430,6 +1430,16 @@ EOF
     fi
 
     log_success "Repository ready"
+
+    # The installer owns this checkout: record `updateMechanism: self` in
+    # the stamp so the stamp-pure ladder (installation/tree.py) classifies
+    # it as managed. Keep an existing stamp — re-running the installer on
+    # an already-stamped install must not clobber richer provenance.
+    if [ ! -f "$INSTALL_DIR/install-stamp.json" ]; then
+        printf '{\n  "schemaVersion": 2,\n  "updateMechanism": "self",\n  "source": "installer"\n}\n' \
+            > "$INSTALL_DIR/install-stamp.json"
+        log_info "Wrote install stamp (updateMechanism: self)"
+    fi
 }
 
 setup_venv() {
@@ -3433,12 +3443,6 @@ run_stage_body() {
             resolve_install_layout
             print_success
             write_bootstrap_marker
-            # Code-scoped stamp: write next to the install tree, not into
-            # $HERMES_HOME. $HERMES_HOME is a shared data dir (it can be
-            # bind-mounted into a Docker gateway too), so a stamp there gets
-            # clobbered by the container's 'docker' stamp and wrongly blocks
-            # 'hermes update' on this host install. See detect_install_method().
-            echo "git" > "$INSTALL_DIR/.install_method"
             ;;
         *)
             log_error "Unknown stage: $stage"
@@ -3521,13 +3525,6 @@ main() {
     print_success
 
     write_bootstrap_marker
-
-    # Code-scoped stamp: write next to the install tree, not into $HERMES_HOME.
-    # $HERMES_HOME is a shared data dir (it can be bind-mounted into a Docker
-    # gateway too), so a stamp there gets clobbered by the container's 'docker'
-    # stamp and wrongly blocks 'hermes update' on this host install.
-    # See detect_install_method().
-    echo "git" > "$INSTALL_DIR/.install_method"
 }
 
 if [ "$MANIFEST_MODE" = true ]; then

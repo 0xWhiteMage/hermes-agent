@@ -39,12 +39,6 @@ class TestDoctorPlatformHints:
 
         assert "run `hermes update`" in hint
 
-    def test_sqlite_upgrade_hint_uses_pkg_for_apt_managed_install(self):
-        hint = doctor._sqlite_upgrade_hint("apt")
-
-        assert "run `pkg upgrade hermes-agent`" in hint
-        assert "hermes update" not in hint
-
     def test_sqlite_upgrade_hint_preserves_nix_guidance_as_prose(self):
         guidance = doctor.recommended_update_command_for_method("nix")
         hint = doctor._sqlite_upgrade_hint("nix")
