@@ -60,9 +60,19 @@ export function clampIntensity(value: unknown): number {
   return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : 0
 }
 
-/** Unknown or unsupported values fall back to 'clear' (the legacy behavior). */
+/**
+ * Glass is the DEFAULT mode on macOS: fresh installs, junk values, and
+ * pre-mode-era profiles (intensity-only translucency.json, which until this
+ * field existed always meant clear) all resolve to glass at their saved
+ * intensity — the deliberate migration. 'clear' survives only as an explicit
+ * choice, and everything normalizes to clear off-mac (no vibrancy there).
+ */
 export function normalizeMode(value: unknown, isMac: boolean): TranslucencyMode {
-  return value === 'glass' && isMac ? 'glass' : 'clear'
+  if (!isMac) {
+    return 'clear'
+  }
+
+  return value === 'clear' ? 'clear' : 'glass'
 }
 
 /**

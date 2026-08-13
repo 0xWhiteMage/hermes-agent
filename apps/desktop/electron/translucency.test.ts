@@ -20,16 +20,21 @@ describe('clampIntensity', () => {
 })
 
 describe('normalizeMode', () => {
-  it('accepts glass on macOS only', () => {
+  it('defaults to glass on macOS — fresh installs, junk, and legacy profiles', () => {
     expect(normalizeMode('glass', true)).toBe('glass')
-    expect(normalizeMode('glass', false)).toBe('clear')
+    expect(normalizeMode(undefined, true)).toBe('glass')
+    expect(normalizeMode('acrylic', true)).toBe('glass')
+    expect(normalizeMode(42, true)).toBe('glass')
   })
 
-  it('falls back to clear for legacy and junk values', () => {
-    expect(normalizeMode(undefined, true)).toBe('clear')
+  it('keeps an explicit clear choice', () => {
     expect(normalizeMode('clear', true)).toBe('clear')
-    expect(normalizeMode('acrylic', true)).toBe('clear')
-    expect(normalizeMode(42, true)).toBe('clear')
+  })
+
+  it('normalizes everything to clear off macOS', () => {
+    expect(normalizeMode('glass', false)).toBe('clear')
+    expect(normalizeMode(undefined, false)).toBe('clear')
+    expect(normalizeMode('clear', false)).toBe('clear')
   })
 })
 
@@ -57,8 +62,26 @@ describe('normalizePayload', () => {
     })
   })
 
-  it('parses a legacy intensity-only payload as clear with defaults', () => {
+  it('MIGRATES a legacy intensity-only payload to glass at its saved intensity', () => {
+    // Pre-mode-era profiles could only be clear; glass becoming the default
+    // deliberately carries their intensity over to the new mode on macOS.
     expect(normalizePayload({ intensity: 70 }, true)).toEqual({
+      intensity: 70,
+      material: DEFAULT_GLASS_MATERIAL,
+      mode: 'glass',
+      scope: 'window'
+    })
+    // Off-mac they stay clear — there is no vibrancy to migrate onto.
+    expect(normalizePayload({ intensity: 70 }, false)).toEqual({
+      intensity: 70,
+      material: DEFAULT_GLASS_MATERIAL,
+      mode: 'clear',
+      scope: 'window'
+    })
+  })
+
+  it('keeps an explicitly chosen clear mode', () => {
+    expect(normalizePayload({ intensity: 70, mode: 'clear' }, true)).toEqual({
       intensity: 70,
       material: DEFAULT_GLASS_MATERIAL,
       mode: 'clear',
@@ -70,13 +93,13 @@ describe('normalizePayload', () => {
     expect(normalizePayload(null, true)).toEqual({
       intensity: 0,
       material: DEFAULT_GLASS_MATERIAL,
-      mode: 'clear',
+      mode: 'glass',
       scope: 'window'
     })
     expect(normalizePayload('nope', true)).toEqual({
       intensity: 0,
       material: DEFAULT_GLASS_MATERIAL,
-      mode: 'clear',
+      mode: 'glass',
       scope: 'window'
     })
     expect(normalizePayload({ intensity: 'x', material: 'acrylic', mode: 'glass', scope: 9 }, false)).toEqual({

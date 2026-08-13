@@ -63,7 +63,17 @@ const read = (): number => {
   return Number.isFinite(n) ? clamp(n) : 0
 }
 
-const readMode = (): TranslucencyMode => (GLASS_SUPPORTED && storedString(MODE_KEY) === 'glass' ? 'glass' : 'clear')
+const readMode = (): TranslucencyMode => {
+  if (!GLASS_SUPPORTED) {
+    return 'clear'
+  }
+
+  // Glass is the default: only an explicitly persisted 'clear' survives.
+  // Absence of the key covers fresh installs AND pre-mode-era profiles
+  // (which always behaved as clear) — those migrate to glass at their
+  // saved intensity by design.
+  return storedString(MODE_KEY) === 'clear' ? 'clear' : 'glass'
+}
 
 const readMaterial = (): GlassMaterial => {
   const stored = storedString(MATERIAL_KEY) as GlassMaterial
