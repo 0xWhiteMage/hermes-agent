@@ -5,12 +5,13 @@ import { refChipLabel } from '@/components/assistant-ui/directive-text'
 import type { HermesGateway } from '@/hermes'
 import { cachedPathCompletion, hasCachedPathCompletion } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
+import { $profiles } from '@/store/profile'
 
 import type { CompletionEntry, CompletionPayload } from './use-live-completion-adapter'
 import { useLiveCompletionAdapter } from './use-live-completion-adapter'
 
-const KIND_RE = /^@(file|folder|url|image|tool|git):(.*)$/
-const REF_STARTERS = new Set(['file', 'folder', 'url', 'image', 'tool', 'git'])
+const KIND_RE = /^@(file|folder|url|image|tool|git|profile):(.*)$/
+const REF_STARTERS = new Set(['file', 'folder', 'url', 'image', 'tool', 'git', 'profile'])
 
 const STARTER_META: Record<string, string> = {
   file: 'Attach a file reference',
@@ -18,7 +19,8 @@ const STARTER_META: Record<string, string> = {
   url: 'Attach a URL reference',
   image: 'Attach an image reference',
   tool: 'Attach a tool reference',
-  git: 'Attach git context'
+  git: 'Attach git context',
+  profile: 'Address an agent profile'
 }
 
 function starterEntries(query: string): CompletionEntry[] {
@@ -31,6 +33,26 @@ function starterEntries(query: string): CompletionEntry[] {
     display: `@${kind}:`,
     meta: STARTER_META[kind] || ''
   }))
+}
+
+/** `@profile:` completions come from the renderer's own profile cache — the
+ *  list is already in `$profiles` (refreshed by the rail), so unlike paths
+ *  there is no gateway round trip and no debounce to pay. */
+function profileEntries(query: string): CompletionEntry[] {
+  const q = normalize(query)
+
+  return $profiles
+    .get()
+    .filter(profile => {
+      const name = normalize(profile.name)
+
+      return name !== 'default' && (!q || name.startsWith(q) || name.includes(q))
+    })
+    .map(profile => ({
+      text: `@profile:${profile.name}`,
+      display: profile.name,
+      meta: 'Profile'
+    }))
 }
 
 interface AtItemMetadata extends Record<string, string> {
@@ -100,6 +122,17 @@ export function useAtCompletions(options: {
     async (query: string): Promise<CompletionPayload> => {
       const starters = starterEntries(query)
 
+      // Profile refs never touch the gateway: `@profile:` (or a partial name
+      // after it) resolves against the local $profiles cache synchronously.
+      if (query === 'profile' || query.startsWith('profile:')) {
+        const partial = query.startsWith('profile:') ? query.slice('profile:'.length) : ''
+        const profiles = profileEntries(partial)
+
+        if (profiles.length > 0) {
+          return { items: profiles, query }
+        }
+      }
+
       if (!gateway) {
         return { items: starters, query }
       }
@@ -127,7 +160,14 @@ export function useAtCompletions(options: {
 
         const items = result.items ?? []
 
-        return { items: items.length > 0 ? items : starters, query }
+        // A bare `@bab` should offer the babe profile alongside path hits —
+        // addressing a profile is typed like any chat mention, not via the
+        // `@profile:` starter. Profiles lead: a name match is near-certain
+        // intent, path noise for 4-letter queries is not.
+        const profileMatches = query && !query.includes(':') && !query.includes('/') ? profileEntries(query) : []
+        const merged = profileMatches.length > 0 ? [...profileMatches, ...items] : items
+
+        return { items: merged.length > 0 ? merged : starters, query }
       } catch {
         return { items: starters, query }
       }

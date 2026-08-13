@@ -2,7 +2,8 @@
 
 import type { Unstable_DirectiveFormatter, Unstable_DirectiveSegment, Unstable_TriggerItem } from '@assistant-ui/core'
 import type { TextMessagePartComponent, TextMessagePartProps } from '@assistant-ui/react'
-import type { FC } from 'react'
+import { useStore } from '@nanostores/react'
+import type { CSSProperties, FC } from 'react'
 import { Fragment, useEffect, useMemo, useState } from 'react'
 
 import { ZoomableImage } from '@/components/chat/zoomable-image'
@@ -11,9 +12,11 @@ import { extractEmbeddedImages } from '@/lib/embedded-images'
 import { openExternalLink } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
 import { gatewayMediaDataUrl, isRemoteGateway } from '@/lib/media'
+import { resolveProfileColor } from '@/lib/profile-color'
 import { useSessionLinkTitle } from '@/lib/session-link-title'
 import { parseSessionRefValue, sessionRefFallbackLabel } from '@/lib/session-refs'
 import { cn } from '@/lib/utils'
+import { $profileColors } from '@/store/profile'
 
 import { referenceKind, referenceRe, referenceStyle, WIRE_REFERENCE_KINDS } from './reference-kinds'
 
@@ -355,6 +358,8 @@ export function DirectiveContent({ text }: { text: string }) {
           <Fragment key={`t-${index}`}>{segment.text}</Fragment>
         ) : segment.type === 'image' ? null : segment.type === 'session' ? (
           <SessionRefChip key={`m-${index}-${segment.id}`} label={segment.label} value={segment.id} />
+        ) : segment.type === 'profile' ? (
+          <ProfileRefChip key={`m-${index}-${segment.id}`} label={segment.label} value={segment.id} />
         ) : segment.type === 'skill' ? (
           <SlashChip key={`m-${index}-${segment.id}`} kind="skill" label={segment.label} value={segment.id} />
         ) : (
@@ -493,6 +498,31 @@ export const SessionRefChip: FC<{
   const resolved = useSessionLinkTitle(value, label)
 
   return <DirectiveChip id={value} label={resolved} onClick={() => openSessionRef(value)} type="session" />
+}
+
+/** A `@profile:<name>` reference — a profile addressed in a sent message.
+ *  Tinted with the profile's rail color (override, else deterministic hue) so
+ *  `@babe` reads as the same identity everywhere; the CSS accent is the
+ *  fallback when the name resolves to no color (e.g. `default`). */
+export const ProfileRefChip: FC<{
+  label?: string
+  value: string
+}> = ({ label, value }) => {
+  const overrides = useStore($profileColors)
+  const color = resolveProfileColor(value, overrides)
+
+  return (
+    <span
+      {...refAttrs('profile', 'wrap-anywhere')}
+      data-directive-id={value}
+      data-slot="aui_directive-chip"
+      style={color ? ({ '--ref-color': color } as CSSProperties) : undefined}
+      title={value}
+    >
+      <DirectiveIcon type="profile" />
+      {label || value}
+    </span>
+  )
 }
 
 /** A `@session:` reference in assistant markdown (`#session/` links rewritten

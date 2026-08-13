@@ -641,7 +641,8 @@
 }
 
 [data-ref='command'],
-[data-ref='tool'] {
+[data-ref='tool'],
+[data-ref='profile'] {
   --ref-color: color-mix(in srgb, var(--ui-accent) 82%, var(--foreground));
 }
 
