@@ -373,10 +373,15 @@ export interface Translations {
       translucencyModeGlass: string
       translucencyFrostTitle: string
       translucencyFrost: {
-        popover: string
-        hud: string
-        sidebar: string
         'under-window': string
+        popover: string
+        titlebar: string
+        header: string
+      }
+      translucencyScopeTitle: string
+      translucencyScope: {
+        window: string
+        sidebar: string
       }
       backdropTitle: string
       backdropDesc: string

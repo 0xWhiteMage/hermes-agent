@@ -472,10 +472,15 @@ export const en: Translations = {
       translucencyModeGlass: 'Glass',
       translucencyFrostTitle: 'Frost',
       translucencyFrost: {
-        popover: 'Sheer',
-        hud: 'Light',
-        sidebar: 'Medium',
-        'under-window': 'Heavy'
+        'under-window': 'Deep',
+        popover: 'Soft',
+        titlebar: 'Bright',
+        header: 'Glare'
+      },
+      translucencyScopeTitle: 'Area',
+      translucencyScope: {
+        window: 'Whole window',
+        sidebar: 'Sidebar only'
       },
       backdropTitle: 'Chat Backdrop',
       backdropDesc: 'The faint statue image behind the conversation.',

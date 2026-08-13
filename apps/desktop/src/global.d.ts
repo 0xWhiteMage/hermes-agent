@@ -182,7 +182,8 @@ declare global {
       setTranslucency?: (payload: {
         intensity: number
         mode?: 'clear' | 'glass'
-        material?: 'popover' | 'hud' | 'sidebar' | 'under-window'
+        material?: 'under-window' | 'popover' | 'titlebar' | 'header'
+        scope?: 'window' | 'sidebar'
       }) => void
       setKeepAwake?: (on: boolean) => void
       setPreviewShortcutActive?: (active: boolean) => void

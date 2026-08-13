@@ -17,7 +17,7 @@ import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedM
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
-import { $translucency, $translucencyMaterial, $translucencyMode, GLASS_MATERIALS, GLASS_SUPPORTED, setTranslucency, setTranslucencyMaterial, setTranslucencyMode } from '@/store/translucency'
+import { $translucency, $translucencyMaterial, $translucencyMode, $translucencyScope, GLASS_MATERIALS, GLASS_SCOPES, GLASS_SUPPORTED, setTranslucency, setTranslucencyMaterial, setTranslucencyMode, setTranslucencyScope } from '@/store/translucency'
 import { $zoomPercent, setZoomPercent } from '@/store/zoom'
 import { getBaseColors, useTheme } from '@/themes/context'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
@@ -254,6 +254,7 @@ export function AppearanceSettings() {
   const translucency = useStore($translucency)
   const translucencyMode = useStore($translucencyMode)
   const translucencyMaterial = useStore($translucencyMaterial)
+  const translucencyScope = useStore($translucencyScope)
   const reactionsEnabled = useStore($reactionsEnabled)
   const backdrop = useStore($backdrop)
   const installs = useStore($marketplaceInstalls)
@@ -472,21 +473,39 @@ export function AppearanceSettings() {
             }
             below={
               translucencyMode === 'glass' && GLASS_SUPPORTED ? (
-                <div className="mt-3 flex items-center gap-3">
-                  <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                    {a.translucencyFrostTitle}
-                  </span>
-                  <SegmentedControl
-                    onChange={id => {
-                      triggerHaptic('selection')
-                      setTranslucencyMaterial(id)
-                    }}
-                    options={GLASS_MATERIALS.map(material => ({
-                      id: material,
-                      label: a.translucencyFrost[material]
-                    }))}
-                    value={translucencyMaterial}
-                  />
+                <div className="mt-3 flex flex-col gap-2.5">
+                  <div className="flex items-center gap-3">
+                    <span className="w-12 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                      {a.translucencyFrostTitle}
+                    </span>
+                    <SegmentedControl
+                      onChange={id => {
+                        triggerHaptic('selection')
+                        setTranslucencyMaterial(id)
+                      }}
+                      options={GLASS_MATERIALS.map(material => ({
+                        id: material,
+                        label: a.translucencyFrost[material]
+                      }))}
+                      value={translucencyMaterial}
+                    />
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="w-12 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                      {a.translucencyScopeTitle}
+                    </span>
+                    <SegmentedControl
+                      onChange={id => {
+                        triggerHaptic('selection')
+                        setTranslucencyScope(id)
+                      }}
+                      options={GLASS_SCOPES.map(scope => ({
+                        id: scope,
+                        label: a.translucencyScope[scope]
+                      }))}
+                      value={translucencyScope}
+                    />
+                  </div>
                 </div>
               ) : undefined
             }

@@ -574,6 +574,30 @@
     background: color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent);
   }
 
+  /* Sidebar scope (the Finder shape): glass rail, opaque content column.
+     <body> stays the one painter but splits at the rail's visual edge — the
+     store publishes it as --glass-rail-edge (live-tracked through collapse
+     animation and pane resizes). Left of the seam: the normal glass mix.
+     Right of it: the full opaque chrome. A hard gradient stop, so there is
+     no smear across the seam; RTL mirrors via html[dir='rtl']. The content
+     column's own surfaces stay transparent (they'd double-paint the tint
+     otherwise) — the body backdrop alone restores the opaque look. */
+  :root[data-hermes-glass][data-hermes-glass-scope='sidebar'] body {
+    background: linear-gradient(
+      to right,
+      color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent) var(--glass-rail-edge, 0px),
+      var(--ui-bg-chrome) var(--glass-rail-edge, 0px)
+    );
+  }
+
+  :root[data-hermes-glass][data-hermes-glass-scope='sidebar'][dir='rtl'] body {
+    background: linear-gradient(
+      to left,
+      color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent) var(--glass-rail-edge, 0px),
+      var(--ui-bg-chrome) var(--glass-rail-edge, 0px)
+    );
+  }
+
   /* The app shell's two full-window opaque painters (the contrib controller
      root and the SidebarProvider wrapper) sit between <body> and every
      surface. Their fills are Tailwind utilities (bg-(--ui-bg-chrome) /

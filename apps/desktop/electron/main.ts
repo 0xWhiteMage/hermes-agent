@@ -8798,6 +8798,13 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
     vibrancy: IS_MAC ? vibrancyForTranslucency(translucencyState) : undefined,
+    // Pin the material to its ACTIVE appearance: several NSVisualEffectView
+    // materials collapse to a shared inactive look when the window blurs
+    // (measured on macOS 26: sidebar, popover and under-window composited
+    // pixel-identically once unfocused), which would quietly erase the
+    // user's frost choice whenever they click elsewhere. Only observable
+    // under glass — everywhere else the page buries the material.
+    visualEffectState: IS_MAC ? 'active' : undefined,
     opacity: windowOpacity(),
     icon,
     // Don't show until the renderer's first themed paint is ready. macOS
@@ -8902,6 +8909,13 @@ function createInstanceWindow() {
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
     vibrancy: IS_MAC ? vibrancyForTranslucency(translucencyState) : undefined,
+    // Pin the material to its ACTIVE appearance: several NSVisualEffectView
+    // materials collapse to a shared inactive look when the window blurs
+    // (measured on macOS 26: sidebar, popover and under-window composited
+    // pixel-identically once unfocused), which would quietly erase the
+    // user's frost choice whenever they click elsewhere. Only observable
+    // under glass — everywhere else the page buries the material.
+    visualEffectState: IS_MAC ? 'active' : undefined,
     opacity: windowOpacity(),
     icon,
     show: false,
@@ -9760,6 +9774,13 @@ function createWindow() {
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
     vibrancy: IS_MAC ? vibrancyForTranslucency(translucencyState) : undefined,
+    // Pin the material to its ACTIVE appearance: several NSVisualEffectView
+    // materials collapse to a shared inactive look when the window blurs
+    // (measured on macOS 26: sidebar, popover and under-window composited
+    // pixel-identically once unfocused), which would quietly erase the
+    // user's frost choice whenever they click elsewhere. Only observable
+    // under glass — everywhere else the page buries the material.
+    visualEffectState: IS_MAC ? 'active' : undefined,
     opacity: windowOpacity(),
     icon,
     // Hidden until the first themed paint so macOS `vibrancy` (which ignores

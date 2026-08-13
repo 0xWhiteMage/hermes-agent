@@ -5,12 +5,14 @@ import {
   $translucency,
   $translucencyMaterial,
   $translucencyMode,
+  $translucencyScope,
   DEFAULT_GLASS_MATERIAL,
   GLASS_SUPPORTED,
   glassSurfaceKeep,
   setTranslucency,
   setTranslucencyMaterial,
-  setTranslucencyMode
+  setTranslucencyMode,
+  setTranslucencyScope
 } from './translucency'
 
 // jsdom reports a mac platform in CI and locally alike only when the host is a
@@ -34,7 +36,7 @@ describe('translucency store', () => {
     window.hermesDesktop = { setTranslucency: (payload: { intensity: number; mode?: 'clear' | 'glass' }) => calls.push(payload) } as never
 
     setTranslucency(40)
-    expect(calls.at(-1)).toEqual({ intensity: 40, material: DEFAULT_GLASS_MATERIAL, mode: 'clear' })
+    expect(calls.at(-1)).toEqual({ intensity: 40, material: DEFAULT_GLASS_MATERIAL, mode: 'clear', scope: 'window' })
   })
 
   it('rejects glass off macOS and applies it on macOS', () => {
@@ -90,6 +92,28 @@ describe('translucency store', () => {
       setTranslucencyMode('glass')
       expect(document.documentElement.hasAttribute('data-hermes-clear')).toBe(false)
     }
+  })
+
+  it('publishes the glass scope on <html> and validates junk', () => {
+    const calls: Array<{ intensity: number; scope?: string }> = []
+    window.hermesDesktop = {
+      setTranslucency: (payload: { intensity: number }) => calls.push(payload)
+    } as never
+
+    setTranslucency(50)
+    setTranslucencyScope('sidebar')
+    expect($translucencyScope.get()).toBe('sidebar')
+    expect(calls.at(-1)?.scope).toBe('sidebar')
+
+    if (GLASS_SUPPORTED) {
+      setTranslucencyMode('glass')
+      expect(document.documentElement.getAttribute('data-hermes-glass-scope')).toBe('sidebar')
+      setTranslucencyScope('window')
+      expect(document.documentElement.getAttribute('data-hermes-glass-scope')).toBe('window')
+    }
+
+    setTranslucencyScope('composer' as never)
+    expect($translucencyScope.get()).toBe('window')
   })
 })
 

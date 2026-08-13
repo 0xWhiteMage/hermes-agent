@@ -330,12 +330,17 @@ export const ja = defineLocale({
       translucencyGlassDesc: 'マットガラス: デスクトップが滑らかなぼかしとして透け、テキストは鮮明なまま。macOS のみ。',
       translucencyModeClear: 'クリア',
       translucencyModeGlass: 'ガラス',
-      translucencyFrostTitle: 'くもりの強さ',
+      translucencyFrostTitle: 'くもりの質感',
       translucencyFrost: {
-        popover: '最小',
-        hud: '弱',
-        sidebar: '中',
-        'under-window': '強'
+        'under-window': '深い',
+        popover: 'やわらか',
+        titlebar: '明るい',
+        header: 'まぶしい'
+      },
+      translucencyScopeTitle: '適用範囲',
+      translucencyScope: {
+        window: 'ウィンドウ全体',
+        sidebar: 'サイドバーのみ'
       },
       backdropTitle: 'チャット背景',
       backdropDesc: '会話の背後に表示される淡い彫像の画像。',

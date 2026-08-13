@@ -16,23 +16,42 @@ export type TranslucencyMode = 'clear' | 'glass'
 /**
  * macOS vibrancy materials offered as glass "frost" levels, ordered sheer →
  * heavy. macOS exposes no blur-radius knob (VibrancyOptions is only an
- * animation duration), so the material IS the blur control: each maps to a
- * different NSVisualEffectView material with its own blur strength and
- * luminance lift (measured on macOS 26: popover keeps ~2.5x more wallpaper
- * detail than under-window and reads ~30% darker; fullscreen-ui/menu/content
- * render pixel-identical to each other, so only distinct looks are offered).
+ * animation duration), so the material IS the frost control: each maps to a
+ * different NSVisualEffectView material with its own luminance lift.
+ *
+ * Curated by pixel census on macOS 26 (one window, visualEffectState pinned
+ * to 'active', cycling all 14 materials over the same wallpaper): the 14
+ * collapse to 9 distinct looks (sidebar≡hud, window≡fullscreen-ui,
+ * tooltip≡content≡under-window≡under-page). These four are the ladder with
+ * the widest separations that stay distinct in BOTH appearances — dark lum
+ * 26/63/84/127, light lum 217/233/254/242. sidebar/hud sit 9 lum from
+ * under-window when focused and collapse INTO it when unfocused, which
+ * shipped as two indistinguishable picker options once — don't re-add them.
  * Keep in sync with GLASS_MATERIALS in src/store/translucency.ts.
  */
-export const GLASS_MATERIALS = ['popover', 'hud', 'sidebar', 'under-window'] as const
+export const GLASS_MATERIALS = ['under-window', 'popover', 'titlebar', 'header'] as const
 
 export type GlassMaterial = (typeof GLASS_MATERIALS)[number]
 
 export const DEFAULT_GLASS_MATERIAL: GlassMaterial = 'under-window'
 
+/**
+ * Where the glass field lives. 'window' thins every field surface;
+ * 'sidebar' is the Finder shape — glass rail, opaque content column.
+ * The scope is a renderer concern (which surfaces thin); the main process
+ * only persists and echoes it.
+ */
+export const GLASS_SCOPES = ['window', 'sidebar'] as const
+
+export type GlassScope = (typeof GLASS_SCOPES)[number]
+
+export const DEFAULT_GLASS_SCOPE: GlassScope = 'window'
+
 export interface TranslucencyState {
   intensity: number
   mode: TranslucencyMode
   material: GlassMaterial
+  scope: GlassScope
 }
 
 export function clampIntensity(value: unknown): number {
@@ -65,6 +84,11 @@ export function normalizeMaterial(value: unknown): GlassMaterial {
   return GLASS_MATERIALS.includes(value as GlassMaterial) ? (value as GlassMaterial) : DEFAULT_GLASS_MATERIAL
 }
 
+/** Unknown or unsupported values fall back to whole-window glass. */
+export function normalizeScope(value: unknown): GlassScope {
+  return GLASS_SCOPES.includes(value as GlassScope) ? (value as GlassScope) : DEFAULT_GLASS_SCOPE
+}
+
 /** Parse a persisted translucency.json / IPC payload into a safe shape. */
 export function normalizePayload(payload: unknown, isMac: boolean): TranslucencyState {
   const record = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
@@ -72,7 +96,8 @@ export function normalizePayload(payload: unknown, isMac: boolean): Translucency
   return {
     intensity: clampIntensity(record.intensity),
     mode: normalizeMode(record.mode, isMac),
-    material: normalizeMaterial(record.material)
+    material: normalizeMaterial(record.material),
+    scope: normalizeScope(record.scope)
   }
 }
 
