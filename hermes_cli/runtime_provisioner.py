@@ -41,7 +41,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
-from hermes_constants import get_runtime_dir
+from hermes_constants import get_install_root, get_runtime_dir
+from hermes_cli.runtime_tree import Sealed, runtime_tree
 from hermes_cli.runtime_registry import (
     PinnedFile,
     RuntimeFact,
@@ -528,6 +529,80 @@ def provision_runtimes(
             )
 
     return results
+
+
+def stale_tools(
+    runtime_dir: Path | None = None,
+    install_root: Path | None = None,
+    target: str | None = None,
+) -> dict[str, tuple[str, Optional[str]]]:
+    """Pinned tools whose installed state does not match the pin table.
+
+    Maps tool → (pinned version, installed version or None). Empty means
+    every pin is satisfied. This is the same equality check
+    ``_provision_one`` makes before deciding to re-download — exact pins
+    make it an equality check, not a range check.
+    """
+    rt = runtime_dir if runtime_dir is not None else get_runtime_dir()
+    resolved_target = target or current_target()
+    facts = load_facts(rt)
+    drift: dict[str, tuple[str, Optional[str]]] = {}
+
+    for tool, entry in load_pins(install_root).items():
+        fact = facts.get(tool)
+        installed = fact.version if fact is not None else None
+        if fact is not None and not (rt / _binary_rel(tool, resolved_target)).is_file():
+            # Recorded but vanished reads as unprovisioned everywhere
+            # else; say so here too rather than reporting it as current.
+            installed = None
+        if installed != entry["version"]:
+            drift[tool] = (entry["version"], installed)
+    return drift
+
+
+class StaleManagedRuntimes(RuntimeError):
+    """A sealed install's runtime tools disagree with its pin table."""
+
+
+def require_current_runtimes(
+    project_root: Path | None = None,
+    runtime_dir: Path | None = None,
+    install_root: Path | None = None,
+) -> None:
+    """Fail fast when a SEALED install ships out-of-date runtime tools.
+
+    A git checkout provisions on demand: drift there is a normal state
+    that the next `hermes update` (or the self-heal path) resolves, and
+    raising would break the very run that fixes it.
+
+    A sealed tree cannot self-heal. Its steward — Nix, Docker, the
+    desktop bundle — builds the runtime tools as part of the artifact, so
+    drift means the artifact was assembled against a different pin table
+    than the code it ships. Every consequence of that is worse and more
+    confusing than stopping here: tools silently missing from PATH,
+    or a version the code does not expect. The steward has to rebuild.
+    """
+    root = project_root if project_root is not None else get_install_root()
+    tree = runtime_tree(root)
+    if not isinstance(tree, Sealed):
+        return
+
+    drift = stale_tools(runtime_dir=runtime_dir, install_root=install_root)
+    if not drift:
+        return
+
+    lines = [
+        f"  {tool}: pinned {pinned}, installed {installed or 'nothing'}"
+        for tool, (pinned, installed) in sorted(drift.items())
+    ]
+    raise StaleManagedRuntimes(
+        f"This Hermes is a sealed install managed by {tree.steward!r}, and its "
+        "managed runtime tools do not match runtime-pins.json:\n"
+        + "\n".join(lines)
+        + "\n\nThe artifact was built against a different pin table than the code "
+        "it ships. Rebuild it with its steward — a sealed tree cannot provision "
+        "these itself."
+    )
 
 
 def step_provision_runtimes() -> dict:

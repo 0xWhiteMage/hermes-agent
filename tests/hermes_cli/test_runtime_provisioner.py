@@ -313,6 +313,143 @@ class TestSelectiveProvisioning:
         assert [r.tool for r in results] == ["gh"]
 
 
+class TestSealedInstallStalenessGate:
+    """A sealed tree cannot provision, so drift there is fatal.
+
+    A git checkout heals itself on the next update — raising would break
+    the very run that fixes it. A Nix/Docker/desktop artifact has its
+    tools built in by its steward, so a mismatch means the artifact was
+    assembled against a different pin table than the code it ships.
+    """
+
+    def _sealed(self, root: Path, steward: str = "nix") -> Path:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "install-stamp.json").write_text(
+            json.dumps({"distribution": steward}), encoding="utf-8"
+        )
+        return root
+
+    def _current_runtime(self, rt: Path, pins_root: Path, target: str) -> None:
+        """A runtime dir that satisfies every pin in *pins_root*."""
+        facts = {}
+        for tool, entry in rr.load_pins(pins_root).items():
+            rel = rp._binary_rel(tool, target)
+            binary = rt / rel
+            binary.parent.mkdir(parents=True, exist_ok=True)
+            binary.write_text("#!/bin/sh\n")
+            facts[tool] = rr.RuntimeFact(version=entry["version"], path=rel)
+        rr.save_facts(facts, rt)
+
+    def test_a_current_sealed_install_passes(self, tmp_path, target):
+        pins = _pins_file(tmp_path / "repo", {
+            "gh": {"version": "2.97.0", "files": {
+                target: {"url": "https://example.invalid/gh.tar.gz", "sha256": "a" * 64}}},
+        })
+        rt = tmp_path / "rt"
+        self._current_runtime(rt, pins, target)
+
+        rp.require_current_runtimes(
+            project_root=self._sealed(tmp_path / "sealed"),
+            runtime_dir=rt,
+            install_root=pins,
+        )
+
+    def test_a_stale_sealed_install_refuses_with_the_drift_named(
+        self, tmp_path, target
+    ):
+        pins = _pins_file(tmp_path / "repo", {
+            "gh": {"version": "2.98.0", "files": {
+                target: {"url": "https://example.invalid/gh.tar.gz", "sha256": "a" * 64}}},
+        })
+        rt = tmp_path / "rt"
+        rel = rp._binary_rel("gh", target)
+        binary = rt / rel
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_text("#!/bin/sh\n")
+        rr.save_facts({"gh": rr.RuntimeFact(version="2.97.0", path=rel)}, rt)
+
+        with pytest.raises(rp.StaleManagedRuntimes) as excinfo:
+            rp.require_current_runtimes(
+                project_root=self._sealed(tmp_path / "sealed"),
+                runtime_dir=rt,
+                install_root=pins,
+            )
+
+        message = str(excinfo.value)
+        assert "nix" in message
+        # Naming the versions is the point: "rebuild it" is unactionable
+        # without knowing what drifted.
+        assert "2.98.0" in message and "2.97.0" in message
+
+    def test_a_git_checkout_with_the_same_drift_does_not_raise(
+        self, tmp_path, target
+    ):
+        """It provisions on demand; the next update fixes it."""
+        pins = _pins_file(tmp_path / "repo", {
+            "gh": {"version": "2.98.0", "files": {
+                target: {"url": "https://example.invalid/gh.tar.gz", "sha256": "a" * 64}}},
+        })
+        checkout = tmp_path / "checkout"
+        (checkout / ".git").mkdir(parents=True)
+
+        rp.require_current_runtimes(
+            project_root=checkout, runtime_dir=tmp_path / "empty", install_root=pins
+        )
+
+    def test_an_unprovisioned_sealed_install_refuses(self, tmp_path, target):
+        """Nothing installed at all is drift too — a sealed artifact is
+        supposed to ship its tools already built."""
+        pins = _pins_file(tmp_path / "repo", {
+            "gh": {"version": "2.97.0", "files": {
+                target: {"url": "https://example.invalid/gh.tar.gz", "sha256": "a" * 64}}},
+        })
+
+        with pytest.raises(rp.StaleManagedRuntimes, match="nothing"):
+            rp.require_current_runtimes(
+                project_root=self._sealed(tmp_path / "sealed"),
+                runtime_dir=tmp_path / "empty",
+                install_root=pins,
+            )
+
+    def test_a_recorded_but_vanished_binary_counts_as_stale(self, tmp_path, target):
+        """Every other reader treats recorded-but-missing as
+        unprovisioned; the gate must not call it current."""
+        pins = _pins_file(tmp_path / "repo", {
+            "gh": {"version": "2.97.0", "files": {
+                target: {"url": "https://example.invalid/gh.tar.gz", "sha256": "a" * 64}}},
+        })
+        rt = tmp_path / "rt"
+        # A fact, but no file behind it.
+        rr.save_facts(
+            {"gh": rr.RuntimeFact(version="2.97.0", path=rp._binary_rel("gh", target))},
+            rt,
+        )
+
+        assert rp.stale_tools(runtime_dir=rt, install_root=pins) == {
+            "gh": ("2.97.0", None)
+        }
+
+
+class TestPinsShipWithTheCode:
+    def test_a_sealed_venv_can_read_its_own_pin_table(self):
+        """`pip install .` lays out site-packages with no repo root, so
+        the table is packaged inside hermes_cli too. Without it a nix /
+        docker / desktop venv cannot read the pins it was built from —
+        which is how this was found.
+        """
+        import hermes_cli
+
+        packaged = Path(hermes_cli.__file__).resolve().parent / rr.PINS_FILENAME
+        assert packaged.is_file(), (
+            "hermes_cli/runtime-pins.json is missing — a sealed venv install "
+            "would have no pin table"
+        )
+        assert json.loads(packaged.read_text(encoding="utf-8")) == json.loads(
+            (Path(hermes_cli.__file__).resolve().parent.parent / rr.PINS_FILENAME)
+            .read_text(encoding="utf-8")
+        ), "the packaged pin table drifted from the repo's"
+
+
 class TestLayout:
     def test_windows_and_posix_binaries_land_where_readers_expect(self):
         assert rp._binary_rel("node", "win32-x64") == "node/node.exe"

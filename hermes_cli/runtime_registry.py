@@ -124,10 +124,20 @@ def pins_path(install_root: Path | None = None) -> Path:
     repo root for a checkout, the payload's repo/ dir for the desktop
     bundle) rather than ``get_install_root()`` — the install root is where
     tools get INSTALLED, and callers may point it elsewhere.
+
+    A wheel has no repo root: `pip install .` lays out site-packages with
+    no parent-level data files, so the table is also packaged INSIDE
+    hermes_cli (see the package-data entry in pyproject.toml, fed by a
+    symlink to the root file so there is still one table). Sealed venv
+    installs — uv2nix, Docker, the desktop payload's site-packages — read
+    that copy; nothing else changes.
     """
     if install_root is not None:
         return install_root / PINS_FILENAME
-    return Path(__file__).resolve().parent.parent / PINS_FILENAME
+    repo_copy = Path(__file__).resolve().parent.parent / PINS_FILENAME
+    if repo_copy.is_file():
+        return repo_copy
+    return Path(__file__).resolve().parent / PINS_FILENAME
 
 
 # Loopback http is allowed so tests can serve real archives from a local
