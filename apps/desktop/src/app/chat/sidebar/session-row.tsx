@@ -307,6 +307,10 @@ function SidebarSessionRowImpl({
     >
       <SidebarRowShell
         actions={card ? undefined : actionsNode}
+        // A hair of clearance so the trailing figure ("now") doesn't kiss the
+        // row's right edge. The kebab is absolute within the cluster, so it
+        // shifts with it and hover-swap alignment is preserved.
+        actionsClassName={card ? undefined : 'pr-0.5'}
         className={cn(
           'group row-hover relative',
           card && SIDEBAR_ROW_CARD_MIN_H,
