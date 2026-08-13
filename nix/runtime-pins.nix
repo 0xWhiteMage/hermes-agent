@@ -169,6 +169,24 @@ let
           ${node}/bin/node ${node}/lib/node_modules/npm/bin/npm-cli.js \
           install --global --prefix "$out" --offline --no-audit --no-fund \
           "$src"
+
+        # npm writes its launchers with `#!/usr/bin/env node`, which does
+        # not exist inside a Nix build sandbox — any derivation using this
+        # npm as a BUILD tool dies with "bad interpreter". Point them at
+        # the node this tool extends, which is also more correct: the
+        # pinned npm should run on the pinned node, not on whatever node
+        # a PATH lookup finds first.
+        #
+        # patchShebangs is not enough on its own here: it resolves `env
+        # node` against the build PATH, which is not necessarily the node
+        # in the pin table.
+        for launcher in "$out"/bin/*; do
+          [ -f "$launcher" ] || continue
+          case "$(head -c 2 "$launcher")" in
+            '#!') substituteInPlace "$launcher" \
+                    --replace-quiet '#!/usr/bin/env node' '#!${node}/bin/node' ;;
+          esac
+        done
         runHook postInstall
       '';
     };
@@ -182,8 +200,8 @@ let
 
   tools = lib.mapAttrs mkTool pins;
 
-  # The registry code that writes the facts, as a store path. Only the
-  # leaf modules the fact-writing imports — all pure-stdlib, so a bare
+  # The registry code, as a store path. Only the leaf modules the
+  # fact-writing and PATH assembly import — all pure-stdlib, so a bare
   # python3 loads them with no venv, and the bundle does not depend on
   # the whole repo (which would rebuild it on any source change).
   registrySrc = runCommand "hermes-runtime-registry-src" { } ''
@@ -191,6 +209,7 @@ let
     touch "$out/hermes_cli/__init__.py"
     cp ${../hermes_cli/runtime_registry.py} "$out/hermes_cli/runtime_registry.py"
     cp ${../hermes_cli/runtime_provisioner.py} "$out/hermes_cli/runtime_provisioner.py"
+    cp ${../hermes_cli/runtime_env.py} "$out/hermes_cli/runtime_env.py"
     cp ${../hermes_cli/runtime_tree.py} "$out/hermes_cli/runtime_tree.py"
     cp ${../hermes_constants.py} "$out/hermes_constants.py"
     cp ${../runtime-pins.json} "$out/runtime-pins.json"
@@ -200,11 +219,22 @@ let
   # layout, plus the `runtimes.json` facts manifest. Symlinks, so the
   # tools stay separately built and separately cached.
   #
-  # Facts are written by runtime_registry.py itself — schema version,
-  # `extends`-derived PATH order and JSON shape have one implementation,
-  # and the ordering the Python readers apply is the ordering the table
-  # declares.
-  bundle = runCommand "hermes-runtime-dir" { passthru = tools // { inherit target; }; } ''
+  # Facts are written by runtime_registry.py itself, and the PATH dirs
+  # are then read back out with runtime_env.managed_path_dirs — the same
+  # call every Hermes subprocess makes. Nix consumers take that list
+  # instead of guessing, which matters because the layout is per-tool:
+  # node/git/gh/npm expose `<tool>/bin`, uv and ripgrep put the binary at
+  # `<tool>/` directly, and lib.makeBinPath (which only ever appends
+  # /bin) silently drops the second kind.
+  bundle =
+    runCommand "hermes-runtime-dir"
+      {
+        passthru = tools // {
+          inherit target;
+          pinnedVersions = lib.mapAttrs (_: entry: entry.version) pins;
+        };
+      }
+      ''
     mkdir -p "$out"
     ${lib.concatStringsSep "\n" (
       lib.mapAttrsToList (name: drv: ''ln -s ${drv} "$out/${name}"'') tools
@@ -237,6 +267,36 @@ let
         )
 
     save_facts(facts, runtime_dir, path_order=path_order(pins))
+
+    # Emit the assembled PATH dirs and tool env for Nix consumers,
+    # straight out of the assembler every Hermes subprocess uses. Written
+    # as files rather than recomputed in Nix because both are genuinely
+    # per-tool and already encoded here: uv and ripgrep keep their binary
+    # at the tree root while the rest use bin/ (`_dirs_for`), and dugite's
+    # git needs GIT_EXEC_PATH or it cannot find its own remote helpers
+    # (`managed_tool_env`).
+    from hermes_cli.runtime_env import managed_path_dirs, managed_tool_env  # noqa: E402
+
+    dirs = managed_path_dirs(runtime_dir)
+    assert len(dirs) >= len(facts), (
+        f"assembled {len(dirs)} PATH dirs for {len(facts)} tools — "
+        "a provisioned tool contributed nothing"
+    )
+    (runtime_dir / "path-dirs").write_text(
+        "".join(f"{d}\n" for d in dirs), encoding="utf-8"
+    )
+
+    # Shell-sourceable, one `export K=V` per line. shlex.quote because a
+    # store path is well-behaved but this is going through a shell.
+    import shlex  # noqa: E402
+
+    (runtime_dir / "tool-env").write_text(
+        "".join(
+            f"export {key}={shlex.quote(value)}\n"
+            for key, value in sorted(managed_tool_env(runtime_dir).items())
+        ),
+        encoding="utf-8",
+    )
     PY
   '';
 in

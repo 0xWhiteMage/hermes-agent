@@ -105,6 +105,14 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               set -euo pipefail
               export HOME=$TMPDIR
 
+              # This check drives the venv directly, so it must set what
+              # the package's wrapper sets. A sealed venv has no repo root
+              # above site-packages, so the pin table is pointed at by
+              # HERMES_RUNTIME_PINS — the same bare-data-dir treatment as
+              # HERMES_OPTIONAL_SKILLS and HERMES_BUILD_INFO.
+              export HERMES_RUNTIME_PINS=${../runtime-pins.json}
+              export HERMES_RUNTIME_DIR=${runtimeDir}
+
               # PATH comes from the facts file, via the same assembler
               # every Hermes subprocess uses. No hand-built PATH here:
               # that would test a PATH this check invented. It is seeded

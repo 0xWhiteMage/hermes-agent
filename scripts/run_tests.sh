@@ -149,6 +149,25 @@ for _test_var in HERMES_TEST_IMAGE HERMES_TEST_WORKERS HERMES_TEST_PATHS \
   fi
 done
 
+# The managed-runtime git env travels WITH PATH. The devshell puts the
+# pinned tools on PATH, and a relocated dugite-native git needs
+# GIT_EXEC_PATH and friends to find its own helpers — forwarding one
+# without the other hands tests a git that fails on `clone` while
+# `--version` still works. These are tool locations, the same class as the
+# PATH we already forward, not credentials.
+#
+# HERMES_RUNTIME_DIR / HERMES_RUNTIME_PINS are deliberately NOT forwarded:
+# tests/conftest.py repoints the install root at a temp dir precisely so a
+# test asserting "nothing is provisioned" cannot find the developer's real
+# runtime tree. These vars only describe the git already on PATH.
+GIT_RUNTIME_ENV=()
+for _rt_var in GIT_EXEC_PATH GIT_TEMPLATE_DIR GIT_CONFIG_SYSTEM \
+  GIT_SSL_CAINFO PREFIX; do
+  if [ -n "${!_rt_var:-}" ]; then
+    GIT_RUNTIME_ENV+=("$_rt_var=${!_rt_var}")
+  fi
+done
+
 # ── Run in hermetic env ──────────────────────────────────────────────────────
 # env -i: start with empty environment, opt-in only what we need.
 # No credential var can leak — you'd have to explicitly add it here.
@@ -171,6 +190,7 @@ exec env -i \
   HOME="$HOME" \
   ${WIN_ENV[@]+"${WIN_ENV[@]}"} \
   ${TEST_ENV[@]+"${TEST_ENV[@]}"} \
+  ${GIT_RUNTIME_ENV[@]+"${GIT_RUNTIME_ENV[@]}"} \
   TZ=UTC \
   LANG=C.UTF-8 \
   LC_ALL=C.UTF-8 \

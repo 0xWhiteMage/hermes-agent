@@ -259,7 +259,18 @@ def get_runtime_dir(install_root: Path | None = None) -> Path:
     caches, and the ``runtimes.json`` facts manifest. Callers must treat
     the location as opaque and go through the runtime registry for tool
     lookup — no path literals.
+
+    ``HERMES_RUNTIME_DIR`` overrides it for packagers that BUILD the
+    runtime dir instead of provisioning it: the Nix package assembles one
+    from the pin table at build time and points here, because its install
+    root is an immutable store path that no provisioner can write to. An
+    explicit *install_root* still wins — a caller naming a root means
+    that root.
     """
+    if install_root is None:
+        override = os.environ.get("HERMES_RUNTIME_DIR", "").strip()
+        if override:
+            return Path(override)
     root = install_root if install_root is not None else get_install_root()
     return root / RUNTIME_DIR_NAME
 

@@ -21,6 +21,7 @@ import pytest
 
 from hermes_cli import runtime_provisioner as rp
 from hermes_cli import runtime_registry as rr
+from hermes_constants import get_runtime_dir
 
 
 @pytest.fixture(scope="module")
@@ -430,24 +431,69 @@ class TestSealedInstallStalenessGate:
         }
 
 
-class TestPinsShipWithTheCode:
-    def test_a_sealed_venv_can_read_its_own_pin_table(self):
-        """`pip install .` lays out site-packages with no repo root, so
-        the table is packaged inside hermes_cli too. Without it a nix /
-        docker / desktop venv cannot read the pins it was built from —
-        which is how this was found.
-        """
-        import hermes_cli
+class TestPackagedInstallsLocateTheirPins:
+    """A sealed venv has no repo root above site-packages.
 
-        packaged = Path(hermes_cli.__file__).resolve().parent / rr.PINS_FILENAME
-        assert packaged.is_file(), (
-            "hermes_cli/runtime-pins.json is missing — a sealed venv install "
-            "would have no pin table"
+    The pin table is not a Python package and is deliberately NOT shipped
+    as wheel package-data — we build wheels only for the Nix package, and
+    package-data would put the table in every wheel anyone ever builds.
+    The packager points at it instead, the same way it already points at
+    optional-skills, locales and the build stamp.
+    """
+
+    def test_the_override_locates_a_table_outside_the_source_tree(
+        self, tmp_path, monkeypatch
+    ):
+        table = tmp_path / "store" / rr.PINS_FILENAME
+        table.parent.mkdir(parents=True)
+        table.write_text(
+            json.dumps({
+                "schemaVersion": rr.PINS_SCHEMA_VERSION,
+                "tools": {"gh": {"version": "9.9.9", "files": {
+                    "any": {"url": "https://example.invalid/gh.tgz",
+                            "sha256": "a" * 64}}}},
+            }),
+            encoding="utf-8",
         )
-        assert json.loads(packaged.read_text(encoding="utf-8")) == json.loads(
-            (Path(hermes_cli.__file__).resolve().parent.parent / rr.PINS_FILENAME)
-            .read_text(encoding="utf-8")
-        ), "the packaged pin table drifted from the repo's"
+        monkeypatch.setenv("HERMES_RUNTIME_PINS", str(table))
+
+        assert rr.pins_path() == table
+        assert rr.load_pins()["gh"]["version"] == "9.9.9"
+
+    def test_an_explicit_install_root_still_wins(self, tmp_path, monkeypatch):
+        """A caller naming a root means that root — the override is for
+        installs that have no repo root at all, not a global redirect."""
+        monkeypatch.setenv("HERMES_RUNTIME_PINS", str(tmp_path / "ignored.json"))
+
+        assert rr.pins_path(tmp_path / "explicit") == (
+            tmp_path / "explicit" / rr.PINS_FILENAME
+        )
+
+    def test_without_the_override_the_repo_table_is_used(self, monkeypatch):
+        monkeypatch.delenv("HERMES_RUNTIME_PINS", raising=False)
+
+        # The checkout's own table, beside the package — unchanged
+        # behaviour for every non-packaged install.
+        assert rr.pins_path().name == rr.PINS_FILENAME
+        assert rr.load_pins()["node"]["version"]
+
+
+class TestPackagedInstallsLocateTheirRuntimeDir:
+    def test_the_override_points_at_a_prebuilt_runtime_dir(
+        self, tmp_path, monkeypatch
+    ):
+        """Nix BUILDS the runtime dir instead of provisioning one: its
+        install root is an immutable store path nothing can write to."""
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "prebuilt"))
+
+        assert get_runtime_dir() == tmp_path / "prebuilt"
+
+    def test_an_explicit_install_root_still_wins(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "ignored"))
+
+        resolved = get_runtime_dir(install_root=tmp_path / "explicit")
+
+        assert resolved.parent == tmp_path / "explicit"
 
 
 class TestLayout:

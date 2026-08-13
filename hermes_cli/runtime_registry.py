@@ -118,26 +118,27 @@ class PinnedFile:
         return self.url.rsplit("/", 1)[-1]
 
 def pins_path(install_root: Path | None = None) -> Path:
-    """Path to the repo's pin table.
+    """Path to the pin table.
 
     Pins ship WITH the code, so the default is this package's parent (the
     repo root for a checkout, the payload's repo/ dir for the desktop
     bundle) rather than ``get_install_root()`` — the install root is where
     tools get INSTALLED, and callers may point it elsewhere.
 
-    A wheel has no repo root: `pip install .` lays out site-packages with
-    no parent-level data files, so the table is also packaged INSIDE
-    hermes_cli (see the package-data entry in pyproject.toml, fed by a
-    symlink to the root file so there is still one table). Sealed venv
-    installs — uv2nix, Docker, the desktop payload's site-packages — read
-    that copy; nothing else changes.
+    ``HERMES_RUNTIME_PINS`` overrides that for packaged installs whose
+    Python lives in a sealed venv with no repo root above it. It is the
+    same bare-data-dir case as ``HERMES_OPTIONAL_SKILLS`` and
+    ``HERMES_BUILD_INFO``: the table is not a Python package, so the
+    packager ships it into its own store path and points at it. The
+    explicit *install_root* argument still wins, because a caller naming
+    a root means that root.
     """
     if install_root is not None:
         return install_root / PINS_FILENAME
-    repo_copy = Path(__file__).resolve().parent.parent / PINS_FILENAME
-    if repo_copy.is_file():
-        return repo_copy
-    return Path(__file__).resolve().parent / PINS_FILENAME
+    override = os.getenv("HERMES_RUNTIME_PINS", "").strip()
+    if override:
+        return Path(override)
+    return Path(__file__).resolve().parent.parent / PINS_FILENAME
 
 
 # Loopback http is allowed so tests can serve real archives from a local
