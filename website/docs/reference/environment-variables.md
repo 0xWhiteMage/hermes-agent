@@ -687,6 +687,7 @@ Connect Hermes to [X Chat](https://docs.x.com/xchat/introduction) — X's end-to
 | `XCHAT_ALLOW_ALL_USERS` | Allow any sender to trigger the bot (dev only — disables allowlist). |
 | `XCHAT_CONVERSATION_IDS` | Comma-separated conversation ids to poll (omit to auto-discover all conversations). |
 | `XCHAT_POLL_INTERVAL` | Seconds between event polls (default `10`, floor `2`). |
+| `XCHAT_SEND_READ_RECEIPTS` | Send read receipts for processed messages (`true`/`false`, default `false`). |
 | `XCHAT_REQUIRE_MENTION` | Ignore group-conversation messages unless they match a mention wake word (`true`/`false`, default `false`). |
 | `XCHAT_MENTION_PATTERNS` | Mention wake-word regexes for group chats (JSON list or comma/newline-separated; defaults to the Hermes wake words). |
 | `XCHAT_HOME_CHANNEL` | Default conversation/user id for cron / notification delivery. |
