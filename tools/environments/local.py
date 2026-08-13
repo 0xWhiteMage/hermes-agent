@@ -1166,6 +1166,35 @@ def _managed_runtime_path_entries() -> list[str]:
         return []
 
 
+def _apply_managed_runtime_tool_env(env: dict) -> None:
+    """Add the managed runtimes' tool env to a subshell environment.
+
+    PATH alone is not enough to make a managed tool work. The bundled git
+    (dugite-native on POSIX, PortableGit on Windows) is a RELOCATED build:
+    it resolves its helpers, templates and system config against a prefix
+    that existed on the build machine, so without GIT_EXEC_PATH and
+    friends an agent's ``git clone https://…`` fails with "'remote-http'
+    is not a git command" — while ``git --version`` keeps working, which
+    is why this hid. Dugite's own ``setupEnvironment()`` exports the same
+    set before every invocation; this is that contract, from the one
+    assembler that knows the layout.
+
+    Never overwrites a value the caller already set: a user or a
+    passthrough var pointing at their own git tooling wins.
+
+    Fail-open and resolved per call, matching
+    :func:`_managed_runtime_path_entries` — a managed tree can appear
+    mid-process, and a broken runtime dir must not break the terminal.
+    """
+    try:
+        from hermes_cli.runtime_env import managed_tool_env
+
+        for key, value in managed_tool_env().items():
+            env.setdefault(key, value)
+    except Exception:
+        return
+
+
 def _append_missing_sane_path_entries(existing_path: str) -> str:
     """Return a normalised POSIX PATH with missing sane entries appended.
 
@@ -1319,6 +1348,8 @@ def _make_run_env(env: dict) -> dict:
         # to bare ``hermes`` via the terminal tool even when the gateway was
         # launched without it on PATH (systemd, service managers, cron, etc.).
         run_env[path_key] = _prepend_hermes_bin_dir(new_path)
+
+    _apply_managed_runtime_tool_env(run_env)
 
     _inject_context_hermes_home(run_env)
 

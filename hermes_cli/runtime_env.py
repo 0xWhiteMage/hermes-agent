@@ -104,14 +104,20 @@ def managed_tool_env(runtime_dir: Path | None = None) -> dict[str, str]:
 
     - npm_config_cache: npm's package cache → install-keyed cache dir,
       only when node is managed (a system node keeps the user's ~/.npm).
-    - GIT_EXEC_PATH / GIT_TEMPLATE_DIR / GIT_CONFIG_SYSTEM / GIT_SSL_CAINFO:
-      the portable-git contract. A relocatable git finds its own helpers
-      relative to the binary, but pointing at them explicitly also makes
-      the managed git immune to a child process rewriting PATH, and stops
-      it reading /etc/gitconfig from whatever machine it landed on. Only
-      emitted for a layout that actually has these dirs (dugite-native /
-      PortableGit both do); a system git is left entirely alone, because
-      exporting GIT_EXEC_PATH at a git we do not own breaks it.
+    - GIT_EXEC_PATH / GIT_TEMPLATE_DIR / GIT_CONFIG_SYSTEM / GIT_SSL_CAINFO
+      / PREFIX: the portable-git contract, and the same set dugite's own
+      ``setupEnvironment()`` exports before every invocation. A
+      relocatable git resolves helpers, templates and config against its
+      BUILD-time prefix, so a copy running from anywhere else needs to be
+      told where it actually lives; dugite's source says so directly
+      ("when building Git for Linux and then running it from an
+      arbitrary location, you should set PREFIX"). Pointing at them
+      explicitly also makes the managed git immune to a child process
+      rewriting PATH, and stops it reading /etc/gitconfig from whatever
+      machine it landed on. Only emitted for a layout that actually has
+      these dirs (dugite-native / PortableGit both do); a system git is
+      left entirely alone, because exporting GIT_EXEC_PATH at a git we do
+      not own breaks it.
     """
     base = runtime_dir if runtime_dir is not None else get_runtime_dir()
     facts = load_facts(base)
@@ -132,6 +138,13 @@ def managed_tool_env(runtime_dir: Path | None = None) -> dict[str, str]:
             target = root / relative
             if target.exists():
                 env[key] = str(target)
+        # PREFIX is the git root itself, not a file under it, so it has
+        # no existence probe of its own — the git fact already proved the
+        # tree is there. Linux only: dugite sets it only on linux, and it
+        # is a generic-enough name that exporting it on other platforms
+        # risks colliding with unrelated build tooling.
+        if sys.platform.startswith("linux"):
+            env["PREFIX"] = str(root)
     return env
 
 
