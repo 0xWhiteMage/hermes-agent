@@ -1,4 +1,5 @@
 import { ActionBarPrimitive, BranchPickerPrimitive, MessagePrimitive, useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useCallback, useRef, useState } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
@@ -12,9 +13,16 @@ import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { StopFilled } from '@/lib/icons'
+import { profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
+import { $profileColors, $profiles } from '@/store/profile'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
 import { isWatchWindow } from '@/store/windows'
+
+/** Matches a group-chat fan-in message: `[name]: body`. The name must be a
+ *  KNOWN profile before we re-attribute the bubble — a human typing a literal
+ *  `[foo]: bar` about some log format keeps their own bubble. */
+const MEMBER_MESSAGE_RE = /^\[([\w.-]{1,64})\]:\s([\s\S]*)$/
 
 /** True when the user has a live text highlight (drag-select / triple-click). */
 export function hasTextSelection(): boolean {
@@ -153,6 +161,12 @@ export const UserMessage: FC<{
     return messageAttachmentRefs(custom.attachmentRefs)
   })
 
+  // Group-chat attribution inputs (hooks — must run unconditionally). The
+  // profile list doubles as the allow-list for `[name]:` re-attribution.
+  const knownProfiles = useStore($profiles)
+  const colorOverrides = useStore($profileColors)
+  const memberProfiles = knownProfiles.map(profile => profile.name)
+
   const [pickerOpen, setPickerOpen] = useState(false)
   const { enabled: reactionsEnabled, react, reactions: shownReactions } = useMessageReactions(messageId, 'user')
 
@@ -225,6 +239,37 @@ export const UserMessage: FC<{
         data-slot="aui_user-message-root"
       >
         <ProcessNotificationNote text={messageText.trim()} />
+      </MessagePrimitive.Root>
+    )
+  }
+
+  // Group-chat fan-in: `[name]: …` from a KNOWN profile is that member
+  // speaking, not the user — left-aligned, name-labeled, rail-tinted. Wire
+  // role stays `user` (that's the cache-safe transport), only the costume
+  // changes. Checked after hooks for the same reason as the branch above.
+  const memberMatch = MEMBER_MESSAGE_RE.exec(messageText.trim())
+  const memberName = memberMatch ? memberMatch[1]!.toLowerCase() : null
+  const isMemberMessage =
+    memberName !== null && memberProfiles.some(profile => profile.toLowerCase() === memberName)
+
+  if (isMemberMessage && memberMatch) {
+    const color = resolveProfileColor(memberMatch[1]!, colorOverrides) ?? 'var(--ui-text-secondary)'
+
+    return (
+      <MessagePrimitive.Root
+        className="flex w-full min-w-0 flex-col items-start gap-0.5"
+        data-role="user"
+        data-slot="aui_member-message-root"
+      >
+        <span className="px-1 text-[11px] font-medium" style={{ color }}>
+          {memberMatch[1]}
+        </span>
+        <div
+          className="max-w-[85%] rounded-2xl px-3 py-1.5 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95"
+          style={{ backgroundColor: profileColorSoft(color, 10) }}
+        >
+          <UserMessageText className="wrap-anywhere" text={memberMatch[2] ?? ''} />
+        </div>
       </MessagePrimitive.Root>
     )
   }

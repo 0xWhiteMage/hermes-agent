@@ -56,6 +56,8 @@ import { requestComposerInsert } from './composer/focus'
 import { droppedFileInlineRefs } from './composer/inline-refs'
 import { useComposerScope } from './composer/scope'
 import type { ChatBarState } from './composer/types'
+import { GroupMemberStrip } from './group-member-strip'
+import { GroupTypingLine } from './group-typing-line'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { type DragKind, useFileDropZone } from './hooks/use-file-drop-zone'
 import { ProfileTag } from './profile-tag'
@@ -149,6 +151,7 @@ function ChatHeader({
         }}
       >
         {showProfileTag && <ProfileTag className="pointer-events-auto mr-1.5" profile={activeStoredSession?.profile} />}
+        <GroupMemberStrip sessionId={selectedSessionId || activeSessionId} />
         <SessionActionsMenu
           align="start"
           onDelete={selectedSessionId ? onDeleteSelectedSession : undefined}
@@ -605,6 +608,7 @@ export const ChatView = memo(function ChatView({
             states stay mounted here, so dock⇄float never remounts the editor. */}
         {showChatBar && (
           <Suspense fallback={<ChatBarFallback />}>
+            <GroupTypingLine sessionId={activeSessionId} />
             <ChatBar
               busy={busy}
               cwd={currentCwd}
