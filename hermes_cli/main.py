@@ -4799,6 +4799,8 @@ _LAZY_COMMAND_EXPORTS = {
         "_resume_windows_gateways_after_update",
         "_run_logged_subprocess",
         "_run_pre_update_backup",
+        "_cron_script_holder_pids",
+        "_wait_for_cron_script_holders",
         "_run_update_phase_inline",
         "_spawn_post_update_phase",
         "_service_unit_supports_graceful_sigusr1_restart",
