@@ -4858,6 +4858,8 @@ _LAZY_COMMAND_EXPORTS = {
         "_resume_windows_gateways_after_update",
         "_run_logged_subprocess",
         "_run_pre_update_backup",
+        "_run_update_phase_inline",
+        "_spawn_post_update_phase",
         "_service_unit_supports_graceful_sigusr1_restart",
         "_should_skip_upstream_prompt",
         "_stash_apply_failed_only_on_existing_untracked",
@@ -5707,13 +5709,23 @@ def cmd_version(args):
 
 
 def cmd_uninstall(args):
-    """Uninstall Hermes Agent (or just the Chat GUI with --gui)."""
+    """Uninstall Hermes Agent (or just the Chat GUI / user data)."""
     # Machine-readable install snapshot for the desktop app's uninstall UI.
     # Must run before any TTY gate — it's called from a non-interactive child.
     if getattr(args, "gui_summary", False):
         from hermes_cli.gui_uninstall import gui_install_summary
 
         print(json.dumps(gui_install_summary()))
+        return
+
+    # Data-only removal. Valid on every install kind (source, bundled
+    # desktop app, Nix, Docker) — it never touches code.
+    if getattr(args, "data", False):
+        if not getattr(args, "yes", False):
+            _require_tty("uninstall --data")
+        from hermes_cli.uninstall import run_data_uninstall
+
+        run_data_uninstall(args)
         return
 
     # GUI-only uninstall. The desktop app shells out to this non-interactively
@@ -5812,6 +5824,15 @@ def _sweep_stale_bytecode_if_checkout_changed() -> None:
     ``hermes`` entry point compares the checkout fingerprint (cheap file
     reads, no git subprocess) against the last-validated stamp and sweeps
     the bytecode cache once when they diverge.
+
+    Scope (two-axis model): the sweep runs wherever ``.git`` exists —
+    managed installs AND dev trees. Dev trees accept the tradeoff on
+    purpose: the sweep writes ``.bytecode-fingerprint`` (gitignored) into
+    the tree and deletes ``__pycache__`` dirs, and skipping dev trees
+    would reopen the stale-pyc hole for everyone who lives in a checkout.
+    Sealed trees (embedded desktop, docker, nix) are exempt by
+    construction: no ``.git`` means no fingerprint, and the embedded app
+    also points PYTHONPYCACHEPREFIX outside its sealed resources.
 
     Never raises — a failure here must not block launch.
     """
@@ -9928,11 +9949,71 @@ def cmd_update(args):
     # A random source checkout (a .git tree outside the managed install
     # roots) is somebody's working tree. `hermes update` would stash local
     # changes and yank it to the update branch — refuse and point at git.
-    # --eject on a source tree is also a no-op, so refuse before it too.
     if install_method == "source":
         print(f"✗ This is a git checkout at {PROJECT_ROOT},")
         print("  not the managed install. Update it like any working tree:")
         print("    git pull")
+        sys.exit(1)
+
+    # --install-id / --set-channel work on any non-external install and
+    # never touch the tree — handle them before the sealed refusal so the
+    # desktop About page and channel switching work from a bundled CLI.
+    if getattr(args, "install_id", False):
+        from hermes_cli.update_channel import install_id
+
+        print(f"{install_id(PROJECT_ROOT)} ({PROJECT_ROOT})")
+        sys.exit(0)
+
+    if getattr(args, "set_channel", None):
+        from hermes_cli.update_channel import (
+            CHANNEL_NIGHTLY,
+            CHANNEL_STABLE,
+            nightly_normalized_note,
+            set_install_channel,
+        )
+
+        try:
+            sha16 = set_install_channel(args.set_channel, PROJECT_ROOT)
+        except ValueError as exc:
+            print(f"✗ {exc}")
+            sys.exit(1)
+        print(f"✓ Channel '{args.set_channel}' recorded for install {sha16}.")
+        if args.set_channel == CHANNEL_NIGHTLY:
+            if install_method == "git":
+                print(nightly_normalized_note())
+            else:
+                print("⚠ Nightly builds move fast: expect forward-incompatible")
+                print("  state — data written by newer code may not load in stable.")
+        elif args.set_channel == CHANNEL_STABLE:
+            # Honest wait: a nightly build outversions today's stable, and
+            # the updater never downgrades. Say when the switch takes
+            # effect, and where the impatient path is.
+            from installation.tree import read_build_info
+
+            try:
+                version = read_build_info(Path(PROJECT_ROOT)).get("displayVersion") or ""
+            except RuntimeError:
+                version = ""
+            if "-nightly." in version:
+                base = version.split("-nightly.")[0]
+                print(f"→ You are on {version}. Stable updates resume once a")
+                print(f"  stable release reaches v{base} — until then this install")
+                print("  stays where it is. To switch now, reinstall stable:")
+                print("  https://hermes-agent.nousresearch.com/")
+                print("  (Nightly state may not load in older stable builds.)")
+        sys.exit(0)
+
+    # The sealed desktop payload runs the agent out of the app's signed
+    # resources; `hermes update` must refuse BEFORE any mutation. The
+    # stamp-derived install method is the whole guard (kshitijk4poor's
+    # live repro: a manifest-keyed guard defaulted a missing manifest to
+    # "source" and staged 107 MB of *.hermes-update-staging debris INTO
+    # the signed app resources). A sealed tree cannot provision itself;
+    # the steward owns it.
+    if install_method == "desktop-app":
+        from installation.tree import steward_update_message
+
+        print(steward_update_message("desktop-app"))
         sys.exit(1)
 
     if getattr(args, "check", False):

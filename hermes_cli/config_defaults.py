@@ -2682,6 +2682,23 @@ DEFAULT_CONFIG = {
         "backup_count": 3,     # Number of rotated backup files to keep
     },
 
+    # Settings for the update pipeline.
+    "update": {
+        # Per-install channel records, written by `hermes update
+        # --set-channel <main|stable|nightly>` from inside an install:
+        #   installs:
+        #     <sha16>:                 # install id (`hermes update --install-id`)
+        #       path: /path/to/install # data, for humans + doctor GC
+        #       channel: nightly
+        # There is NO home-global channel key: one config.yaml serves many
+        # installs (host + docker + desktop share ~/.hermes), and a global
+        # flip would retarget all of them at once. Unconfigured installs
+        # default by mechanism: source checkouts track main, desktop
+        # bundles track stable. Installs updated by an external steward
+        # (nix, docker, app stores) have no channel at all.
+        "installs": {},
+    },
+
     # Remotely-hosted model catalog manifest.  When enabled, the CLI fetches
     # curated model lists for OpenRouter and Nous Portal from this URL,
     # falling back to the in-repo snapshot on network failure.  Lets us

@@ -237,6 +237,39 @@ def _safe_which(cmd: str) -> str | None:
     except Exception:
         return None
 
+    _check_channel_record_hygiene()
+
+
+def _check_channel_record_hygiene() -> None:
+    """Stale per-install channel records (``update.installs.<sha16>``).
+
+    Same report-don't-delete posture as the state sweep. Three shapes
+    (hermes_cli.update_channel.stale_channel_records): a record whose path
+    holds a DIFFERENT install now (``replaced``), a record whose path is
+    gone (``missing``), and a record no live install-state folder claims
+    (``unclaimed``). Keep-on-doubt: doctor names the config key, the user
+    removes it.
+    """
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.update_channel import stale_channel_records
+
+        stale = stale_channel_records(load_config() or {})
+    except Exception as exc:
+        check_warn("Channel-record hygiene unreadable", f"({exc})")
+        return
+    if not stale:
+        return
+    for sha16, record, reason in stale:
+        recorded = record.get("path") or "<no path>"
+        if reason == "replaced":
+            detail = f"(the install at {recorded} is a different install now — stale channel entry)"
+        elif reason == "missing":
+            detail = f"(nothing at {recorded} — safe to remove update.installs.{sha16})"
+        else:  # unclaimed
+            detail = f"(no live install claims {sha16} — safe to remove update.installs.{sha16})"
+        check_warn(f"Stale channel record: {sha16}", detail)
+
 
 def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
     steps: list[str] = []
@@ -673,6 +706,77 @@ def _check_s6_supervision(issues: list[str]) -> None:
         f"Per-profile gateways: {up_count}/{len(profiles)} supervised up"
         + (f" ({', '.join(sorted(profiles))})" if len(profiles) <= 8 else "")
     )
+
+
+def check_legacy_desktop_checkout() -> None:
+    """Report the unused legacy checkout under an embedded desktop install.
+
+    Before the embedded runtime existed, the desktop app installed a git
+    checkout at $HERMES_HOME/hermes-agent. An embedded app never uses it,
+    so it sits on disk (1-2 GB of tree + venv). Doctor reports it and
+    suggests deletion ONLY when the tree is demonstrably untouched: clean
+    status, on main, no stashes. A false "dirty" is safe (the user keeps a
+    clean tree); a false "pristine" is not (the suggestion could cost
+    local work). Doctor never deletes anything itself.
+    """
+    from hermes_cli.runtime_tree import Sealed, runtime_tree
+
+    try:
+        from hermes_cli.main import PROJECT_ROOT
+    except Exception:
+        return
+
+    tree = runtime_tree(Path(PROJECT_ROOT))
+    if not (isinstance(tree, Sealed) and tree.steward == "desktop-app"):
+        return
+
+    checkout = HERMES_HOME / "hermes-agent"
+    if not (checkout / ".git").exists():
+        return
+
+    _section("Legacy Desktop Checkout")
+
+    def _git(*args: str):
+        try:
+            return subprocess.run(
+                ["git", "-C", str(checkout), *args],
+                capture_output=True, text=True, encoding="utf-8", timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    status = _git("status", "--porcelain")
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+    stashes = _git("stash", "list")
+
+    # Conservative pristineness: every probe must succeed AND come back
+    # clean. Any probe failure counts as "has local work".
+    pristine = (
+        status is not None and status.returncode == 0 and status.stdout.strip() == ""
+        and branch is not None and branch.returncode == 0 and branch.stdout.strip() == "main"
+        and stashes is not None and stashes.returncode == 0 and stashes.stdout.strip() == ""
+    )
+
+    size_note = ""
+    try:
+        total = sum(f.stat().st_size for f in checkout.rglob("*") if f.is_file())
+        size_note = f" (~{total / 1_000_000_000:.1f} GB)"
+    except OSError:
+        pass
+
+    if pristine:
+        check_warn(
+            f"Unused checkout at {_DHH}/hermes-agent{size_note}",
+            "(the desktop app runs embedded and does not use it)",
+        )
+        print(f"    The tree is pristine. You can delete it to free the space:")
+        print(f"      rm -rf {checkout}")
+    else:
+        check_info(
+            f"A checkout exists at {_DHH}/hermes-agent but holds local work "
+            "(changes, a branch, or stashes). The desktop app does not use "
+            "it; review it before you remove anything."
+        )
 
 
 def check_certificates(should_fix: bool = False, issues: "list | None" = None) -> None:
@@ -1647,6 +1751,8 @@ def run_doctor(args):
                 check_info(xai_oauth_status["error"])
     except Exception:
         pass
+
+    check_legacy_desktop_checkout()
 
     _section("Directory Structure")
     hermes_home = HERMES_HOME
