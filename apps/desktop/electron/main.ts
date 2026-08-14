@@ -113,6 +113,7 @@ import {
 } from './connection-registry'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
+import { type DeepLinkRoute, deepLinkScheme, routeDeepLink } from './deep-link-route'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
 import { installDesktopPluginFromGit, probePluginRepo } from './desktop-plugin-install'
@@ -245,6 +246,7 @@ import {
   runPrimaryBackendStartup
 } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
+import { PRODUCT_IDENTITY } from './product-identity'
 import {
   assertLocalProfileCanStart,
   decideProfileDeleteAction,
@@ -752,7 +754,10 @@ const BOOT_FAKE_STEP_MS = (() => {
   return Math.max(120, raw)
 })()
 
-const APP_NAME = process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
+// The app name keys Electron's userData dir and the single-instance lock,
+// so it comes from the baked product identity (light/normal hermes must not share state).
+// The env override is a dev-only escape hatch.
+const APP_NAME: string = process.env.HERMES_DESKTOP_APP_NAME || PRODUCT_IDENTITY.appNamePascal
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 
@@ -15738,9 +15743,15 @@ ipcMain.handle('hermes:vscode-theme:search', async (_event, query) => searchMark
 // running app. Three delivery paths: macOS 'open-url',
 // Win/Linux running-app 'second-instance' (argv), Win/Linux cold-start argv.
 // ---------------------------------------------------------------------------
-const HERMES_PROTOCOL = DEV_SERVER ? 'hermes-dev' : 'hermes'
+// Variant-owned scheme (hermes:// vs hermes-light://): side-by-side installs
+// must not fight over one OS handler registration. Contract with the build:
+// deep-link-route.ts deepLinkScheme. Dev (`HERMES_DESKTOP_DEV_SERVER`)
+// registers hermes-dev:// instead — bare Electron or a stale OS handler
+// often owns the production scheme on dev machines.
+const VARIANT_PROTOCOL: string = deepLinkScheme(INSTALL_STAMP?.payload)
+const HERMES_PROTOCOL: string = DEV_SERVER ? 'hermes-dev' : VARIANT_PROTOCOL
 /** Schemes accepted when parsing inbound URLs (dev accepts both). */
-const DEEPLINK_SCHEMES = DEV_SERVER ? ['hermes-dev', 'hermes'] : ['hermes']
+const DEEPLINK_SCHEMES: string[] = DEV_SERVER ? ['hermes-dev', VARIANT_PROTOCOL] : [VARIANT_PROTOCOL]
 let _pendingDeepLink = null
 let _rendererReadyForDeepLink = false
 
@@ -15783,6 +15794,23 @@ function handleDeepLink(url) {
     params[k] = v
   })
   const payload = { kind, name, params }
+
+  const route: DeepLinkRoute = routeDeepLink(kind, name)
+
+  if (route === 'ignore') {
+    return
+  }
+
+  // The Windows Copilot hardware key fires this
+  if (route === 'quick-entry') {
+    // open-url can deliver pre-ready; BrowserWindow needs ready.
+    void app.whenReady().then(() => {
+      showQuickEntryWindow()
+      rememberLog('[deeplink] copilot key: quick entry summoned')
+    })
+
+    return
+  }
 
   if (!_rendererReadyForDeepLink || !mainWindow || mainWindow.isDestroyed()) {
     _pendingDeepLink = payload
