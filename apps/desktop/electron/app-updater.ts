@@ -16,6 +16,7 @@
 import type { AppUpdater } from 'electron-updater'
 
 import type { ArtifactKind } from './install-stamp'
+import { PRODUCT_IDENTITY } from './product-identity'
 
 export interface UpdaterGateFacts {
   stampPayload: ArtifactKind
@@ -89,6 +90,11 @@ let cachedUpdater: AppUpdater | null = null
  * the function so thin builds and tests never pay for the module load.
  * autoDownload stays off: the renderer asks the user before the download
  * starts (same consent model as the git path).
+ * autoInstallOnAppQuit stays off too: a quit-time install would skip the
+ * pre-install backend teardown in applyAppUpdate, and on Windows a
+ * surviving backend grandchild keeps files in the install directory
+ * locked while the installer replaces it. Installs happen only through
+ * applyAppUpdate.
  */
 export function getAutoUpdater(): AppUpdater {
   if (cachedUpdater) {
@@ -98,7 +104,7 @@ export function getAutoUpdater(): AppUpdater {
   const { autoUpdater } = require('electron-updater') as { autoUpdater: AppUpdater }
 
   autoUpdater.autoDownload = false
-  autoUpdater.autoInstallOnAppQuit = true
+  autoUpdater.autoInstallOnAppQuit = false
   cachedUpdater = autoUpdater
 
   return autoUpdater
@@ -113,9 +119,13 @@ export async function checkAppUpdate(
 
   // electron-updater's channel property selects which <channel>.yml the
   // check reads. Set it on every check: the user can flip the per-install
-  // record between two checks of one app session. allowPrerelease rides
-  // along — nightly artifacts publish as GitHub prereleases.
-  updater.channel = channel === 'nightly' ? 'nightly' : null
+  // record between two checks of one app session. The nightly feed name is
+  // per-variant (nightly.yml for Hermes, light-nightly.yml for Light);
+  // null restores the baked default (latest.yml / light.yml — whatever
+  // app-update.yml says). allowPrerelease rides along — nightly artifacts
+  // publish as GitHub prereleases.
+  updater.channel =
+    channel === 'nightly' ? (PRODUCT_IDENTITY.light ? 'light-nightly' : 'nightly') : null
   updater.allowPrerelease = channel === 'nightly'
 
   const result = await updater.checkForUpdates()
@@ -125,11 +135,21 @@ export async function checkAppUpdate(
 
 /**
  * Download the update, then quit and install. `onProgress` receives percent
- * values from electron-updater's download events. The returned promise
+ * values from electron-updater's download events. `beforeInstall` runs after
+ * the download completes and before quitAndInstall — the caller uses it for
+ * backend teardown that must happen while the process is still alive (on
+ * Windows a surviving backend grandchild keeps files in the install
+ * directory locked while the installer replaces it). The returned promise
  * resolves after the download; quitAndInstall exits the process.
+ *
+ * `updater` is injectable so vitest can assert the ordering contract
+ * (download → beforeInstall → quitAndInstall) without electron-updater.
  */
-export async function applyAppUpdate(onProgress?: (percent: number) => void): Promise<{ ok: true }> {
-  const updater = getAutoUpdater()
+export async function applyAppUpdate(
+  onProgress?: (percent: number) => void,
+  beforeInstall?: () => void | Promise<void>,
+  updater: AppUpdater = getAutoUpdater()
+): Promise<{ ok: true }> {
   const handler = onProgress ? (p: { percent: number }) => onProgress(p.percent) : null
 
   if (handler) {
@@ -145,6 +165,10 @@ export async function applyAppUpdate(onProgress?: (percent: number) => void): Pr
     if (handler) {
       updater.removeListener('download-progress', handler)
     }
+  }
+
+  if (beforeInstall) {
+    await beforeInstall()
   }
 
   updater.quitAndInstall()
