@@ -216,7 +216,7 @@ import {
 import { cursorPointInWindow } from './hud-cursor'
 import { buildHudWindowUrl } from './hud-url'
 import { imageContextMenuItems } from './image-context-menu'
-import { INSTALL_STAMP } from './install-stamp'
+import { INSTALL_STAMP, installShape } from './install-stamp'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import {
   installLinuxDesktopEntry,
@@ -342,7 +342,8 @@ import {
   sandboxPreflight
 } from './update-relaunch'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
-import { classifyUpdateRoot, managedInstallRoots, unmanagedCheckoutMessage } from './update-root-policy'
+import { classifyUpdateRoot, unmanagedCheckoutMessage } from './update-root-policy'
+import type { UpdateRootKind } from './update-root-policy'
 import {
   resolveStagedUpdaterBinary,
   resolveUpdateScriptHandoff,
@@ -2720,23 +2721,24 @@ function resolveUpdateRoot() {
 
 // Mirror the CLI's dev-tree guard (installation/tree.py): the desktop's
 // git update flow stashes local changes and moves the checkout to the update
-// branch, which is only ever correct on the installer-created checkout at a
-// managed root. A checkout anywhere else (a pinned worktree, a dev clone) is
-// somebody's working tree — refuse and point at git, exactly like
-// `hermes update` does.
-function classifyResolvedUpdateRoot(updateRoot) {
+// branch, which is only ever correct on a checkout whose install stamp says
+// `updateMechanism: "self"` (installer-created / adopted). A checkout without
+// that stamp (a pinned worktree, a dev clone) is somebody's working tree —
+// refuse and point at git, exactly like `hermes update` does.
+function classifyResolvedUpdateRoot(updateRoot: string): UpdateRootKind {
   return classifyUpdateRoot(updateRoot, {
     isGitCheckout,
-    managedRoots: managedInstallRoots(HERMES_HOME, path.join),
-    canonicalize: p => {
+    readStamp: (root: string): { updateMechanism?: string } | null => {
       try {
-        return fs.realpathSync(p)
+        // Strip a BOM before parsing — Windows tooling adds one (the CLI
+        // readers use utf-8-sig for the same reason).
+        const raw = fs.readFileSync(path.join(root, 'install-stamp.json'), 'utf8')
+        const parsed: unknown = JSON.parse(raw.replace(/^\uFEFF/, ''))
+        return parsed && typeof parsed === 'object' ? (parsed as { updateMechanism?: string }) : null
       } catch {
-        return path.resolve(p)
+        return null
       }
-    },
-    // Windows and default macOS filesystems are case-insensitive.
-    caseInsensitive: IS_WINDOWS || IS_MAC
+    }
   })
 }
 
@@ -3674,22 +3676,6 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
   }
 
   // Bundled installs: download the new app from the GitHub Releases feed,
-  // then quit and install. After the relaunch, the marker-tag mismatch
-  // triggers the offline agent rebuild — no git, no venv mutation while
-  // the app runs, and the Windows setup-binary handoff is unnecessary.
-  if (bundledUpdaterActive()) {
-    updateInFlight = true
-
-    try {
-      return await applyAppUpdate(percent =>
-        emitUpdateProgress({ stage: 'download', message: 'Downloading the app update…', percent })
-      )
-    } finally {
-      updateInFlight = false
-    }
-  }
-
-  // Bundled installs: download the new app from the GitHub Releases feed,
   // then quit and install. The swapped-in app carries the new runtime in
   // its own resources — no git, no venv mutation while the app runs, and
   // the Windows setup-binary handoff is unnecessary. Before quitAndInstall,
@@ -3697,6 +3683,10 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
   // (a pty shell, an MCP server) holds executables inside the install
   // directory the installer is about to replace — the same lock class the
   // git path handles in releaseBackendLockForUpdate.
+  //
+  // (This block was previously duplicated; the copy WITHOUT the Windows
+  // teardown returned first and made the teardown dead code — a bundled
+  // Windows update raced its own children. One block now, teardown kept.)
   if (bundledUpdaterActive()) {
     updateInFlight = true
 
@@ -5055,14 +5045,43 @@ function createEmbeddedBackend(backendArgs) {
 }
 
 function resolveHermesBackend(backendArgs) {
-  // 0. Embedded runtime — an Embedded artifact ALWAYS runs the backend out
-  //    of its own resources. No checkout examination, no contest: backend
-  //    selection is a constant of the artifact. Checkouts on the machine
-  //    belong to the CLI and are never consulted here. The
-  //    HERMES_DESKTOP_HERMES_ROOT escape hatch still wins — it exists
-  //    precisely to point a packaged app at a developer checkout.
+  // 0. The install shape decides the whole ladder (A.6): the stamp is
+  //    the authority, filesystem probes are only integrity checks
+  //    INSIDE the chosen shape. A bundled artifact ALWAYS runs the
+  //    backend out of its own resources — no checkout examination, no
+  //    contest. Checkouts on the machine belong to the CLI and are
+  //    never consulted here. The HERMES_DESKTOP_HERMES_ROOT escape
+  //    hatch still wins — it exists precisely to point a packaged app
+  //    at a developer checkout.
   const overrideRoot = process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT)
-  const payload = overrideRoot ? null : embeddedPayload()
+
+  if (!overrideRoot && installShape() === 'bundled') {
+    // Integrity check within the shape — NOT a shape probe. The stamp
+    // says bundled; a payload that fails to resolve or yields no
+    // runnable interpreter is a damaged artifact. Do NOT fall through
+    // to a checkout: a silent fallback hides the build defect.
+    const payload = embeddedPayload()
+
+    if (payload) {
+      const backend = createEmbeddedBackend(backendArgs)
+
+      if (backend) {
+        rememberLog(`[embedded] running from the app bundle (${payload.tag || 'untagged'})`)
+
+        return backend
+      }
+    }
+
+    throw new Error(
+      `The embedded runtime at ${payload ? payload.dir : path.join(process.resourcesPath, 'agent-payload')} is damaged ` +
+        '(missing payload or no runnable CPython). Reinstall Hermes from the website.'
+    )
+  }
+
+  // Pre-stamp bundled artifacts (or stampless dev runs of one): the
+  // payload probe still recognises them so an old artifact keeps
+  // booting, but new artifacts are expected to carry the stamp.
+  const payload = overrideRoot || installShape() === 'bundled' ? null : embeddedPayload()
 
   if (payload) {
     const backend = createEmbeddedBackend(backendArgs)
@@ -12992,6 +13011,22 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
   // transient backend errors on a perfectly healthy install, and deleting the
   // marker in that case stranded the app in first-run setup with no way back
   // (#72166). The explicit flag carries the intent instead.
+  //
+  // On a BUNDLED artifact this whole ladder is checkout machinery aimed
+  // at a venv that does not exist: hard-reinstall escalation would run
+  // an installer the artifact does not own (A.6). The sealed payload is
+  // only replaceable by electron-updater/reinstall, so repair degrades
+  // to the soft restart rung and never escalates.
+  if (installShape() === 'bundled') {
+    rememberLog('[bootstrap] repair requested on a bundled artifact — soft restart only (sealed payload; reinstall replaces it)')
+    bootstrapRepairRequested = false
+    bootstrapFailure = null
+    backendStartFailure = null
+    remoteReauthFailure = null
+    resetHermesConnection()
+    return { ok: true }
+  }
+
   bootstrapRepairAttempt += 1
 
   // Probe the live backend process so the guard can distinguish "venv is
