@@ -311,11 +311,21 @@ class TestRealPinTable:
             assert not version.endswith(".x"), tool
             assert not version.startswith(">="), tool
 
-    def test_digests_are_unique_per_target(self):
-        """Copy-paste is the likely failure when hand-editing 30 digests,
-        and a duplicated digest means one target downloads the wrong
-        file and fails verification. A tool pinning one 'any' artifact
-        has nothing to copy-paste wrong."""
+    def test_digests_and_urls_agree_in_both_directions(self):
+        """Copy-paste is the likely failure when hand-editing 30 digests.
+
+        The bug that matters is a digest pasted onto the WRONG url: that
+        target then downloads a file whose bytes cannot match, and fails
+        verification. So the rule is a bijection rather than plain
+        uniqueness -- one url has one digest, and one digest belongs to
+        one url.
+
+        Two targets legitimately share a row when upstream ships no build
+        for one of them: camoufox has no Windows arm64 artifact, so
+        win32-arm64 points at the x86_64 zip and runs it emulated. Same
+        url, same digest, deliberately -- the aliasing is visible in the
+        url, which is exactly what a copy-paste error is not.
+        """
         for tool, entry in rr.load_pins().items():
             by_url: dict[str, str] = {}
             by_digest: dict[str, str] = {}
