@@ -762,7 +762,7 @@ export function ContribController() {
       <ContribWiring>
         <ShellContextMenu>
           <div
-            className="flex h-screen min-h-0 w-screen flex-col bg-(--ui-bg-chrome) text-(--ui-text-primary)"
+            className="flex h-screen min-h-0 w-full flex-col bg-(--ui-bg-chrome) text-(--ui-text-primary)"
             style={{ '--titlebar-height': '0px' } as CSSProperties}
           >
             {/* Title bar: fixed chrome outside the grid, composable via slots.

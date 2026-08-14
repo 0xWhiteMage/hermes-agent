@@ -95,5 +95,14 @@ export function watchPenDrawer(): () => void {
     root.style.marginLeft = edge === 'left' && size > 0 ? `${size}px` : ''
     root.style.marginRight = edge === 'right' && size > 0 ? `${size}px` : ''
     root.style.marginBottom = edge === 'bottom' && size > 0 ? `${size}px` : ''
+
+    // Margins don't reach vw-derived widths (the titlebar header cap), so the
+    // inset is also published as a var for calc() consumers.
+    for (const side of ['left', 'right', 'bottom'] as const) {
+      document.documentElement.style.setProperty(
+        `--hermes-drawer-${side}`,
+        edge === side && size > 0 ? `${size}px` : '0px'
+      )
+    }
   })
 }

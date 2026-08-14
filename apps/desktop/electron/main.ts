@@ -1209,7 +1209,7 @@ function openPenDrawer(docId) {
     }
   })
 
-  view.setBackgroundColor('#1e1e1e')
+  view.setBackgroundColor(getWindowBackgroundColor())
   host.contentView.addChildView(view)
 
   penDrawer = { docId, grewBy, host, size, view }
