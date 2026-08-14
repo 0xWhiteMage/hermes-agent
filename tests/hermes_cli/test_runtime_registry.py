@@ -270,7 +270,7 @@ class TestRecordedPathOrder:
 class TestRealPinTable:
     """The shipped table, as a contract rather than a snapshot."""
 
-    def test_every_tool_resolves_on_every_supported_target(self):
+    def test_every_tool_resolves_or_declares_its_gap_on_every_target(self):
         expected = {
             "darwin-arm64",
             "darwin-x64",
