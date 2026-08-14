@@ -118,6 +118,30 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     }
   },
   getBootProgress: () => ipcRenderer.invoke('hermes:boot-progress:get'),
+  // Pen canvas (pen.dev): main hosts the user's installed pen.dev editor in a
+  // chromeless window attached to the app (pen-canvas.ts + main.ts pen block).
+  // The renderer gets status, open/close doors, the agent tool proxy, and a
+  // host-event feed.
+  pen: {
+    status: () => ipcRenderer.invoke('hermes:pen:status'),
+    open: options => ipcRenderer.invoke('hermes:pen:open', options),
+    close: docId => ipcRenderer.invoke('hermes:pen:close', docId),
+    tool: (name, payload) => ipcRenderer.invoke('hermes:pen:tool', name, payload),
+    onEvent: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:pen:event', listener)
+
+      return () => ipcRenderer.removeListener('hermes:pen:event', listener)
+    },
+    // Drawer inset feed: main tells this window how much of its content strip
+    // a native drawer view occupies, so the app pins its layout to the rest.
+    onDrawerChanged: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:drawer:changed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:drawer:changed', listener)
+    }
+  },
   getConnectionConfig: profile => ipcRenderer.invoke('hermes:connection-config:get', profile),
   saveConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:save', payload),
   applyConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:apply', payload),

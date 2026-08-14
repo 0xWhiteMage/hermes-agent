@@ -27,7 +27,8 @@ import {
   screen,
   session,
   shell,
-  systemPreferences
+  systemPreferences,
+  WebContentsView
 } from 'electron'
 import nodePty from 'node-pty'
 
@@ -153,6 +154,7 @@ import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
+import { drawerStripBounds, expandForDrawer, shrinkAfterDrawer } from './native-drawer'
 import {
   oauthGuardMayHardFail,
   oauthSessionIsLive,
@@ -173,6 +175,18 @@ import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { createKeepAwake } from './power-save'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
+import {
+  bindPenWebview,
+  closeDocument as closePenDocument,
+  handlePenProtocolRequest,
+  onPenEvent,
+  openPenCanvas,
+  PEN_PROTOCOL,
+  penCanvasUrl,
+  penStatus,
+  runPenTool,
+  shutdownPenHost
+} from './pen-canvas'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import { fetchPrimaryProfileSessions } from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
@@ -1052,6 +1066,20 @@ protocol.registerSchemesAsPrivileged([
       stream: true,
       supportFetchAPI: true
     }
+  },
+  {
+    // The pen.dev canvas editor bundle, served out of the user's installed
+    // Pen.app (see pen-canvas.ts). Standard+secure so the editor's module
+    // scripts, wasm fetches, and worker spawns behave like an https origin —
+    // the same privileges Pen's own `pencil://` scheme claims.
+    scheme: PEN_PROTOCOL,
+    privileges: {
+      corsEnabled: true,
+      secure: true,
+      standard: true,
+      stream: true,
+      supportFetchAPI: true
+    }
   }
 ])
 
@@ -1080,6 +1108,181 @@ function registerMediaProtocol() {
       bypassCustomProtocolHandlers: true,
       headers: request.headers
     })
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Pen canvas (pen.dev) — hermes hosts the user's installed pen.dev editor.
+// All the host logic lives in pen-canvas.ts; this block is the Electron doors:
+// the protocol, the IPC surface, and the canvas DRAWER.
+//
+// The drawer is ONE window, not two: opening a canvas GROWS the main window
+// rightward and mounts a WebContentsView over the new strip, while the
+// renderer pins its own content to the original width via the
+// --hermes-drawer-right margin (hermes:drawer:changed). One shadow, one
+// rounded rect — the canvas reads as part of the chrome. The editor owns
+// every pixel of its strip (geometry: native-drawer.ts); the app's layout,
+// statusbar, and sidebars never reflow. Closing shrinks the window back.
+// ---------------------------------------------------------------------------
+
+const PEN_PRELOAD_PATH = path.join(APP_ROOT, 'dist', 'pen-preload.cjs')
+
+// Default drawer depth — enough for pen's panels plus a real drawing area.
+const PEN_CANVAS_WIDTH = 960
+const PEN_DRAWER_EDGE = 'right'
+
+// One drawer per host window (v1: the primary). docId → view state.
+let penDrawer = null
+
+function registerPenProtocol() {
+  protocol.handle(PEN_PROTOCOL, request => handlePenProtocolRequest(request, electronNet))
+}
+
+function broadcastPenEvent(event, payload) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('hermes:pen:event', { event, payload })
+    }
+  }
+}
+
+/** Tell the host window's renderer how much of the content area the drawer
+ *  occupies, so it pins its layout to the remaining space. */
+function publishPenDrawerInset(host, size) {
+  if (!host.isDestroyed()) {
+    host.webContents.send('hermes:drawer:changed', { edge: PEN_DRAWER_EDGE, size })
+  }
+}
+
+function layoutPenDrawer() {
+  if (!penDrawer || penDrawer.host.isDestroyed()) {
+    return
+  }
+
+  const [contentWidth, contentHeight] = penDrawer.host.getContentSize()
+
+  penDrawer.view.setBounds(drawerStripBounds(PEN_DRAWER_EDGE, contentWidth, contentHeight, penDrawer.size))
+}
+
+function openPenDrawer(docId) {
+  if (penDrawer && !penDrawer.host.isDestroyed()) {
+    if (penDrawer.docId === docId) {
+      return
+    }
+
+    // One drawer: a second document takes the strip over.
+    void penDrawer.view.webContents.loadURL(penCanvasUrl(docId))
+    penDrawer.docId = docId
+
+    return
+  }
+
+  const host = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
+
+  if (!host) {
+    return
+  }
+
+  const bounds = host.getBounds()
+  const workArea = screen.getDisplayMatching(bounds).workArea
+  const maximized = host.isMaximized() || host.isFullScreen()
+
+  // Grow the window toward the edge; inside a maximized/fullscreen frame the
+  // drawer carves its strip out of the existing content instead.
+  let grewBy = 0
+
+  if (!maximized) {
+    const fit = expandForDrawer(PEN_DRAWER_EDGE, bounds, PEN_CANVAS_WIDTH, workArea)
+
+    grewBy = fit.grewBy
+    host.setBounds(fit.window)
+  }
+
+  const size = maximized ? Math.min(PEN_CANVAS_WIDTH, Math.floor(bounds.width / 2)) : Math.max(grewBy, 320)
+
+  const view = new WebContentsView({
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: PEN_PRELOAD_PATH,
+      sandbox: false
+    }
+  })
+
+  view.setBackgroundColor('#1e1e1e')
+  host.contentView.addChildView(view)
+
+  penDrawer = { docId, grewBy, host, size, view }
+
+  layoutPenDrawer()
+  publishPenDrawerInset(host, size)
+
+  const relayout = () => layoutPenDrawer()
+
+  host.on('resize', relayout)
+  penDrawer.dispose = () => host.removeListener('resize', relayout)
+
+  // Bind the editor to its document's IPC host at navigation commit — after
+  // the URL (with its ?doc= id) is real, before the editor bundle's module
+  // scripts run their boot handshake. bindPenWebview is idempotent per guest.
+  view.webContents.on('did-navigate', () => bindPenWebview(view.webContents))
+
+  void view.webContents.loadURL(penCanvasUrl(docId))
+}
+
+function closePenDrawer() {
+  if (!penDrawer) {
+    return
+  }
+
+  const { dispose, docId, grewBy, host, view } = penDrawer
+
+  penDrawer = null
+  dispose?.()
+
+  if (!host.isDestroyed()) {
+    host.contentView.removeChildView(view)
+    publishPenDrawerInset(host, 0)
+
+    if (grewBy > 0 && !host.isMaximized() && !host.isFullScreen()) {
+      host.setBounds(shrinkAfterDrawer(PEN_DRAWER_EDGE, host.getBounds(), grewBy, 640))
+    }
+  }
+
+  view.webContents.close()
+  closePenDocument(docId)
+}
+
+function wirePenCanvas() {
+  // Host-side events (a save-as re-homing a document, canvas "add to chat",
+  // pen-side agents connecting) fan out to every window.
+  for (const event of ['open-document', 'close-document', 'dirty-changed', 'add-to-chat']) {
+    onPenEvent(event, payload => broadcastPenEvent(event, payload))
+  }
+
+  // A host-initiated close (agent, save-as re-home) folds the drawer.
+  onPenEvent('close-document', payload => {
+    if (penDrawer && penDrawer.docId === payload?.docId) {
+      closePenDrawer()
+    }
+  })
+
+  ipcMain.handle('hermes:pen:status', () => penStatus())
+
+  ipcMain.handle('hermes:pen:open', async (_event, options) => {
+    const doc = await openPenCanvas(options || {})
+
+    openPenDrawer(doc.docId)
+
+    return { doc }
+  })
+
+  ipcMain.handle('hermes:pen:close', () => {
+    closePenDrawer()
+  })
+
+  ipcMain.handle('hermes:pen:tool', async (_event, name, payload) => {
+    return runPenTool(String(name || ''), payload && typeof payload === 'object' ? payload : {})
   })
 }
 
@@ -12439,6 +12642,8 @@ app.whenReady().then(() => {
 
   installMediaPermissions()
   registerMediaProtocol()
+  registerPenProtocol()
+  wirePenCanvas()
   installEmbedReferer()
   registerDeepLinkProtocol()
   ensureWslWindowsFonts()
@@ -12555,6 +12760,10 @@ app.on('before-quit', event => {
   if (heldQuitForActiveWork(event)) {
     return
   }
+
+  // Release the pencil-hermes socket so a relaunch (or pen.dev's own tooling)
+  // never meets a stale file. Synchronous and idempotent.
+  shutdownPenHost()
 
   if ((sshConnections.size > 0 || sshBootstrapCoordinator.promises().length > 0) && !sshQuitTeardownDone) {
     event.preventDefault()

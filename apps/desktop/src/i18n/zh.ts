@@ -2830,6 +2830,15 @@ export const zh: Translations = {
     addToChat: '添加到对话'
   },
 
+  pen: {
+    tab: '画布',
+    loadFailed: '画布加载失败',
+    openFailed: '无法打开画布',
+    newCanvas: '新建画布',
+    openCanvasFile: '打开 .pen 文件…',
+    notInstalled: '未安装 pen.dev — 请前往 pen.dev/download 获取'
+  },
+
   preview: {
     tab: '预览',
     closePane: '关闭预览面板',

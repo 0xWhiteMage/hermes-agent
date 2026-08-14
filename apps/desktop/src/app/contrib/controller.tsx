@@ -38,7 +38,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { NEW_SESSION_TITLE, sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
-import { Download, FileText, LayoutDashboard, PanelBottom, Terminal, Upload, Zap } from '@/lib/icons'
+import { Download, FileText, LayoutDashboard, PanelBottom, Pencil, Terminal, Upload, Zap } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 import { setYoloEnabled } from '@/lib/yolo-session'
 import { pruneComposerPopoutZones } from '@/store/composer-popout'
@@ -54,6 +54,7 @@ import {
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH
 } from '@/store/layout'
+import { openPenCanvas, watchPenDrawer } from '@/store/pen'
 import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
 import { $reviewOpen, closeReview, openReview, REVIEW_PANE_ID } from '@/store/review'
 import { $currentCwd, $selectedStoredSessionId, $sessions, $yoloActive, sessionMatchesStoredId } from '@/store/session'
@@ -324,6 +325,42 @@ registry.registerMany([
       keywords: ['profile', 'import', 'share', 'bundle', 'archive', 'restore'],
       run: () => void runImportProfileFlow()
     } satisfies PaletteContribution
+  },
+  // Pen canvas (pen.dev): the in-app design canvas. Blank canvas straight in;
+  // the file variant opens a native picker (palette closing on select is
+  // correct for both — the canvas tab takes the stage).
+  {
+    id: 'pen.newCanvas',
+    area: PALETTE_AREA,
+    data: {
+      id: 'pen.newCanvas',
+      label: 'New canvas',
+      icon: Pencil,
+      keywords: ['canvas', 'pen', 'design', 'draw', 'pencil', 'mockup', 'figma'],
+      run: () => void openPenCanvas()
+    } satisfies PaletteContribution
+  },
+  {
+    id: 'pen.openFile',
+    area: PALETTE_AREA,
+    data: {
+      id: 'pen.openFile',
+      label: 'Open .pen file…',
+      icon: Pencil,
+      keywords: ['canvas', 'pen', 'design', 'open', 'file', 'pencil'],
+      run: () =>
+        void window.hermesDesktop
+          ?.selectPaths({
+            filters: [{ name: 'Pen Design Files', extensions: ['pen'] }]
+          })
+          .then(paths => {
+            const file = paths?.[0]
+
+            if (file) {
+              void openPenCanvas({ path: file })
+            }
+          })
+    } satisfies PaletteContribution
   }
 ])
 
@@ -407,6 +444,10 @@ watchContributedPanes()
 watchSessionTiles()
 watchRouteTiles()
 watchPreviewTiles()
+
+// Native drawer inset (pen canvas): pins the app's layout to the strip the
+// drawer view leaves free. Margin on #root, zero React involvement.
+watchPenDrawer()
 
 // Composer pop-out state is keyed by layout zone, so drop entries for zones the
 // user has since closed or merged away — otherwise a long-lived install keeps a

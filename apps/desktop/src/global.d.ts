@@ -107,6 +107,18 @@ declare global {
         onShown: (callback: () => void) => () => void
       }
       getBootProgress: () => Promise<DesktopBootProgress>
+      // Pen canvas (pen.dev): main hosts the user's installed pen.dev editor
+      // in a chromeless window attached to the app. The renderer gets
+      // status, the open/close doors, the agent tool proxy, and a host-event
+      // feed (save-as re-homes, add-to-chat, …).
+      pen?: {
+        status: () => Promise<PenStatus>
+        open: (options?: { path?: string; template?: string }) => Promise<PenOpenResult>
+        close: (docId: string) => Promise<void>
+        tool: (name: string, payload?: Record<string, unknown>) => Promise<PenToolResult>
+        onEvent: (callback: (payload: { event: string; payload: unknown }) => void) => () => void
+        onDrawerChanged: (callback: (payload: { edge: 'bottom' | 'left' | 'right'; size: number }) => void) => () => void
+      }
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
@@ -742,6 +754,33 @@ export interface DesktopBootProgress {
   progress: number
   running: boolean
   timestamp: number
+}
+
+// Pen canvas (pen.dev) types — the renderer's view of electron/pen-canvas.ts.
+
+export interface PenDocumentInfo {
+  docId: string
+  fileURI: string
+  displayName: string
+  isTemporary: boolean
+}
+
+export interface PenStatus {
+  available: boolean
+  loggedIn: boolean
+  version: string
+  running: boolean
+  openDocuments: PenDocumentInfo[]
+}
+
+export interface PenOpenResult {
+  doc: PenDocumentInfo
+}
+
+export interface PenToolResult {
+  success: boolean
+  result?: unknown
+  error?: string
 }
 
 // First-launch install ("bootstrap") event types -- emitted by

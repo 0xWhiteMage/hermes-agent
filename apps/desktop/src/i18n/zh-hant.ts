@@ -2348,6 +2348,15 @@ export const zhHant = defineLocale({
     addToChat: '新增至聊天'
   },
 
+  pen: {
+    tab: '畫布',
+    loadFailed: '畫布載入失敗',
+    openFailed: '無法開啟畫布',
+    newCanvas: '新增畫布',
+    openCanvasFile: '開啟 .pen 檔案…',
+    notInstalled: '尚未安裝 pen.dev — 請至 pen.dev/download 取得'
+  },
+
   preview: {
     tab: '預覽',
     closePane: '關閉預覽窗格',

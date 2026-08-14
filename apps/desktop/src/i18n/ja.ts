@@ -2425,6 +2425,15 @@ export const ja = defineLocale({
     addToChat: 'チャットに追加'
   },
 
+  pen: {
+    tab: 'キャンバス',
+    loadFailed: 'キャンバスの読み込みに失敗しました',
+    openFailed: 'キャンバスを開けませんでした',
+    newCanvas: '新しいキャンバス',
+    openCanvasFile: '.pen ファイルを開く…',
+    notInstalled: 'pen.dev がインストールされていません — pen.dev/download から入手してください'
+  },
+
   preview: {
     tab: 'プレビュー',
     closePane: 'プレビューペインを閉じる',

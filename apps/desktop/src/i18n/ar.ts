@@ -2156,6 +2156,15 @@ export const ar = defineLocale({
     terminalHide: 'إخفاء الطرفية',
     addToChat: 'إضافة للمحادثة'
   },
+
+  pen: {
+    tab: 'اللوحة',
+    loadFailed: 'فشل تحميل اللوحة',
+    openFailed: 'تعذّر فتح اللوحة',
+    newCanvas: 'لوحة جديدة',
+    openCanvasFile: 'فتح ملف ‎.pen…',
+    notInstalled: 'pen.dev غير مثبّت — احصل عليه من pen.dev/download'
+  },
   preview: {
     tab: 'معاينة',
     closePane: 'إغلاق جزء المعاينة',

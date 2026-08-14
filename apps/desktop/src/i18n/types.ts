@@ -2244,6 +2244,15 @@ export interface Translations {
     addToChat: string
   }
 
+  pen: {
+    tab: string
+    loadFailed: string
+    openFailed: string
+    newCanvas: string
+    openCanvasFile: string
+    notInstalled: string
+  }
+
   preview: {
     tab: string
     closePane: string
