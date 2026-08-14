@@ -5,8 +5,11 @@ import {
   $translucency,
   $translucencyMaterial,
   $translucencyMode,
+  $translucencyPeek,
   $translucencyScope,
+  beginTranslucencyPeek,
   DEFAULT_GLASS_MATERIAL,
+  endTranslucencyPeek,
   GLASS_SUPPORTED,
   glassSurfaceKeep,
   setTranslucency,
@@ -114,6 +117,23 @@ describe('translucency store', () => {
 
     setTranslucencyScope('composer' as never)
     expect($translucencyScope.get()).toBe('window')
+  })
+
+  it('overlapping peeks hold the html marker until the last one ends', () => {
+    // Held slider drag + a timed pulse can overlap; the marker must survive
+    // the first end and clamp at zero on extra ends.
+    beginTranslucencyPeek()
+    beginTranslucencyPeek()
+    expect(document.documentElement.hasAttribute('data-hermes-translucency-peek')).toBe(true)
+
+    endTranslucencyPeek()
+    expect(document.documentElement.hasAttribute('data-hermes-translucency-peek')).toBe(true)
+
+    endTranslucencyPeek()
+    expect(document.documentElement.hasAttribute('data-hermes-translucency-peek')).toBe(false)
+
+    endTranslucencyPeek()
+    expect($translucencyPeek.get()).toBe(0)
   })
 })
 

@@ -17,7 +17,7 @@ import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedM
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
-import { $translucency, $translucencyMaterial, $translucencyMode, $translucencyScope, GLASS_MATERIALS, GLASS_SCOPES, GLASS_SUPPORTED, setTranslucency, setTranslucencyMaterial, setTranslucencyMode, setTranslucencyScope } from '@/store/translucency'
+import { $translucency, $translucencyMaterial, $translucencyMode, $translucencyScope, beginTranslucencyPeek, endTranslucencyPeek, GLASS_MATERIALS, GLASS_SCOPES, GLASS_SUPPORTED, pulseTranslucencyPeek, setTranslucency, setTranslucencyMaterial, setTranslucencyMode, setTranslucencyScope } from '@/store/translucency'
 import { $zoomPercent, setZoomPercent } from '@/store/zoom'
 import { getBaseColors, useTheme } from '@/themes/context'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
@@ -444,6 +444,11 @@ export function AppearanceSettings() {
                     onChange={id => {
                       triggerHaptic('selection')
                       setTranslucencyMode(id)
+
+                      // Show the change through the overlay it just altered.
+                      if (translucency > 0) {
+                        pulseTranslucencyPeek()
+                      }
                     }}
                     options={[
                       { id: 'clear' as const, label: a.translucencyModeClear },
@@ -457,10 +462,24 @@ export function AppearanceSettings() {
                   className="h-1 w-40 cursor-pointer appearance-none rounded-full bg-(--ui-stroke-tertiary)"
                   max={100}
                   min={0}
+                  // Peek while the hand is on the slider: the overlay (scrim +
+                  // near-opaque card) ghosts so the window behind IS the live
+                  // preview. Pointer pair covers mouse/touch drags; the
+                  // keyboard path pulses per step instead (blur ends any
+                  // residual hold).
+                  onBlur={endTranslucencyPeek}
                   onChange={event => {
                     triggerHaptic('selection')
                     setTranslucency(Number(event.target.value))
                   }}
+                  onKeyDown={event => {
+                    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) {
+                      pulseTranslucencyPeek()
+                    }
+                  }}
+                  onLostPointerCapture={endTranslucencyPeek}
+                  onPointerDown={beginTranslucencyPeek}
+                  onPointerUp={endTranslucencyPeek}
                   step={5}
                   style={{ accentColor: 'var(--dt-primary)' }}
                   type="range"
@@ -482,6 +501,10 @@ export function AppearanceSettings() {
                       onChange={id => {
                         triggerHaptic('selection')
                         setTranslucencyMaterial(id)
+
+                        if (translucency > 0) {
+                          pulseTranslucencyPeek()
+                        }
                       }}
                       options={GLASS_MATERIALS.map(material => ({
                         id: material,
@@ -498,6 +521,10 @@ export function AppearanceSettings() {
                       onChange={id => {
                         triggerHaptic('selection')
                         setTranslucencyScope(id)
+
+                        if (translucency > 0) {
+                          pulseTranslucencyPeek()
+                        }
                       }}
                       options={GLASS_SCOPES.map(scope => ({
                         id: scope,

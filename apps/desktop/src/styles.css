@@ -663,6 +663,23 @@
     backdrop-filter: blur(0.5rem) !important;
   }
 
+  /* Translucency peek: while the user holds the intensity slider (or for a
+     short pulse after a frost/area/mode click) the entire overlay layer —
+     scrim, blur and near-opaque card as ONE group — ghosts down so the live
+     window behind it becomes the preview. The layer keeps pointer events:
+     a held drag keeps delivering to the slider it started on. Opacity is
+     the one property that fades the scrim, its backdrop-blur and the card
+     together without relayout. Asymmetric easing: quick reveal while the
+     hand is on the control, unhurried return. */
+  :root[data-hermes-translucency-peek] [data-overlay-surface] {
+    opacity: 0.08;
+    transition: opacity 160ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
+  [data-overlay-surface] {
+    transition: opacity 420ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
   * {
     box-sizing: border-box;
     border-color: var(--dt-border);
