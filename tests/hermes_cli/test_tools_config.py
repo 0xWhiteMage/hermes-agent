@@ -394,7 +394,7 @@ class TestAgentBrowserPostSetup:
 
     def test_chromium_already_installed_skips_subprocess(self):
         with patch("shutil.which", return_value="/usr/bin/npx"), patch(
-            "tools.browser_tool.node_tool_runnable", return_value=True
+            "tools.browser_tool._resolve_npx_bin", return_value="/usr/bin/npx"
         ), patch(
             "subprocess.run"
         ) as run, patch(
@@ -410,7 +410,7 @@ class TestAgentBrowserPostSetup:
 
     def test_docker_with_missing_chromium_warns_instead_of_installing(self):
         with patch("shutil.which", return_value="/usr/bin/npx"), patch(
-            "tools.browser_tool.node_tool_runnable", return_value=True
+            "tools.browser_tool._resolve_npx_bin", return_value="/usr/bin/npx"
         ), patch(
             "subprocess.run"
         ) as run, patch(
@@ -458,7 +458,7 @@ class TestAgentBrowserPostSetup:
             # calls shutil.which with, not just the bare-PATH positional form.
             side_effect=lambda name, path=None: "/usr/bin/npx" if name == "npx" else None,
         ), patch(
-            "tools.browser_tool.node_tool_runnable", return_value=True
+            "tools.browser_tool._resolve_npx_bin", return_value="/usr/bin/npx"
         ), patch("subprocess.run") as run, patch(
             "tools.browser_tool._chromium_installed", return_value=False
         ), patch(
@@ -555,7 +555,7 @@ class TestAgentBrowserPostSetup:
         import tools.browser_tool as _bt
 
         with patch("shutil.which", return_value="/usr/bin/npx"), patch(
-            "tools.browser_tool.node_tool_runnable", return_value=True
+            "tools.browser_tool._resolve_npx_bin", return_value="/usr/bin/npx"
         ), patch(
             "subprocess.run",
             return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
@@ -580,7 +580,7 @@ class TestAgentBrowserPostSetup:
         import tools.browser_tool as _bt
 
         with patch("shutil.which", return_value="/usr/bin/npx"), patch(
-            "tools.browser_tool.node_tool_runnable", return_value=True
+            "tools.browser_tool._resolve_npx_bin", return_value="/usr/bin/npx"
         ), patch(
             "subprocess.run",
             return_value=SimpleNamespace(
@@ -608,7 +608,7 @@ class TestAgentBrowserPostSetup:
 
     def test_install_timeout_warns_without_raising(self):
         with patch("shutil.which", return_value="/usr/bin/npx"), patch(
-            "tools.browser_tool.node_tool_runnable", return_value=True
+            "tools.browser_tool._resolve_npx_bin", return_value="/usr/bin/npx"
         ), patch(
             "subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd=["npx"], timeout=600),

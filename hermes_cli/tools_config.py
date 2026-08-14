@@ -1801,7 +1801,7 @@ def _ensure_browser_use_cli(*, verbose_hints: bool = False) -> None:
 
 def _run_post_setup(post_setup_key: str):
     """Run post-setup hooks for tools that need extra installation steps."""
-    from hermes_constants import find_node_executable
+    from installation import nodejs
 
     if post_setup_key in {"agent_browser", "browserbase"}:
         # Every non-Camofox browser backend drives through the Browser Use
@@ -1918,7 +1918,7 @@ def _run_post_setup(post_setup_key: str):
 
     elif post_setup_key == "camofox":
         camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
-        _npm_bin = find_node_executable("npm")
+        _npm_bin = str(nodejs.npm_path())
         if camofox_dir.exists():
             _print_success("    Camofox already installed, nothing to do")
         elif _npm_bin:
