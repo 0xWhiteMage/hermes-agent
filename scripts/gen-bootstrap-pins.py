@@ -34,7 +34,17 @@ _WINDOWS_TARGETS = ("win32-x64", "win32-arm64")
 
 
 def _load_uv_pin() -> dict:
-    return _load_pin("uv", _POSIX_TARGETS + _WINDOWS_TARGETS)
+    entry = _load_pin("uv", _POSIX_TARGETS + _WINDOWS_TARGETS)
+    # The interpreter pin rides the uv entry (decision 3) and the
+    # installers consume it UNCONDITIONALLY — no family-version fallback
+    # rung. Fail generation rather than emit a fragment that would make
+    # the scripts invent their own default.
+    python = entry.get("python")
+    if not isinstance(python, str) or len(python.split(".")) != 3:
+        raise ValueError(
+            "uv pin has no exact 'python' (X.Y.Z) — the installers require it"
+        )
+    return entry
 
 
 def _load_git_pin() -> dict:
@@ -96,6 +106,7 @@ def _ps1_fragment(uv: dict, git: dict) -> str:
         "# Derived from installation/runtime-pins.json. DO NOT EDIT BY HAND:",
         "# run scripts/gen-bootstrap-pins.py after a pin bump.",
         f'$script:UvPinVersion = "{uv["version"]}"',
+        f'$script:PythonPinVersion = "{uv.get("python", "")}"',
         "$script:UvPinFiles = @{",
     ]
     for target in _WINDOWS_TARGETS:

@@ -707,23 +707,30 @@ check_python() {
 
     log_info "Checking Python $PYTHON_VERSION..."
 
+    # Decision 3: the exact interpreter comes from the generated pin
+    # fragment, unconditionally — the fragment ships in the same commit
+    # as this script, and gen-bootstrap-pins.py refuses to generate one
+    # without the pin. PYTHON_VERSION (the family) survives only for the
+    # log line above and the Termux lane, which never uses uv.
+    local _py_pin="$PYTHON_PIN_VERSION"
+
     # Let uv handle Python — it can download and manage Python versions
-    # First check if a suitable Python is already available
-    if PYTHON_PATH="$("$UV_CMD" python find "$PYTHON_VERSION" 2>/dev/null)"; then
+    # First check if the PINNED interpreter is already available
+    if PYTHON_PATH="$("$UV_CMD" python find "$_py_pin" 2>/dev/null)"; then
         PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
         log_success "Python found: $PYTHON_FOUND_VERSION"
         return 0
     fi
 
     # Python not found — use uv to install it (no sudo needed!)
-    log_info "Python $PYTHON_VERSION not found, installing via uv..."
-    if "$UV_CMD" python install "$PYTHON_VERSION"; then
-        PYTHON_PATH="$("$UV_CMD" python find "$PYTHON_VERSION")"
+    log_info "Python $_py_pin not found, installing via uv..."
+    if "$UV_CMD" python install "$_py_pin"; then
+        PYTHON_PATH="$("$UV_CMD" python find "$_py_pin")"
         PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
         log_success "Python installed: $PYTHON_FOUND_VERSION"
     else
-        log_error "Failed to install Python $PYTHON_VERSION"
-        log_info "Install Python $PYTHON_VERSION manually, then re-run this script"
+        log_error "Failed to install Python $_py_pin"
+        log_info "Install Python $_py_pin manually, then re-run this script"
         exit 1
     fi
 }
