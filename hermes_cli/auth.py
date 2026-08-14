@@ -2153,6 +2153,32 @@ def resolve_provider(
     except Exception as e:
         logger.debug("Could not read config.yaml model.provider for auto-resolution: %s", e)
 
+    # An ACTIVELY logged-in OAuth/subscription provider outranks a bare
+    # OPENAI_API_KEY / OPENROUTER_API_KEY env var. #29285 established that
+    # explicit user intent must beat a *stale* OAuth active_provider — but a
+    # subscription the user is CURRENTLY logged into is not stale; logging in
+    # is itself a deliberate, recent choice. A leftover env key silently
+    # hijacking an active subscription is the "default bot switched to OpenAI
+    # instead of my subscription" report. Gated on get_auth_status().logged_in
+    # (checked when _oauth_active is resolved below), so an expired/stale login
+    # still yields to the env key exactly as #29285 intended. config.yaml
+    # model.provider (checked above) still wins over both — an explicit pin is
+    # the strongest signal.
+    _active_login: Optional[str] = None
+    try:
+        _store_pre = _load_auth_store()
+        _maybe_pre = _store_pre.get("active_provider")
+        if (
+            _maybe_pre
+            and _maybe_pre in PROVIDER_REGISTRY
+            and get_auth_status(_maybe_pre).get("logged_in")
+        ):
+            _active_login = _maybe_pre
+    except Exception as e:
+        logger.debug("Could not pre-read active login provider: %s", e)
+    if _active_login:
+        return _active_login
+
     if has_usable_secret(os.getenv("OPENAI_API_KEY")) or has_usable_secret(os.getenv("OPENROUTER_API_KEY")):
         return "openrouter"
 
