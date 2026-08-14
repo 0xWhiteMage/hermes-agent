@@ -159,22 +159,22 @@ class TestHermesManagedNode:
     @pytest.mark.windows_only
     def test_windows_node_dir_prefers_portable_root(self, tmp_path, monkeypatch):
         home = tmp_path / "hermes"
-        node_dir = home / "node"
+        node_dir = home / ".hermes-runtime" / "node"
         bin_dir = node_dir / "bin"
         node_dir.mkdir(parents=True)
         bin_dir.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(home))
 
         assert iter_hermes_node_dirs() == [node_dir, bin_dir]
 
     @pytest.mark.windows_only
     def test_windows_finds_npm_cmd_before_path(self, tmp_path, monkeypatch):
         home = tmp_path / "hermes"
-        node_dir = home / "node"
+        node_dir = home / ".hermes-runtime" / "node"
         node_dir.mkdir(parents=True)
         npm_cmd = node_dir / "npm.cmd"
         npm_cmd.write_text("@echo off\n")
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(home))
         monkeypatch.setattr(hermes_constants, "node_tool_runnable", lambda path: True)
 
         assert find_hermes_node_executable("npm") == str(npm_cmd)
@@ -184,7 +184,7 @@ class TestHermesManagedNode:
     @pytest.mark.windows_only
     def test_windows_skips_broken_managed_npm_without_path_fallback(self, tmp_path, monkeypatch):
         home = tmp_path / "hermes"
-        managed_npm = home / "node" / "npm.cmd"
+        managed_npm = home / ".hermes-runtime" / "node" / "npm.cmd"
         managed_npm.parent.mkdir(parents=True)
         managed_npm.write_text("@echo off\n")
         bin_dir = tmp_path / "nodejs"
@@ -226,7 +226,7 @@ class TestNodeToolRunnable:
     def test_broken_managed_npm_heals_when_node_still_runs(self, tmp_path, monkeypatch):
         """npm can fail while node --version still succeeds (missing lib/cli.js)."""
         profile_home = tmp_path / "profiles" / "assistant"
-        managed_bin = profile_home / "node" / "bin"
+        managed_bin = profile_home / ".hermes-runtime" / "node" / "bin"
         managed_bin.mkdir(parents=True)
         self._stub(managed_bin, "node", "#!/bin/sh\necho '22.0.0'\nexit 0\n")
         broken_npm = self._stub(managed_bin, "npm", "#!/bin/sh\nexit 1\n")
@@ -237,6 +237,7 @@ class TestNodeToolRunnable:
         self._stub(system_bin, "npm", "#!/bin/sh\necho '11.10.0'\nexit 0\n")
 
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(profile_home))
         monkeypatch.setenv("PATH", str(system_bin))
         monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
 
@@ -256,7 +257,7 @@ class TestNodeToolRunnable:
 
     def test_broken_managed_npm_returns_none_when_heal_fails(self, tmp_path, monkeypatch):
         profile_home = tmp_path / "profiles" / "assistant"
-        managed_bin = profile_home / "node" / "bin"
+        managed_bin = profile_home / ".hermes-runtime" / "node" / "bin"
         managed_bin.mkdir(parents=True)
         self._stub(managed_bin, "npm", "#!/bin/sh\nexit 1\n")
 
@@ -265,6 +266,7 @@ class TestNodeToolRunnable:
         self._stub(system_bin, "npm", "#!/bin/sh\necho '11.10.0'\nexit 0\n")
 
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(profile_home))
         monkeypatch.setenv("PATH", str(system_bin))
         monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
         monkeypatch.setattr(hermes_constants, "heal_hermes_managed_node", lambda: False)
@@ -273,9 +275,9 @@ class TestNodeToolRunnable:
 
     def test_outdated_managed_node_heals_to_target_major(self, tmp_path, monkeypatch):
         """A healthy managed tree below the target major upgrades on next resolve."""
-        target = hermes_constants._HERMES_NODE_TARGET_MAJOR
+        target = hermes_constants._node_target_major()
         profile_home = tmp_path / "profiles" / "assistant"
-        managed_bin = profile_home / "node" / "bin"
+        managed_bin = profile_home / ".hermes-runtime" / "node" / "bin"
         managed_bin.mkdir(parents=True)
         old_node = self._stub(
             managed_bin, "node", f"#!/bin/sh\necho 'v{target - 1}.20.0'\nexit 0\n"
@@ -283,6 +285,7 @@ class TestNodeToolRunnable:
         heal_called = {"value": False}
 
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(profile_home))
         monkeypatch.setenv("PATH", "")
         monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
 
@@ -300,15 +303,16 @@ class TestNodeToolRunnable:
 
     def test_outdated_managed_node_survives_failed_heal(self, tmp_path, monkeypatch):
         """Offline heal failure keeps serving the old tree — old Node beats no Node."""
-        target = hermes_constants._HERMES_NODE_TARGET_MAJOR
+        target = hermes_constants._node_target_major()
         profile_home = tmp_path / "profiles" / "assistant"
-        managed_bin = profile_home / "node" / "bin"
+        managed_bin = profile_home / ".hermes-runtime" / "node" / "bin"
         managed_bin.mkdir(parents=True)
         old_node = self._stub(
             managed_bin, "node", f"#!/bin/sh\necho 'v{target - 1}.20.0'\nexit 0\n"
         )
 
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(profile_home))
         monkeypatch.setenv("PATH", "")
         monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
         monkeypatch.setattr(hermes_constants, "heal_hermes_managed_node", lambda: False)
@@ -317,15 +321,16 @@ class TestNodeToolRunnable:
 
     def test_target_major_managed_node_does_not_heal(self, tmp_path, monkeypatch):
         """A tree already at the target major never triggers the heal."""
-        target = hermes_constants._HERMES_NODE_TARGET_MAJOR
+        target = hermes_constants._node_target_major()
         profile_home = tmp_path / "profiles" / "assistant"
-        managed_bin = profile_home / "node" / "bin"
+        managed_bin = profile_home / ".hermes-runtime" / "node" / "bin"
         managed_bin.mkdir(parents=True)
         node = self._stub(
             managed_bin, "node", f"#!/bin/sh\necho 'v{target}.5.1'\nexit 0\n"
         )
 
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(profile_home))
         monkeypatch.setenv("PATH", "")
         monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
 
@@ -726,376 +731,82 @@ class TestWslPathTranslation:
         assert hermes_constants.translate_cwd_for_wsl_backend("/home/alex") == "/home/alex"
 
 
-class TestManagedNodeTreeInUse:
-    """managed_node_tree_in_use() detects processes executing from the tree."""
+class TestInstallRootAndRuntimeDir:
+    """Install-scoped runtime dir resolvers (hermes-home lifetime split)."""
 
-    def _install_fake_psutil(self, monkeypatch, procs):
-        import sys
-        from types import SimpleNamespace
+    def test_default_install_root_is_the_checkout(self, monkeypatch):
+        monkeypatch.delenv("HERMES_INSTALL_ROOT", raising=False)
+        # Rung 3: the directory containing hermes_constants.py IS the repo
+        # root in a source checkout — the invariant, not a snapshot path.
+        expected = Path(hermes_constants.__file__).resolve().parent
+        assert hermes_constants.get_install_root() == expected
 
-        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
-        fake = SimpleNamespace(
-            process_iter=lambda fields: [
-                SimpleNamespace(info=info) for info in procs
-            ]
-        )
-        monkeypatch.setitem(sys.modules, "psutil", fake)
+    def test_env_var_wins(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(tmp_path / "payload"))
+        assert hermes_constants.get_install_root() == tmp_path / "payload"
 
-    def test_always_false_off_windows(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(hermes_constants.sys, "platform", "darwin")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        assert hermes_constants.managed_node_tree_in_use() is False
+    def test_context_override_wins_over_default_but_not_env(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_INSTALL_ROOT", raising=False)
+        token = hermes_constants.set_install_root_override(tmp_path / "ctx")
+        try:
+            assert hermes_constants.get_install_root() == tmp_path / "ctx"
+            # Env var beats the context override: children inherit env,
+            # so it is the stronger, cross-process signal.
+            monkeypatch.setenv("HERMES_INSTALL_ROOT", str(tmp_path / "env"))
+            assert hermes_constants.get_install_root() == tmp_path / "env"
+        finally:
+            hermes_constants.reset_install_root_override(token)
 
-    def test_exe_under_node_dir_counts(self, tmp_path, monkeypatch):
-        home = tmp_path / "hermes"
-        (home / "node").mkdir(parents=True)
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        self._install_fake_psutil(
-            monkeypatch,
-            [{"exe": str(home / "node" / "node.exe"), "cmdline": None}],
-        )
-        assert hermes_constants.managed_node_tree_in_use() is True
+    def test_override_reset_restores_default(self, monkeypatch):
+        monkeypatch.delenv("HERMES_INSTALL_ROOT", raising=False)
+        default = hermes_constants.get_install_root()
+        token = hermes_constants.set_install_root_override("/elsewhere")
+        hermes_constants.reset_install_root_override(token)
+        assert hermes_constants.get_install_root() == default
 
-    def test_cmdline_arg_under_node_dir_counts(self, tmp_path, monkeypatch):
-        home = tmp_path / "hermes"
-        (home / "node").mkdir(parents=True)
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        self._install_fake_psutil(
-            monkeypatch,
-            [
-                {
-                    "exe": r"C:\Windows\System32\cmd.exe",
-                    "cmdline": [r"C:\Windows\System32\cmd.exe", "/d", "/s", "/c", str(home / "node" / "npm.cmd")],
-                }
-            ],
-        )
-        assert hermes_constants.managed_node_tree_in_use() is True
+    def test_none_override_restores_default_derivation(self, monkeypatch):
+        monkeypatch.delenv("HERMES_INSTALL_ROOT", raising=False)
+        default = hermes_constants.get_install_root()
+        outer = hermes_constants.set_install_root_override("/elsewhere")
+        inner = hermes_constants.set_install_root_override(None)
+        try:
+            assert hermes_constants.get_install_root() == default
+        finally:
+            hermes_constants.reset_install_root_override(inner)
+            hermes_constants.reset_install_root_override(outer)
 
-    def test_unrelated_process_does_not_count(self, tmp_path, monkeypatch):
-        home = tmp_path / "hermes"
-        (home / "node").mkdir(parents=True)
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        self._install_fake_psutil(
-            monkeypatch,
-            [{"exe": r"C:\Program Files\nodejs\node.exe", "cmdline": None}],
-        )
-        assert hermes_constants.managed_node_tree_in_use() is False
-
-    def test_missing_psutil_is_false(self, tmp_path, monkeypatch):
-        import sys
-
-        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        # None in sys.modules makes `import psutil` raise ImportError.
-        monkeypatch.setitem(sys.modules, "psutil", None)
-        assert hermes_constants.managed_node_tree_in_use() is False
-
-
-class _FakeUrlResponse:
-    def __init__(self, payload: bytes):
-        self._payload = payload
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-    def read(self):
-        return self._payload
-
-
-def _make_node_zip(major: int) -> tuple[str, bytes]:
-    import io
-    import zipfile
-
-    name = f"node-v{major}.5.1-win-x64.zip"
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as archive:
-        root = f"node-v{major}.5.1-win-x64"
-        archive.writestr(f"{root}/node.exe", b"fake-node")
-        archive.writestr(f"{root}/npm.cmd", "@echo off\r\n")
-    return name, buf.getvalue()
-
-
-class TestWindowsHealStageSwap:
-    """_heal_managed_node_windows() must never destroy the live tree before
-    its replacement is fully staged, and must defer (return None) when the
-    tree is in use instead of forcing the write (#80926)."""
-
-    def _stub_env(
-        self, monkeypatch, home, zip_name, zip_bytes, *, in_use=False
-    ):
-        import urllib.request
-
-        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
-        monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        monkeypatch.setenv(
-            "HERMES_NODE_TARGET_MAJOR",
-            str(hermes_constants._HERMES_NODE_TARGET_MAJOR),
-        )
-        monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
-        monkeypatch.setattr(
-            hermes_constants, "_managed_node_in_use_notice_printed", False
-        )
-        monkeypatch.setattr(
-            hermes_constants,
-            "managed_node_tree_in_use",
-            lambda _home=None: in_use,
-        )
-        monkeypatch.setattr(
-            hermes_constants, "node_tool_runnable", lambda path: True
+    def test_runtime_dir_nests_in_install_root(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(tmp_path))
+        assert (
+            hermes_constants.get_runtime_dir()
+            == tmp_path / hermes_constants.RUNTIME_DIR_NAME
         )
 
-        index_html = f'<a href="./{zip_name}">{zip_name}</a>'.encode()
+    def test_runtime_dir_explicit_root_bypasses_resolution(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(tmp_path / "ignored"))
+        explicit = tmp_path / "other-install"
+        assert (
+            hermes_constants.get_runtime_dir(explicit)
+            == explicit / hermes_constants.RUNTIME_DIR_NAME
+        )
 
-        def fake_urlopen(url, timeout=0):
-            if str(url).endswith(".zip"):
-                return _FakeUrlResponse(zip_bytes)
-            return _FakeUrlResponse(index_html)
+    def test_runtime_dir_name_matches_managed_uv_convention(self):
+        # managed_uv.py predates these resolvers and already nests its
+        # python store under <checkout>/.hermes-runtime — the two must
+        # agree or the install grows two runtime dirs.
+        from hermes_cli import managed_uv
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        assert hermes_constants.RUNTIME_DIR_NAME == managed_uv._RUNTIME_DIR_NAME
 
-    def test_in_use_defers_without_touching_tree(self, tmp_path, monkeypatch):
-        import urllib.request
-
-        home = tmp_path / "hermes"
-        old = home / "node"
-        old.mkdir(parents=True)
-        (old / "node.exe").write_text("old", encoding="utf-8")
-        (old / "npm.cmd").write_text("@echo off", encoding="utf-8")
-        zip_name, zip_bytes = _make_node_zip(hermes_constants._HERMES_NODE_TARGET_MAJOR)
-        self._stub_env(monkeypatch, home, zip_name, zip_bytes, in_use=True)
-
-        def forbidden_urlopen(url, timeout=0):
-            raise AssertionError(f"no download may start while the tree is in use: {url}")
-
-        monkeypatch.setattr(urllib.request, "urlopen", forbidden_urlopen)
-
-        result = hermes_constants._heal_managed_node_windows()
-
-        assert result is None
-        # The live tree is untouched, and no staging litter remains.
-        assert (old / "node.exe").read_text(encoding="utf-8") == "old"
-        assert list(home.glob("node.new-*")) == []
-        assert list(home.glob("node.old-*")) == []
-
-    def test_swap_replaces_tree_and_cleans_up(self, tmp_path, monkeypatch):
-        home = tmp_path / "hermes"
-        old = home / "node"
-        old.mkdir(parents=True)
-        (old / "node.exe").write_text("old", encoding="utf-8")
-        (old / "old-marker").write_text("stale", encoding="utf-8")
-        zip_name, zip_bytes = _make_node_zip(hermes_constants._HERMES_NODE_TARGET_MAJOR)
-        self._stub_env(monkeypatch, home, zip_name, zip_bytes, in_use=False)
-
-        result = hermes_constants._heal_managed_node_windows()
-
-        assert result is True
-        assert (home / "node" / "node.exe").exists()
-        assert not (home / "node" / "old-marker").exists()
-        assert list(home.glob("node.new-*")) == []
-        assert list(home.glob("node.old-*")) == []
-
-    def test_creates_tree_when_absent(self, tmp_path, monkeypatch):
-        home = tmp_path / "hermes"
-        home.mkdir()
-        zip_name, zip_bytes = _make_node_zip(hermes_constants._HERMES_NODE_TARGET_MAJOR)
-        self._stub_env(monkeypatch, home, zip_name, zip_bytes, in_use=False)
-
-        result = hermes_constants._heal_managed_node_windows()
-
-        assert result is True
-        assert (home / "node" / "node.exe").exists()
-        assert list(home.glob("node.new-*")) == []
-
-    def test_rename_refusal_defers_and_preserves_tree(self, tmp_path, monkeypatch):
-        import os as _os
-
-        home = tmp_path / "hermes"
-        old = home / "node"
-        old.mkdir(parents=True)
-        (old / "node.exe").write_text("old", encoding="utf-8")
-        zip_name, zip_bytes = _make_node_zip(hermes_constants._HERMES_NODE_TARGET_MAJOR)
-        self._stub_env(monkeypatch, home, zip_name, zip_bytes, in_use=False)
-
-        real_replace = _os.replace
-        state = {"calls": 0}
-
-        def flaky_replace(src, dst):
-            state["calls"] += 1
-            if state["calls"] == 1:
-                raise PermissionError(13, "Access is denied", str(src))
-            return real_replace(src, dst)
-
-        monkeypatch.setattr(_os, "replace", flaky_replace)
-
-        result = hermes_constants._heal_managed_node_windows()
-
-        assert result is None
-        # The OS refused the swap — the live tree must survive intact.
-        assert (old / "node.exe").read_text(encoding="utf-8") == "old"
-        assert list(home.glob("node.new-*")) == []
-        assert list(home.glob("node.old-*")) == []
-
-
-    def test_touch_failure_does_not_abort_swap(self, tmp_path, monkeypatch):
-        """The post-rename mtime touch is best-effort: a touch failure must
-        not abort a swap that already succeeded."""
-        import os as _os
-
-        home = tmp_path / "hermes"
-        old = home / "node"
-        old.mkdir(parents=True)
-        (old / "node.exe").write_text("old", encoding="utf-8")
-        zip_name, zip_bytes = _make_node_zip(hermes_constants._HERMES_NODE_TARGET_MAJOR)
-        self._stub_env(monkeypatch, home, zip_name, zip_bytes, in_use=False)
-
-        calls = {"n": 0}
-
-        def failing_utime(path, times=None):
-            calls["n"] += 1
-            raise PermissionError(13, "Access is denied", str(path))
-
-        monkeypatch.setattr(_os, "utime", failing_utime)
-        result = hermes_constants._heal_managed_node_windows()
-
-        assert result is True
-        assert calls["n"] >= 1
-        # The new tree is in place despite the touch failure.
-        assert (home / "node" / "node.exe").exists()
-        assert list(home.glob("node.new-*")) == []
-        # The old tree was swapped aside and then removed.
-        assert list(home.glob("node.old-*")) == []
-
-    def test_second_rename_failure_rolls_back(self, tmp_path, monkeypatch):
-        """The staged->live rename failing must restore the live tree and
-        remove the staged copy, reporting a genuine failure (not a deferral)."""
-        import os as _os
-
-        home = tmp_path / "hermes"
-        old = home / "node"
-        old.mkdir(parents=True)
-        (old / "node.exe").write_text("old", encoding="utf-8")
-        zip_name, zip_bytes = _make_node_zip(hermes_constants._HERMES_NODE_TARGET_MAJOR)
-        self._stub_env(monkeypatch, home, zip_name, zip_bytes, in_use=False)
-
-        real_replace = _os.replace
-        state = {"calls": 0}
-
-        def flaky_replace(src, dst):
-            state["calls"] += 1
-            if state["calls"] == 2:
-                raise PermissionError(13, "Access is denied", str(src))
-            return real_replace(src, dst)
-
-        monkeypatch.setattr(_os, "replace", flaky_replace)
-
-        result = hermes_constants._heal_managed_node_windows()
-
-        assert result is False
-        # The live tree was rolled back into place; the staged copy is gone.
-        assert (old / "node.exe").read_text(encoding="utf-8") == "old"
-        assert list(home.glob("node.new-*")) == []
-        assert list(home.glob("node.old-*")) == []
-
-    def test_stale_staging_litter_is_swept(self, tmp_path, monkeypatch):
-        import os as _os
-        import time as _time
-
-        home = tmp_path / "hermes"
-        (home / "node").mkdir(parents=True)
-        (home / "node" / "node.exe").write_text("old", encoding="utf-8")
-        stale_backup = home / "node.old-deadbeef"
-        stale_backup.mkdir()
-        (stale_backup / "node.exe").write_text("stale", encoding="utf-8")
-        stale_staged = home / "node.new-deadbeef"
-        stale_staged.mkdir()
-        (stale_staged / "node.exe").write_text("stale", encoding="utf-8")
-        # The sweep only removes litter older than 10 minutes, so backdate.
-        old_ts = _time.time() - 3600
-        _os.utime(stale_backup, (old_ts, old_ts))
-        _os.utime(stale_staged, (old_ts, old_ts))
-        zip_name, zip_bytes = _make_node_zip(hermes_constants._HERMES_NODE_TARGET_MAJOR)
-        self._stub_env(monkeypatch, home, zip_name, zip_bytes, in_use=False)
-
-        result = hermes_constants._heal_managed_node_windows()
-
-        assert result is True
-        assert not stale_backup.exists()
-        assert not stale_staged.exists()
-        assert (home / "node" / "node.exe").exists()
-
-    def test_fresh_staging_dirs_are_not_swept(self, tmp_path, monkeypatch):
-        """A concurrent heal's in-flight backup must survive the sweep even
-        when it was renamed from a long-lived tree (rename preserves mtime —
-        the production code touches it after the rename, and the sweep must
-        respect that)."""
-        import os as _os
-        import time as _time
-
-        home = tmp_path / "hermes"
-        (home / "node").mkdir(parents=True)
-        (home / "node" / "node.exe").write_text("old", encoding="utf-8")
-        # Simulate a long-lived tree being renamed aside mid-swap: backdate
-        # it, rename, then touch exactly like the production swap does.
-        old_ts = _time.time() - 3600
-        _os.utime(home / "node", (old_ts, old_ts))
-        fresh_backup = home / "node.old-deadbeef"
-        _os.replace(str(home / "node"), str(fresh_backup))
-        _os.utime(fresh_backup, None)
-        zip_name, zip_bytes = _make_node_zip(hermes_constants._HERMES_NODE_TARGET_MAJOR)
-        self._stub_env(monkeypatch, home, zip_name, zip_bytes, in_use=False)
-
-        result = hermes_constants._heal_managed_node_windows()
-
-        assert result is True
-        assert fresh_backup.exists()
-
-
-class TestHealAttemptFlagSemantics:
-    """An in-use deferral must not record the once-per-process heal attempt,
-    so a later call can retry once the tree is free (#80926)."""
-
-    def test_deferral_keeps_flag_clear_and_retries(self, tmp_path, monkeypatch):
-        home = tmp_path / "hermes"
-        (home / "node").mkdir(parents=True)
-        (home / "node" / "node.exe").write_text("x", encoding="utf-8")
-        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
-        calls = {"n": 0}
-
-        def fake_heal():
-            calls["n"] += 1
-            return None
-
-        monkeypatch.setattr(hermes_constants, "_heal_managed_node_windows", fake_heal)
-
-        assert heal_hermes_managed_node() is False
-        assert hermes_constants._managed_node_heal_attempted is False
-        # The flag stayed clear, so the next call retries the heal.
-        assert heal_hermes_managed_node() is False
-        assert calls["n"] == 2
-
-    def test_real_failure_records_attempt(self, tmp_path, monkeypatch):
-        home = tmp_path / "hermes"
-        (home / "node").mkdir(parents=True)
-        (home / "node" / "node.exe").write_text("x", encoding="utf-8")
-        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
-        calls = {"n": 0}
-
-        def fake_heal():
-            calls["n"] += 1
-            return False
-
-        monkeypatch.setattr(hermes_constants, "_heal_managed_node_windows", fake_heal)
-
-        assert heal_hermes_managed_node() is False
-        assert hermes_constants._managed_node_heal_attempted is True
-        # The flag is set, so the once-per-process budget is spent.
-        assert heal_hermes_managed_node() is False
-        assert calls["n"] == 1
+    def test_runtime_dir_is_not_under_hermes_home(self, tmp_path, monkeypatch):
+        # The design invariant: install artifacts never nest in profile
+        # state. A checkout that happens to live under ~/.hermes (the
+        # curl|bash layout: $HERMES_HOME/hermes-agent) is fine — the
+        # runtime dir keys off the INSTALL root, not off HERMES_HOME.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(tmp_path / "home" / "hermes-agent"))
+        runtime = hermes_constants.get_runtime_dir()
+        assert runtime == tmp_path / "home" / "hermes-agent" / ".hermes-runtime"
+        # ...and changing HERMES_HOME alone must not move it.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "other-home"))
+        assert hermes_constants.get_runtime_dir() == runtime
