@@ -33,6 +33,7 @@ describe('formatMcpLaunchTarget', () => {
     })
 
     expect(result?.target).toBe('bash ]0;pwned [2Jrun --flag 31m')
+    // eslint-disable-next-line no-control-regex
     expect(result?.target).not.toMatch(/[\u0000-\u001F\u007F-\u009F]/)
   })
 
