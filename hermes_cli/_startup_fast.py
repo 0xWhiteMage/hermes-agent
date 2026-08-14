@@ -159,7 +159,7 @@ def read_install_method() -> str | None:
     """Derive the install method with stdlib-only probes.
 
     Mirrors ``config.detect_install_method`` (which delegates to
-    ``runtime_tree.install_method``) cheaply — the stamp-pure ladder:
+    ``installation.tree.install_method``) cheaply — the stamp-pure ladder:
     a sealed tree's ``install-stamp.json`` names the steward
     (``distribution``); a ``.git`` tree is ``git`` when its stamp says
     ``updateMechanism: self`` and ``source`` otherwise. No path table.
