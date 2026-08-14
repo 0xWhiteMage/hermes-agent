@@ -191,7 +191,7 @@ def test_no_lockfile_match_is_stale(tmp_path):
 
 def test_a_comment_cannot_exempt_a_stale_entry(tmp_path):
     """There is no opt-out marker. An exclude expires when its releases
-    outgrow the gate, whatever the comment above it claims."""
+    grow older than the gate. The comment above it has no effect."""
     npmrc = (
         "min-release-age=14\n"
         "# lint: keep — they update a LOT\n"
@@ -301,9 +301,9 @@ def test_verify_rejects_deleting_other_directives():
     try:
         mod._verify_only_exclude_deletions(old, new)
     except RuntimeError as e:
-        assert "non-exclude directive" in str(e)
+        assert "which is not an exclude" in str(e)
     else:
-        raise AssertionError("should have refused to delete engine-strict")
+        raise AssertionError("the verifier must refuse to delete engine-strict")
 
 
 def test_verify_rejects_edited_or_inserted_lines():

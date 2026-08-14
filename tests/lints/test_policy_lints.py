@@ -147,10 +147,10 @@ def test_parses_the_declared_floor():
 
 
 def test_every_npm_project_dir_has_a_manifest_and_a_lockfile():
-    """A project is the lockfile+manifest pair npm resolves against.
+    """A project is the lockfile and manifest pair that npm resolves.
 
-    A lockfile with no manifest beside it (nix/ vendors one for a
-    hash-pinned fetch) is an artifact, not a project npm ever installs.
+    A lockfile with no manifest beside it is an artifact, and npm never
+    installs it. nix/ holds one for a hash-pinned fetch.
     """
     for rel_dir in agegate.npm_project_dirs():
         base = REPO_ROOT if rel_dir == "." else REPO_ROOT / rel_dir
@@ -159,10 +159,10 @@ def test_every_npm_project_dir_has_a_manifest_and_a_lockfile():
 
 
 def test_every_npm_project_is_age_gated_at_or_above_the_root_floor():
-    """The invariant the lint exists for, asserted directly on the tree.
+    """Assert the invariant of the lint against the live tree.
 
-    npm reads only the project's own .npmrc — never a parent's — so the
-    root gate protects the root install and nothing else.
+    npm reads the .npmrc of the project only, and never a parent's. The
+    root gate therefore protects the root install and no other.
     """
     root_floor = agegate.parse_min_age(
         (REPO_ROOT / ".npmrc").read_text(encoding="utf-8")

@@ -36,9 +36,9 @@ refuses the write unless the ONLY semantic difference in either file
 is the exclude-newer-package data.
 
 Every exception is temporary by construction. It admits one release
-that the age gate would otherwise hold back, so it expires when that
-release grows past the span. A permanent exception is a permanent
-hole, which is why this lint has no opt-out marker.
+that the age gate holds back, and it expires when that release grows
+older than the span. A permanent exception is a permanent hole. This
+lint has no opt-out marker for that reason.
 """
 
 from __future__ import annotations
@@ -266,9 +266,10 @@ def apply_to_pyproject(text: str, actions: list[tuple[str, str, str, str | None]
     removed_all = False
 
     for key, action, _, replacement in actions:
-        # (?<![\w.-]) anchors the key's left edge: without it, removing `h2`
-        # eats the tail of `python-h2` and emits `{ python- }`, unparseable
-        # TOML. Bare \b is not enough — it does not fire between `-` and `h`.
+        # (?<![\w.-]) anchors the left edge of the key. Without it, the
+        # removal of `h2` eats the tail of `python-h2` and writes
+        # `{ python- }`, which is not valid TOML. A word boundary is not
+        # sufficient, because \b does not fire between `-` and `h`.
         key_re = rf"(?<![\w.-]){re.escape(key)}\s*=\s*"
         if action == "replace":
             body = re.sub(
@@ -320,8 +321,9 @@ def _strip_age_data(parsed: dict, path: tuple[str, ...]) -> dict:
 
 
 def verify_only_age_changed(old: str, new: str, path: tuple[str, ...], label: str) -> None:
-    """Parse old and new; everything except the exclude-newer-package
-    data must be structurally identical, or the write is refused."""
+    """Parse the old text and the new text. All data except the
+    exclude-newer-package table must be identical. If it is not, refuse
+    the write."""
     old_parsed = _strip_age_data(tomllib.loads(old), path)
     new_parsed = _strip_age_data(tomllib.loads(new), path)
     if old_parsed != new_parsed:

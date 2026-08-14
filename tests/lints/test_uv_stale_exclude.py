@@ -139,7 +139,8 @@ def test_multiple_locked_versions_any_fresh_keeps():
 
 def test_a_comment_cannot_exempt_a_stale_table():
     """There is no opt-out marker. The entry expires when its locked
-    versions outgrow the span, whatever the comment above it claims."""
+    versions grow older than the span. The comment above it has no
+    effect."""
     py = _pyproject('h2 = "2026-08-04T00:00:00Z"').replace(
         "# h2: temporary exception for a CVE fix",
         "# lint: keep\n# h2: standing exception",
@@ -229,8 +230,9 @@ def test_real_repo_pyproject_parses():
     ],
 )
 def test_key_edit_does_not_eat_a_longer_key_with_the_same_suffix(entries, actions):
-    """An unanchored key regex turns `{ python-h2 = false, h2 = ... }` into
-    `{ python- }` — valid-looking line surgery, unparseable TOML."""
+    """An unanchored key regex writes `{ python-h2 = false, h2 = ... }`
+    as `{ python- }`. The line surgery looks correct. The TOML is not
+    valid."""
     py = _pyproject(entries)
     out = mod.apply_to_pyproject(py, actions)
 

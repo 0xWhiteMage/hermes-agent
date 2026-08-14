@@ -19,13 +19,13 @@ glob), matched against the sibling lockfile's locked packages:
   an exclude on partial data; worst case it survives one merge cycle)
 
 Every exclude is temporary by construction. An exclude admits one
-release that the age gate would otherwise hold back, so it expires when
-that release grows past the gate. A permanent exclude is a permanent
-hole, which is why this lint has no opt-out marker: to keep an entry,
-give the package a reason to need it.
+release that the age gate holds back, and it expires when that release
+grows older than the gate. A permanent exclude is a permanent hole.
+This lint has no opt-out marker for that reason. To keep an entry, give
+the package a reason to need it.
 
-The fixer deletes stale exclude lines; an entry group's comment block
-goes with it only when every exclude in the group was removed.
+The fixer deletes the stale exclude lines. It deletes the comment
+block of a group only when it removed every exclude in that group.
 """
 
 from __future__ import annotations
@@ -207,8 +207,8 @@ def evaluate_file(
 
 
 def remove_stale_lines(text: str, stale_idxs: set[int]) -> str:
-    """Delete stale exclude lines; drop a group's comment block only when
-    the group has no surviving excludes."""
+    """Delete the stale exclude lines. Drop the comment block of a
+    group only when no exclude in that group survives."""
     _, groups = parse_npmrc(text)
     to_delete = set(stale_idxs)
     for group in groups:
@@ -304,8 +304,8 @@ def _verify_only_exclude_deletions(old: str, new: str) -> None:
         if _EXCLUDE_RE.match(stripped):
             continue
         raise RuntimeError(
-            "npmrc-stale-exclude: fixer would delete a non-exclude "
-            f"directive {stripped!r} — refusing to write"
+            "npmrc-stale-exclude: the fixer would delete the directive "
+            f"{stripped!r}, which is not an exclude. Refused the write."
         )
 
 
