@@ -18,9 +18,11 @@ glob), matched against the sibling lockfile's locked packages:
 - any registry fetch fails -> pattern skipped (fail open: never remove
   an exclude on partial data; worst case it survives one merge cycle)
 
-Opt-out: a ``# lint: keep`` comment anywhere in the entry's comment
-block exempts the whole block (for intentional standing excludes like
-fast-moving upstreams).
+Every exclude is temporary by construction. An exclude admits one
+release that the age gate would otherwise hold back, so it expires when
+that release grows past the gate. A permanent exclude is a permanent
+hole, which is why this lint has no opt-out marker: to keep an entry,
+give the package a reason to need it.
 
 The fixer deletes stale exclude lines; an entry group's comment block
 goes with it only when every exclude in the group was removed.
@@ -42,7 +44,6 @@ from urllib.parse import quote
 from lints import REPO_ROOT, Finding, Lint
 
 REGISTRY = "https://registry.npmjs.org"
-KEEP_MARKER = re.compile(r"#\s*lint:\s*keep\b", re.IGNORECASE)
 # One day of grace above min-release-age so a package hovering at the
 # boundary doesn't get its exclude removed and re-added across runs.
 GRACE = timedelta(days=1)
@@ -58,7 +59,6 @@ class ExcludeGroup:
     comment_idxs: list[int] = field(default_factory=list)
     # (line_idx, pattern) pairs
     entries: list[tuple[int, str]] = field(default_factory=list)
-    keep: bool = False
 
 
 def parse_npmrc(text: str) -> tuple[int | None, list[ExcludeGroup]]:
@@ -83,9 +83,6 @@ def parse_npmrc(text: str) -> tuple[int | None, list[ExcludeGroup]]:
         elif m := _EXCLUDE_RE.match(stripped):
             if current is None:
                 current = ExcludeGroup(comment_idxs=pending_comments)
-                current.keep = any(
-                    KEEP_MARKER.search(lines[c]) for c in pending_comments
-                )
                 groups.append(current)
                 pending_comments = []
             current.entries.append((i, m.group("pattern")))
@@ -164,8 +161,6 @@ def evaluate_file(
 
     stale: list[tuple[int, str, str]] = []
     for group in groups:
-        if group.keep:
-            continue
         for line_idx, pattern in group.entries:
             matched = {
                 name: versions
@@ -268,8 +263,7 @@ def check() -> list[Finding]:
                     path=rel,
                     line=line_idx + 1,
                     message=(
-                        f"min-release-age-exclude[]={pattern} is stale: {reason}. "
-                        "Add `# lint: keep` above it if it is intentional."
+                        f"min-release-age-exclude[]={pattern} is stale: {reason}."
                     ),
                     fixable=True,
                 )

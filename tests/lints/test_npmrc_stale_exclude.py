@@ -54,7 +54,6 @@ def test_parse_groups_comment_blocks_and_entries():
         "# vuln fix. remove when old\n"
         "min-release-age-exclude[]=tar\n"
         "\n"
-        "# lint: keep\n"
         "# ink needs\n"
         "min-release-age-exclude[]=lightningcss\n"
         "min-release-age-exclude[]=postcss\n"
@@ -63,9 +62,7 @@ def test_parse_groups_comment_blocks_and_entries():
     assert min_age == 14
     assert len(groups) == 2
     assert [p for _, p in groups[0].entries] == ["tar"]
-    assert groups[0].keep is False
     assert [p for _, p in groups[1].entries] == ["lightningcss", "postcss"]
-    assert groups[1].keep is True
 
 
 def test_parse_real_repo_npmrc_files():
@@ -192,7 +189,9 @@ def test_no_lockfile_match_is_stale(tmp_path):
     assert "matches no package" in stale[0][2]
 
 
-def test_keep_marker_exempts_group(tmp_path):
+def test_a_comment_cannot_exempt_a_stale_entry(tmp_path):
+    """There is no opt-out marker. An exclude expires when its releases
+    outgrow the gate, whatever the comment above it claims."""
     npmrc = (
         "min-release-age=14\n"
         "# lint: keep — they update a LOT\n"
@@ -204,7 +203,7 @@ def test_keep_marker_exempts_group(tmp_path):
         {"@assistant-ui/react": "1.0.0"},
         {"@assistant-ui/react": {"1.0.0": OLD}},
     )
-    assert stale == []
+    assert [pattern for _, pattern, _ in stale] == ["@assistant-ui/*"]
 
 
 def test_registry_failure_fails_open(tmp_path):

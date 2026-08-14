@@ -35,8 +35,10 @@ writing, a structural verifier parses old and new with tomllib and
 refuses the write unless the ONLY semantic difference in either file
 is the exclude-newer-package data.
 
-Opt-out: ``# lint: keep`` in the comment block directly above the
-``exclude-newer-package`` line (or section header) exempts the table.
+Every exception is temporary by construction. It admits one release
+that the age gate would otherwise hold back, so it expires when that
+release grows past the span. A permanent exception is a permanent
+hole, which is why this lint has no opt-out marker.
 """
 
 from __future__ import annotations
@@ -48,7 +50,6 @@ from pathlib import Path
 
 from lints import REPO_ROOT, Finding, Lint
 
-KEEP_MARKER = re.compile(r"#\s*lint:\s*keep\b", re.IGNORECASE)
 GRACE = timedelta(days=1)
 
 _INLINE_RE = re.compile(
@@ -115,31 +116,20 @@ def _lock_info(lock_text: str) -> tuple[dict[str, int], dict[str, list[datetime]
     return counts, stamps
 
 
-def _keep_marker_above(lines: list[str], idx: int) -> bool:
-    """True when the contiguous comment block directly above ``idx``
-    carries ``# lint: keep``."""
-    j = idx - 1
-    while j >= 0 and lines[j].lstrip().startswith("#"):
-        if KEEP_MARKER.search(lines[j]):
-            return True
-        j -= 1
-    return False
-
-
-def locate_table(pyproject_text: str) -> tuple[str | None, int, bool]:
+def locate_table(pyproject_text: str) -> tuple[str | None, int]:
     """Find the exclude-newer-package table in either TOML form.
 
-    Returns ``(form, line_idx, keep)`` where form is ``"inline"`` (a
-    one-line ``exclude-newer-package = { ... }``), ``"section"`` (a
+    Returns ``(form, line_idx)`` where form is ``"inline"`` (a one-line
+    ``exclude-newer-package = { ... }``), ``"section"`` (a
     ``[tool.uv.exclude-newer-package]`` header), or None when absent.
     """
     lines = pyproject_text.splitlines()
     for i, line in enumerate(lines):
         if _INLINE_RE.match(line):
-            return "inline", i, _keep_marker_above(lines, i)
+            return "inline", i
         if line.strip() == _PYPROJECT_SECTION_HEADER:
-            return "section", i, _keep_marker_above(lines, i)
-    return None, -1, False
+            return "section", i
+    return None, -1
 
 
 def table_entries(pyproject_text: str) -> dict[str, object]:
@@ -156,8 +146,8 @@ def plan(
     """Compute actions as ``(key, action, reason, replacement)`` where
     action is ``remove`` or ``replace`` (replacement = new date string)."""
     now = now or datetime.now(timezone.utc)
-    form, _, keep = locate_table(pyproject_text)
-    if form is None or keep:
+    form, _ = locate_table(pyproject_text)
+    if form is None:
         return []
     span = parse_span(pyproject_text)
     counts, stamps = _lock_info(lock_text)
@@ -264,7 +254,7 @@ def _apply_to_section(
 
 
 def apply_to_pyproject(text: str, actions: list[tuple[str, str, str, str | None]]) -> str:
-    form, line_idx, _ = locate_table(text)
+    form, line_idx = locate_table(text)
     if form is None:
         return text
     if form == "section":
@@ -364,7 +354,7 @@ def check() -> list[Finding]:
     text = _pyproject_path().read_text(encoding="utf-8") if _pyproject_path().exists() else ""
     line_idx = None
     if text:
-        form, idx, _ = locate_table(text)
+        form, idx = locate_table(text)
         line_idx = idx + 1 if form else None
     for key, action, reason, replacement in _current_plan():
         detail = f"replace with `\"{replacement}\"`" if action == "replace" else "remove it"
@@ -374,8 +364,7 @@ def check() -> list[Finding]:
                 path="pyproject.toml",
                 line=line_idx,
                 message=(
-                    f"exclude-newer-package entry `{key}`: {reason} — {detail}. "
-                    "Add `# lint: keep` above the table if intentional."
+                    f"exclude-newer-package entry `{key}`: {reason} — {detail}."
                 ),
                 fixable=True,
             )

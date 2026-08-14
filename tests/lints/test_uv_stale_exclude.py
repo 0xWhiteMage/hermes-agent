@@ -137,13 +137,15 @@ def test_multiple_locked_versions_any_fresh_keeps():
     assert mod.plan(py, lock, now=NOW) == []
 
 
-def test_keep_marker_exempts_table():
-    py = _pyproject("h2 = false").replace(
+def test_a_comment_cannot_exempt_a_stale_table():
+    """There is no opt-out marker. The entry expires when its locked
+    versions outgrow the span, whatever the comment above it claims."""
+    py = _pyproject('h2 = "2026-08-04T00:00:00Z"').replace(
         "# h2: temporary exception for a CVE fix",
         "# lint: keep\n# h2: standing exception",
     )
     lock = _lock([("h2", "4.4.1", OLD)])
-    assert mod.plan(py, lock, now=NOW) == []
+    assert [(a[0], a[1]) for a in mod.plan(py, lock, now=NOW)] == [("h2", "remove")]
 
 
 _SECTION_PYPROJECT = (
@@ -190,12 +192,15 @@ def test_section_form_emptied_drops_header_and_comment():
     assert parsed["tool"]["uv"]["exclude-newer"] == "14 days"
 
 
-def test_section_form_keep_marker_respected():
+def test_section_form_comment_cannot_exempt_the_table():
     py = _SECTION_PYPROJECT.replace(
         "# temporary exceptions", "# lint: keep\n# standing exceptions"
     )
     lock = _lock([("h2", "4.4.1", OLD), ("vercel", "1.0.0", OLD)])
-    assert mod.plan(py, lock, now=NOW) == []
+    assert {(a[0], a[1]) for a in mod.plan(py, lock, now=NOW)} == {
+        ("h2", "remove"),
+        ("vercel", "remove"),
+    }
 
 
 def test_real_repo_pyproject_parses():
@@ -204,7 +209,7 @@ def test_real_repo_pyproject_parses():
     lock = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
     span = mod.parse_span(py)
     assert span is not None and span.days >= 1
-    form, _, _ = mod.locate_table(py)
+    form, _ = mod.locate_table(py)
     assert form is not None, "repo pyproject should carry the table"
     mod.plan(py, lock)  # must not raise
 
