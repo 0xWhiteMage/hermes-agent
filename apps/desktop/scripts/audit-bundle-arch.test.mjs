@@ -103,6 +103,8 @@ test('PortableGit internals stay exempt from the arch audit', () => {
   // staging script PE-probes cmd/git.exe itself.
   for (const relPath of [
     'resources/agent-payload/git/mingw64/bin/Atlassian.Bitbucket.UI.exe',
+    'resources/agent-payload/git/clangarm64/libexec/git-core/Avalonia.dll',
+    'resources/agent-payload/git/clangarm64/libexec/git-core/msalruntime.dll',
     'resources/agent-payload/git/usr/libexec/getprocaddr32.exe',
     'resources/agent-payload/git/cmd/git.exe'
   ]) {
