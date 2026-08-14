@@ -34,9 +34,14 @@ const {
   protocolScheme,
   msixAppIdWithOrg
 } = require('./product-identity.cjs')
+const { default: process } = require('node:process')
 
 /** @typedef {import("app-builder-lib").Configuration} Configuration */
 
+const [owner, repo] = (process.env.GITHUB_REPOSITORY || 'NousResearch/hermes-agent').split('/')
+if (!owner || !repo) {
+  throw new Error(`invalid GITHUB_REPOSITORY ${process.env.GITHUB_REPOSITORY}`)
+}
 const electronVersion = require('./package.json').devDependencies.electron
 if (!electronVersion.matches(/^\d+\.\d+\.\d+$/)) {
   throw new Error(`invalid electron version ${electronVersion} in package.json`)
@@ -59,8 +64,8 @@ module.exports = {
   publish: [
     {
       provider: 'github',
-      owner: 'NousResearch',
-      repo: 'hermes-agent',
+      owner,
+      repo,
       channel
     }
   ],
