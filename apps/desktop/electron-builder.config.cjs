@@ -37,9 +37,13 @@ const {
 
 /** @typedef {import("app-builder-lib").Configuration} Configuration */
 
+const electronVersion = require('./package.json').devDependencies.electron
+if (!electronVersion.matches(/^\d+\.\d+\.\d+$/)) {
+  throw new Error(`invalid electron version ${electronVersion} in package.json`)
+}
 /** @type {Configuration} */
 module.exports = {
-  electronVersion: '40.10.2',
+  electronVersion,
   appId,
   productName: displayName,
   executableName: displayName,
