@@ -38,9 +38,10 @@ def _load_uv_pin() -> dict:
 
 
 def _load_git_pin() -> dict:
-    # Windows only: install.sh gets git from a system package manager (or
-    # the user already has one), while Windows has no such thing and the
-    # installer downloads PortableGit itself.
+    # Windows targets only. install.ps1 downloads PortableGit because
+    # Windows needs git bash. macOS and Linux use the machine's git, so
+    # the pin table declares those targets as reasoned gaps and there is
+    # nothing for install.sh to stage.
     return _load_pin("git", _WINDOWS_TARGETS)
 
 
@@ -62,6 +63,7 @@ def _sh_fragment(uv: dict) -> str:
         "# Derived from installation/runtime-pins.json. DO NOT EDIT BY HAND:",
         "# run scripts/gen-bootstrap-pins.py after a pin bump.",
         f'UV_PIN_VERSION="{uv["version"]}"',
+        f'PYTHON_PIN_VERSION="{uv.get("python", "")}"',
         "",
         "# Sets UV_PIN_URL + UV_PIN_SHA256 for a <os>-<arch> target key.",
         "uv_bootstrap_pin() {",
@@ -155,6 +157,12 @@ def main() -> int:
         ),
         "scripts/install.ps1": _splice(
             REPO_ROOT / "scripts" / "install.ps1", _ps1_fragment(uv, git), args.check
+        ),
+        # The dev-checkout wrapper stages the same pinned uv, so it holds
+        # the same fragment. (Its git needs are covered by "you cloned
+        # this repo, so you have git".)
+        "setup-hermes.sh": _splice(
+            REPO_ROOT / "setup-hermes.sh", _sh_fragment(uv), args.check
         ),
     }
     stale = [name for name, fresh in results.items() if not fresh]

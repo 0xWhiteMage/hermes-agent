@@ -536,6 +536,7 @@ detect_os() {
 # Derived from installation/runtime-pins.json. DO NOT EDIT BY HAND:
 # run scripts/gen-bootstrap-pins.py after a pin bump.
 UV_PIN_VERSION="0.12.3"
+PYTHON_PIN_VERSION="3.11.15"
 
 # Sets UV_PIN_URL + UV_PIN_SHA256 for a <os>-<arch> target key.
 uv_bootstrap_pin() {
@@ -727,131 +728,37 @@ check_python() {
     fi
 }
 
-# Best-effort automatic git provisioning, mirroring install.ps1's Install-Git
-# (which downloads PortableGit on Windows). git is required to clone the repo,
-# and a fresh "normie" machine with no developer tools won't have it. Returns 0
-# if git is available afterwards, non-zero otherwise (caller prints manual
-# instructions and aborts).
-attempt_install_git() {
-    case "$OS" in
-        macos)
-            # Prefer Homebrew — fully headless when present.
-            if command -v brew >/dev/null 2>&1; then
-                log_info "Installing Git via Homebrew..."
-                brew install git >/dev/null 2>&1 || true
-                command -v git >/dev/null 2>&1 && return 0
-            fi
-            # Fall back to Apple Command Line Tools, which provide git AND the
-            # compiler some Python wheels need. `xcode-select --install` pops a
-            # system dialog (Apple gates CLT behind it — it cannot be fully
-            # silent without MDM), so we trigger it and poll for git to appear.
-            if command -v xcode-select >/dev/null 2>&1; then
-                log_info "Requesting Apple Command Line Tools (provides git + compiler)..."
-                log_info "If a macOS dialog appears, click \"Install\" and accept the license."
-                xcode-select --install >/dev/null 2>&1 || true
-                local waited=0
-                local timeout=900
-                while [ "$waited" -lt "$timeout" ]; do
-                    if command -v git >/dev/null 2>&1 && git --version >/dev/null 2>&1; then
-                        return 0
-                    fi
-                    sleep 5
-                    waited=$((waited + 5))
-                    if [ $((waited % 60)) -eq 0 ]; then
-                        log_info "Still waiting for Command Line Tools install ($((waited / 60))m)..."
-                    fi
-                done
-            fi
-            return 1
-            ;;
-        linux)
-            local sudo_cmd=""
-            if [ "$(id -u 2>/dev/null || echo 1000)" -ne 0 ]; then
-                command -v sudo >/dev/null 2>&1 && sudo_cmd="sudo"
-            fi
-            case "$DISTRO" in
-                ubuntu|debian)
-                    log_info "Installing Git via apt..."
-                    $sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
-                    $sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git >/dev/null 2>&1 || true
-                    ;;
-                fedora)
-                    log_info "Installing Git via dnf..."
-                    $sudo_cmd dnf install -y git >/dev/null 2>&1 || true
-                    ;;
-                arch)
-                    log_info "Installing Git via pacman..."
-                    $sudo_cmd pacman -S --noconfirm git >/dev/null 2>&1 || true
-                    ;;
-                *)
-                    return 1
-                    ;;
-            esac
-            command -v git >/dev/null 2>&1 && return 0
-            return 1
-            ;;
-    esac
-    return 1
-}
-
+# git is required to clone the repo. macOS and Linux use the machine's git
+# by design: a 147MB dugite download to run `git clone` is the wrong trade
+# where git is one package-manager command away, so this reports the fix
+# instead of bundling one. Windows is different and install.ps1 owns it:
+# git bash ships inside PortableGit there.
 check_git() {
     log_info "Checking Git..."
 
-    # On fresh macOS /usr/bin/git is a stub that exits non-zero until CLT is installed.
+    # A working system git is enough for the clone — decision 1
+    # (system-git-first): the provisioner later records it as a fact and
+    # the pinned dugite git only exists for boxes with none. On fresh
+    # macOS /usr/bin/git is the xcode-select shim: a stub that exits
+    # non-zero AND pops a system dialog if invoked carelessly, so the
+    # `git --version` probe below must be the only thing we run.
     if command -v git &> /dev/null && git --version &> /dev/null; then
         GIT_VERSION=$(git --version | awk '{print $3}')
         log_success "Git $GIT_VERSION found"
         return 0
     fi
 
-    log_error "Git not found"
-
-    if [ "$DISTRO" = "termux" ]; then
-        log_info "Installing Git via pkg..."
-        pkg install -y git >/dev/null
-        if command -v git >/dev/null 2>&1; then
-            GIT_VERSION=$(git --version | awk '{print $3}')
-            log_success "Git $GIT_VERSION installed"
-            return 0
-        fi
-    fi
-
-    # Try to install it automatically before giving up (parity with install.ps1).
-    log_info "Attempting to install Git automatically..."
-    if attempt_install_git; then
-        GIT_VERSION=$(git --version | awk '{print $3}')
-        log_success "Git $GIT_VERSION installed"
-        return 0
-    fi
-
-    log_warn "Could not install Git automatically. Please install it manually:"
-
+    log_error "Git not found. Install it and re-run:"
     case "$OS" in
         linux)
-            case "$DISTRO" in
-                ubuntu|debian)
-                    log_info "  sudo apt update && sudo apt install git"
-                    ;;
-                fedora)
-                    log_info "  sudo dnf install git"
-                    ;;
-                arch)
-                    log_info "  sudo pacman -S git"
-                    ;;
-                *)
-                    log_info "  Use your package manager to install git"
-                    ;;
-            esac
-            ;;
-        android)
-            log_info "  pkg install git"
+            log_info "  Debian/Ubuntu: sudo apt-get install git"
+            log_info "  Fedora:        sudo dnf install git"
+            log_info "  Arch:          sudo pacman -S git"
             ;;
         macos)
-            log_info "  xcode-select --install"
-            log_info "  Or: brew install git"
+            log_info "  brew install git    (or xcode-select --install)"
             ;;
     esac
-
     exit 1
 }
 
