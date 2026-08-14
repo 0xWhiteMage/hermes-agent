@@ -50,12 +50,27 @@ class TestCurrentTarget:
         assert platform in ("darwin", "linux", "win32")
         assert arch in ("arm64", "x64")
 
-    def test_the_host_target_is_pinned_for_every_tool(self):
-        """A platform Hermes runs on must have a download for every tool,
-        or provisioning silently degrades to system PATH there."""
+    def test_the_host_target_is_pinned_for_every_required_tool(self):
+        """A platform Hermes runs on must have a download for every
+        REQUIRED tool, or provisioning silently degrades to system PATH.
+
+        Optional tools may declare a reasoned gap for a target. git is
+        the standing case: on macOS and Linux the machine's git is used
+        deliberately (see installation/git.py), so the absence there is
+        the design rather than a hole. A gap must still be DECLARED —
+        an undeclared missing row is the bug this guards.
+        """
         target = rr.current_target()
 
         for tool, entry in rr.load_pins().items():
+            spec = entry["files"].get(rr.ANY_TARGET) or entry["files"].get(target, {})
+            if "missing" in spec:
+                assert entry.get("optional", False), (
+                    f"{tool} is required but declares a gap on {target}"
+                )
+                with pytest.raises(KeyError, match="has no build for"):
+                    rr.pinned_file(tool, target)
+                continue
             assert rr.pinned_file(tool, target).url, f"{tool} has no {target} download"
 
 
@@ -265,8 +280,16 @@ class TestRealPinTable:
             "win32-arm64",
         }
 
-        for tool in rr.load_pins():
+        for tool, entry in rr.load_pins().items():
+            files = entry["files"]
             for target in expected:
+                spec = files.get(rr.ANY_TARGET) or files.get(target, {})
+                if "missing" in spec:
+                    # The gap is allowed ONLY as an explicit, reasoned
+                    # declaration — and the resolver must surface it.
+                    with pytest.raises(KeyError, match="has no build for"):
+                        rr.pinned_file(tool, target)
+                    continue
                 # Either a per-target row or a target-independent 'any'
                 # artifact — what matters is that nothing is unreachable.
                 assert rr.pinned_file(tool, target).url, f"{tool}/{target}"
@@ -274,6 +297,8 @@ class TestRealPinTable:
     def test_every_download_is_https_with_a_full_digest(self):
         for tool, entry in rr.load_pins().items():
             for target, spec in entry["files"].items():
+                if "missing" in spec:
+                    continue
                 assert spec["url"].startswith("https://"), f"{tool}/{target}"
                 assert len(spec["sha256"]) == 64, f"{tool}/{target}"
                 int(spec["sha256"], 16)  # raises unless it is hex
@@ -292,8 +317,24 @@ class TestRealPinTable:
         file and fails verification. A tool pinning one 'any' artifact
         has nothing to copy-paste wrong."""
         for tool, entry in rr.load_pins().items():
-            digests = [spec["sha256"] for spec in entry["files"].values()]
-            assert len(digests) == len(set(digests)), tool
+            by_url: dict[str, str] = {}
+            by_digest: dict[str, str] = {}
+            for target, spec in entry["files"].items():
+                if "missing" in spec:
+                    continue
+                url, digest = spec["url"], spec["sha256"]
+                if url in by_url:
+                    assert by_url[url] == digest, (
+                        f"{tool}/{target}: same url, two digests -- "
+                        f"one of them cannot verify"
+                    )
+                if digest in by_digest:
+                    assert by_digest[digest] == url, (
+                        f"{tool}/{target}: digest is reused across two urls "
+                        f"({by_digest[digest]} and {url}) -- a pasted digest"
+                    )
+                by_url[url] = digest
+                by_digest[digest] = url
 
     def test_every_extends_edge_names_a_pinned_tool(self):
         """A dangling edge would silently drop out of both derived
@@ -315,16 +356,27 @@ class TestRealPinTable:
         assert install.index("npm") > install.index("node")
         assert path.index("npm") < path.index("node")
 
-    def test_git_ships_the_same_version_from_both_suppliers(self):
-        """dugite-native (POSIX) and PortableGit (Windows) are different
-        builds of the same git. Letting them drift apart would make git
-        behaviour depend on the user's platform."""
+    def test_git_is_windows_only_and_declares_why_elsewhere(self):
+        """Windows bundles PortableGit; macOS and Linux use the machine's git.
+
+        Windows needs git bash: ``bash.exe`` ships inside PortableGit,
+        and a system git's bash can be missing or ASLR-broken, so the
+        managed copy is the contract there. On POSIX a 147MB dugite
+        download to run ``git rev-parse`` is the wrong trade, so those
+        targets are declared gaps and ``installation.git.git_path()``
+        takes a system git that clears the flag floor.
+        """
         git = rr.load_pins()["git"]
 
-        assert "dugite-native" in git["files"]["darwin-arm64"]["url"]
-        assert "PortableGit" in git["files"]["win32-x64"]["url"]
-        # One version field covers both — the table cannot express a skew.
-        assert git["version"] == "2.53.0"
+        assert git["optional"] is True, (
+            "a required tool with a hole bricks the install on that platform"
+        )
+        for target in ("win32-x64", "win32-arm64"):
+            assert "url" in git["files"][target], target
+        for target in ("darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"):
+            # A declared gap must say WHY, so "upstream ships nothing"
+            # stays separable from "someone forgot a row".
+            assert git["files"][target].get("missing"), target
 
     def test_windows_git_is_portablegit_not_mingit(self):
         """MinGit omits bash.exe, which the desktop needs
