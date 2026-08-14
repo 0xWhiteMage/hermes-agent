@@ -383,13 +383,6 @@ $PythonVersion = "3.11"
 # source of truth shared by Test-Python's fallback and Resolve-AvailablePythonVersion.
 $PythonFallbackVersions = @("3.12", "3.13", "3.10")
 $NodeVersion = "26"
-# The npm range the root package.json pins in `engines.npm`.  A constant rather
-# than a manifest read like the POSIX side does: Test-Node runs BEFORE the repo
-# is cloned, so there is usually no package.json on disk yet (and none at all
-# when install.ps1 is piped straight from the web).  Get-NpmRange prefers the
-# manifest whenever it does exist, so a drifted constant self-corrects on any
-# run against an existing checkout.
-$NpmRange = ">=12.0.0"
 
 # Stage-protocol version.  Bumped only for genuinely breaking changes to the
 # manifest schema, stage-name set semantics, or stdout JSON shape.  Adding a
@@ -910,132 +903,6 @@ function Set-ManagedNodeFirstOnUserPath {
     }
 }
 
-# The npm range to install into the managed Node tree.  Prefers the checkout's
-# root package.json so the installer and the manifest cannot drift; falls back
-# to the $NpmRange constant, which is the common case here because Test-Node
-# runs before the repo is cloned.
-function Get-NpmRange {
-    $manifest = Join-Path $InstallDir "package.json"
-    if (Test-Path $manifest) {
-        try {
-            $engines = (Get-Content $manifest -Raw | ConvertFrom-Json).engines
-            if ($engines -and $engines.npm) { return [string]$engines.npm }
-        } catch { }
-    }
-    return $NpmRange
-}
-
-# Upgrade the Hermes-managed Node tree's bundled npm into $NpmRange.
-#
-# The nodejs.org zip ships whatever npm that Node major bundles -- Node 26.5.1
-# bundles npm 11.17.0, one minor below the root package.json's own
-# `engines.npm` floor of >=12.  The repo .npmrc sets `engine-strict=true`, so
-# that is fatal rather than a warning and a brand-new install dies at the first
-# `npm ci` with EBADENGINE.  Provision the right npm here instead of reacting
-# to the failure later.
-#
-# Three details are load-bearing, mirroring _nb_ensure_bundled_npm_range in
-# scripts/lib/node-bootstrap.sh and upgrade_managed_npm in
-# hermes_cli/npm_engine.py:
-#   - a temp cwd, so the checkout's own .npmrc (engine-strict,
-#     min-release-age) does not gate the very upgrade meant to satisfy it;
-#   - npm_config_min_release_age=0, which also neutralises a user ~/.npmrc;
-#   - an explicit --prefix at the managed tree, so the upgrade rewrites the
-#     tree's own npm rather than installing a second copy elsewhere.
-#
-# Best-effort: a failure leaves a working Node with an old npm, which beats no
-# Node at all, and npm_engine.py still covers the EBADENGINE that follows.
-function Update-ManagedNpm {
-    param([string]$NodeDir)
-
-    $npmCmd = Join-Path $NodeDir "npm.cmd"
-    if (-not (Test-Path $npmCmd)) { return $false }
-
-    $range = Get-NpmRange
-
-    # Skip the network round-trip when the bundled npm already satisfies the
-    # range.  Only the ">=N" shape we actually author is parsed; anything more
-    # exotic falls through to letting npm itself decide.
-    if ($range -match '^>=(\d+)') {
-        $want = [int]$Matches[1]
-        try {
-            $have = (& $npmCmd --version 2>$null)
-            if ($have -match '^(\d+)') {
-                if ([int]$Matches[1] -ge $want) { return $true }
-            }
-        } catch { }
-    }
-
-    # In-app updates run while the desktop app's Node processes are alive.
-    # The managed npm lives inside the very tree they execute from, so an
-    # in-place upgrade would hit WinError 5 (Access denied) on npm.cmd
-    # (#80926).  Defer; the next update with the app closed retries.
-    if (Test-ManagedNodeInUse $NodeDir) {
-        Write-Warn "Hermes-managed Node.js is in use by a running app; skipping the bundled npm upgrade (applies on a later update with the app closed)."
-        return $false
-    }
-
-    Write-Info "Upgrading bundled npm to satisfy $range ..."
-
-    $tmpCwd = Join-Path $env:TEMP ("hermes-npm-upgrade-" + [Guid]::NewGuid().ToString("N"))
-    New-Item -ItemType Directory -Force -Path $tmpCwd | Out-Null
-    $prevAge = $env:npm_config_min_release_age
-    $prevCI = $env:CI
-    $prevEAP = $ErrorActionPreference
-    Push-Location $tmpCwd
-    try {
-        $env:npm_config_min_release_age = "0"
-        $env:CI = "1"
-        # Relax EAP=Stop so npm's stderr lines don't get wrapped as
-        # ErrorRecords and short-circuit before $LASTEXITCODE is checked.
-        # Same pattern as Install-Uv.
-        $ErrorActionPreference = "Continue"
-        & $npmCmd install --global --prefix $NodeDir "npm@$range" `
-            --no-fund --no-audit --progress=false 2>&1 | Out-Null
-        $exit = $LASTEXITCODE
-    } catch {
-        $exit = 1
-    } finally {
-        $ErrorActionPreference = $prevEAP
-        Pop-Location
-        $env:npm_config_min_release_age = $prevAge
-        $env:CI = $prevCI
-        Remove-Item -Recurse -Force $tmpCwd -ErrorAction SilentlyContinue
-    }
-
-    if ($exit -ne 0) {
-        Write-Warn "Could not upgrade bundled npm to $range -- ``npm ci`` may fail with EBADENGINE."
-        Write-Info  "Fix manually: npm install -g --prefix `"$NodeDir`" npm@`"$range`""
-        return $false
-    }
-
-    Write-Success "npm $(& $npmCmd --version 2>$null) installed"
-    return $true
-}
-
-function Test-ManagedNodeInUse {
-    param([string]$NodeDir)
-    # Windows locks files that running processes execute from.  During an
-    # in-app update the desktop app's Node processes may hold the managed
-    # tree open, and rewriting it then fails with WinError 5 (Access denied)
-    # on npm.cmd (#80926).  Cheap pre-check used to skip destructive steps;
-    # the rename/move itself remains the authoritative guard.
-    #
-    # Check the executable path AND the command line: a cmd.exe wrapper
-    # running npm.cmd from the tree reports its own exe (cmd.exe lives in
-    # System32) while the tree path appears only in the command line.
-    # Win32_Process.CommandLine is available on Windows PowerShell 5.1 and
-    # 7+ (the Get-Process .CommandLine ETS property is 7.4+ only), and a
-    # single CIM query beats a per-process property access loop.
-    return @(
-        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-            Where-Object {
-                ($_.ExecutablePath -like "$NodeDir\*") -or
-                ($_.CommandLine -like "*$NodeDir*")
-            }
-    ).Count -gt 0
-}
-
 # Re-discover uv without re-installing it.  Cross-process stage drivers
 # (the desktop GUI's onboarding wizard, CI step-runners) invoke each stage
 # in a fresh powershell process, so $script:UvCmd set by Install-Uv in a
@@ -1375,6 +1242,13 @@ function Install-Git {
     # Download PortableGit into $HermesHome\git.  Always works as long as
     # we can reach github.com -- no admin, no winget, no reliance on the
     # user's possibly-broken system Git install.
+    #
+    # This is the BOOTSTRAP git: it must exist before the repo is cloned,
+    # so it cannot come from the provisioner (which lives in the repo).
+    # It lands in the legacy $HermesHome location on purpose --
+    # Invoke-RuntimeProvisioning salvages that tree into the install-scoped
+    # runtime dir by MOVE on its first run, so the bootstrap copy and the
+    # managed copy end up being the same bytes, downloaded once.
     Write-Info "Git not found -- downloading PortableGit to $HermesHome\git\ ..."
     Write-Info "(no admin rights required; isolated from any system Git install)"
 
@@ -1579,6 +1453,10 @@ function Test-NodeVersionOk {
 }
 
 function Test-Node {
+    # Node is a MANAGED RUNTIME now: this installer no longer downloads it.
+    # Invoke-RuntimeProvisioning (after the venv exists) installs the pinned
+    # version from runtime-pins.json via the same provisioner `hermes update`
+    # uses. This function only reports what is already on the machine.
     Write-Info "Checking Node.js (for browser tools)..."
 
     if (Get-Command node -ErrorAction SilentlyContinue) {
@@ -1589,7 +1467,9 @@ function Test-Node {
             $script:HasNode = $true
             return $true
         }
-        Write-Warn "Node.js $version is too old (Hermes requires Node >=26)"
+        Write-Warn "Node.js $version is too old -- Hermes will provision its own Node."
+    } else {
+        Write-Info "Node.js not found -- Hermes will provision its own Node."
     }
 
     $script:HasNode = $false
@@ -1601,7 +1481,7 @@ function Invoke-RuntimeProvisioning {
     # "download the pinned tools", in Python, reading runtime-pins.json.
     # This installer's job ends at "python can run"; node, git, gh and
     # ripgrep below that line belong to the provisioner.
-    Write-Info "Provisioning managed runtimes (node, npm, git, gh, ripgrep)..."
+    Write-Info "Provisioning managed runtimes (node, git, gh, ripgrep)..."
 
     $py = Join-Path $InstallDir "venv\Scripts\python.exe"
     if (-not (Test-Path $py)) {
@@ -1609,178 +1489,31 @@ function Invoke-RuntimeProvisioning {
         return $true
     }
 
-    Write-Info "Installing Hermes-managed Node.js $NodeVersion LTS..."
-
-    # Try the portable-zip path FIRST -- no UAC, no admin, no winget MSI.
-    # winget install OpenJS.NodeJS.LTS triggers a system-wide MSI install
-    # which prompts UAC (the dialog often appears minimized in the taskbar
-    # and the install silently waits for consent, looking like a hang).
-    # The portable zip path drops node.exe + npm into $HermesHome\node\
-    # which is user-scoped and identical to how Install-Git handles
-    # PortableGit.  Same UX guarantee: works on locked-down enterprise
-    # machines with no admin rights.
-    Write-Info "Downloading portable Node.js $NodeVersion to $HermesHome\node\ ..."
-    Write-Info "(no admin rights required; isolated from any system Node install)"
+    # Not fatal: a failed tool download leaves any system copy in play and
+    # the next `hermes update` retries. The provisioner reports per tool.
+    Push-Location $InstallDir
     try {
-        $arch = Get-WindowsArch
-        $indexUrl = "https://nodejs.org/dist/latest-v${NodeVersion}.x/"
-        $indexPage = Invoke-WebRequest -Uri $indexUrl -UseBasicParsing
-        $zipName = ($indexPage.Content | Select-String -Pattern "node-v${NodeVersion}\.\d+\.\d+-win-${arch}\.zip" -AllMatches).Matches[0].Value
-
-        if ($zipName) {
-            $downloadUrl = "${indexUrl}${zipName}"
-            $tmpZip = "$env:TEMP\$zipName"
-            $tmpDir = "$env:TEMP\hermes-node-extract"
-
-            Invoke-WebRequest -Uri $downloadUrl -OutFile $tmpZip -UseBasicParsing
-            if (Test-Path $tmpDir) { Remove-Item -Recurse -Force $tmpDir }
-            Expand-Archive -Path $tmpZip -DestinationPath $tmpDir -Force
-
-            $extractedDir = Get-ChildItem $tmpDir -Directory | Select-Object -First 1
-            if ($extractedDir) {
-                # Rename-swap instead of delete-then-move: the live tree is
-                # never removed before its replacement is fully extracted.
-                # Windows permits renaming a tree with running executables,
-                # but if a process holds it without FILE_SHARE_DELETE the
-                # rename fails with WinError 5 -- that refusal means the tree
-                # is in use, so defer instead of forcing the write (#80926).
-                # Best-effort sweep of staging/backup litter from interrupted
-                # runs; locked files simply stay for the next attempt.  Only
-                # dirs older than 10 minutes are removed so a concurrent
-                # heal's in-flight swap is never disturbed.
-                Get-ChildItem "$HermesHome" -Directory -Filter "node.old-*" -ErrorAction SilentlyContinue |
-                    Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-10) } |
-                    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-                Get-ChildItem "$HermesHome" -Directory -Filter "node.new-*" -ErrorAction SilentlyContinue |
-                    Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-10) } |
-                    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-                $stamp = [Guid]::NewGuid().ToString("N")
-                $staged = "$HermesHome\node.new-$stamp"
-                $backup = "$HermesHome\node.old-$stamp"
-                # Stage to a sibling directory so the final swap is a
-                # same-volume rename (atomic), not a cross-volume Move-Item
-                # (copy+delete, non-atomic -- a partial copy would leave a
-                # broken tree).  Move from $env:TEMP here, rename below.
-                try {
-                    Move-Item $extractedDir.FullName $staged -ErrorAction Stop
-                } catch {
-                    Write-Warn "Failed to stage the new Node.js tree; aborting the Node upgrade."
-                    Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
-                    Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
-                    return $false
-                }
-                if (Test-Path "$HermesHome\node") {
-                    try {
-                        Rename-Item "$HermesHome\node" $backup -ErrorAction Stop
-                    } catch {
-                        Write-Warn "Hermes-managed Node.js is in use by a running app; deferring its upgrade. Close the app and re-run the update."
-                        Remove-Item -Recurse -Force $staged -ErrorAction SilentlyContinue
-                        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
-                        Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
-                        return $false
-                    }
-                    # A rename preserves LastWriteTime, so a backup renamed
-                    # from a long-lived tree would instantly look older than
-                    # the litter-sweep cutoff to a concurrent heal.  Touch it
-                    # (best-effort) so the in-flight backup is never swept.
-                    try {
-                        (Get-Item $backup).LastWriteTime = Get-Date
-                    } catch { }
-                    try {
-                        Rename-Item $staged "$HermesHome\node" -ErrorAction Stop
-                    } catch {
-                        # Restore the live tree before bailing.  The swap is a
-                        # same-volume rename, so a failure leaves no partial
-                        # target to clear.
-                        Rename-Item $backup "$HermesHome\node" -ErrorAction SilentlyContinue
-                        Remove-Item -Recurse -Force $staged -ErrorAction SilentlyContinue
-                        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
-                        Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
-                        return $false
-                    }
-                    Remove-Item -Recurse -Force $backup -ErrorAction SilentlyContinue
-                } else {
-                    try {
-                        Rename-Item $staged "$HermesHome\node" -ErrorAction Stop
-                    } catch {
-                        Remove-Item -Recurse -Force $staged -ErrorAction SilentlyContinue
-                        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
-                        Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
-                        return $false
-                    }
-                }
-
-                # Session PATH so the rest of this run sees node/npm.
-                $env:Path = "$HermesHome\node;$env:Path"
-
-                # Persist to User PATH so fresh shells (and future stages
-                # in cross-process driver mode) see it.  Matches the
-                # pattern Install-Git uses for PortableGit.  See
-                # Set-ManagedNodeFirstOnUserPath for why this is a
-                # move-to-front and not an add-if-missing.
-                Set-ManagedNodeFirstOnUserPath "$HermesHome\node"
-
-                $version = & "$HermesHome\node\node.exe" --version
-                Write-Success "Node.js $version installed to $HermesHome\node\ (portable, user-scoped)"
-                # The zip's bundled npm is below the repo's engines.npm floor.
-                Update-ManagedNpm "$HermesHome\node" | Out-Null
-                $script:HasNode = $true
-
-                Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
-                Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
-                return $true
-            }
-        }
-    } catch {
-        Write-Warn "Portable Node.js download failed: $_"
+        & $py -m hermes_cli.post_update --install-phase
+        $code = $LASTEXITCODE
+    } finally {
+        Pop-Location
     }
 
-    # Fallback: try winget (used to be primary, demoted because the MSI
-    # install triggers a UAC prompt that frequently appears minimized in
-    # the taskbar -- looks like a hang to users on stock Windows).
-    # Kept for environments where the portable download fails (proxy,
-    # locked firewall, etc.) but the user is willing to consent to UAC.
-    if (Get-Command winget -ErrorAction SilentlyContinue) {
-        Write-Info "Falling back to winget (may prompt UAC -- check your taskbar for a flashing icon)..."
-        # Capture EAP outside the try block so the catch's restore call always
-        # has a meaningful value (see Install-Uv for the full rationale).
-        $prevEAP = $ErrorActionPreference
-        try {
-            # Relax EAP=Stop so stderr lines from winget don't get wrapped
-            # as ErrorRecords and short-circuit the 2>&1 pipe before we can
-            # check the post-condition.  See the long comment in Install-Uv
-            # for the same pattern.
-            $ErrorActionPreference = "Continue"
-            # On ARM64, force winget to fetch the ARM64 installer.  Without
-            # the explicit override, winget on WoW64 sometimes still resolves
-            # to x64 manifests, leaving us with an emulated Node toolchain
-            # even after a "successful" install.  The OpenJS manifest does
-            # publish an arm64 installer, so this is safe.
-            $wingetArgs = @(
-                'install','OpenJS.NodeJS','--silent',
-                '--accept-package-agreements','--accept-source-agreements'
-            )
-            if ((Get-WindowsArch) -eq 'arm64') {
-                $wingetArgs += @('--architecture','arm64')
-            }
-            winget @wingetArgs 2>&1 | Out-Null
-            $ErrorActionPreference = $prevEAP
-            # Refresh PATH
-            $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
-            if (Get-Command node -ErrorAction SilentlyContinue) {
-                $version = node --version
-                Write-Success "Node.js $version installed via winget"
-                $script:HasNode = $true
-                return $true
-            }
-        } catch {
-            if ($prevEAP) { $ErrorActionPreference = $prevEAP }
-        }
+    if ($code -eq 0) {
+        Write-Success "Managed runtimes provisioned"
+    } else {
+        Write-Warn "Some managed runtimes could not be provisioned (see above)"
+        Write-Info "They will be retried on the next 'hermes update'."
     }
 
+    # Re-check Node so later stages (browser deps, desktop build) see the
+    # freshly provisioned tree.
+    $managedNode = Join-Path $InstallDir ".hermes-runtime\node\node.exe"
+    if (Test-Path $managedNode) {
+        $env:Path = (Split-Path $managedNode) + ";$env:Path"
+        $script:HasNode = $true
+    }
 
-    Write-Info "Install manually: https://nodejs.org/en/download/"
-    $script:HasNode = $false
     return $true
 }
 
@@ -1821,19 +1554,10 @@ function Update-ProcessPathForPackages {
 }
 
 function Install-SystemPackages {
-    $script:HasRipgrep = $false
+    # ripgrep is a pinned managed runtime (Invoke-RuntimeProvisioning), not
+    # a system package whose version nobody controls. Only ffmpeg is left.
     $script:HasFfmpeg = $false
-    $needRipgrep = $false
     $needFfmpeg = $false
-
-    Write-Info "Checking ripgrep (fast file search)..."
-    if (Get-Command rg -ErrorAction SilentlyContinue) {
-        $version = rg --version | Select-Object -First 1
-        Write-Success "$version found"
-        $script:HasRipgrep = $true
-    } else {
-        $needRipgrep = $true
-    }
 
     Write-Info "Checking ffmpeg (TTS voice messages)..."
     if (Get-Command ffmpeg -ErrorAction SilentlyContinue) {
@@ -1843,7 +1567,7 @@ function Install-SystemPackages {
         $needFfmpeg = $true
     }
 
-    if (-not $needRipgrep -and -not $needFfmpeg) { return }
+    if (-not $needFfmpeg) { return }
 
     # Build description and package lists for each package manager
     $descParts = @()
@@ -1851,12 +1575,6 @@ function Install-SystemPackages {
     $chocoPkgs = @()
     $scoopPkgs = @()
 
-    if ($needRipgrep) {
-        $descParts += "ripgrep for faster file search"
-        $wingetPkgs += "BurntSushi.ripgrep.MSVC"
-        $chocoPkgs += "ripgrep"
-        $scoopPkgs += "ripgrep"
-    }
     if ($needFfmpeg) {
         $descParts += "ffmpeg for TTS voice messages"
         $wingetPkgs += "Gyan.FFmpeg"
@@ -1916,14 +1634,6 @@ function Install-SystemPackages {
         # %LOCALAPPDATA%\Microsoft\WinGet\Links (added to PATH only in
         # newly-spawned shells, not this process) are visible to Get-Command below.
         Update-ProcessPathForPackages
-        if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
-            Write-Success "ripgrep installed"
-            $script:HasRipgrep = $true
-            $needRipgrep = $false
-            Remove-Item -Path $pkgLogs["BurntSushi.ripgrep.MSVC"] -ErrorAction SilentlyContinue
-        } elseif ($pkgLogs.ContainsKey("BurntSushi.ripgrep.MSVC")) {
-            Write-Warn "winget could not install ripgrep; details: $($pkgLogs['BurntSushi.ripgrep.MSVC'])"
-        }
         if ($needFfmpeg -and (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
             Write-Success "ffmpeg installed"
             $script:HasFfmpeg = $true
@@ -1932,21 +1642,16 @@ function Install-SystemPackages {
         } elseif ($pkgLogs.ContainsKey("Gyan.FFmpeg")) {
             Write-Warn "winget could not install ffmpeg; details: $($pkgLogs['Gyan.FFmpeg'])"
         }
-        if (-not $needRipgrep -and -not $needFfmpeg) { return }
+        if (-not $needFfmpeg) { return }
     }
 
     # Fallback: choco
-    if ($hasChoco -and ($needRipgrep -or $needFfmpeg)) {
+    if ($hasChoco -and $needFfmpeg) {
         Write-Info "Trying Chocolatey..."
         foreach ($pkg in $chocoPkgs) {
             try { choco install $pkg -y 2>&1 | Out-Null } catch { }
         }
         Update-ProcessPathForPackages
-        if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
-            Write-Success "ripgrep installed via chocolatey"
-            $script:HasRipgrep = $true
-            $needRipgrep = $false
-        }
         if ($needFfmpeg -and (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
             Write-Success "ffmpeg installed via chocolatey"
             $script:HasFfmpeg = $true
@@ -1955,17 +1660,12 @@ function Install-SystemPackages {
     }
 
     # Fallback: scoop
-    if ($hasScoop -and ($needRipgrep -or $needFfmpeg)) {
+    if ($hasScoop -and $needFfmpeg) {
         Write-Info "Trying Scoop..."
         foreach ($pkg in $scoopPkgs) {
             try { scoop install $pkg 2>&1 | Out-Null } catch { }
         }
         Update-ProcessPathForPackages
-        if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
-            Write-Success "ripgrep installed via scoop"
-            $script:HasRipgrep = $true
-            $needRipgrep = $false
-        }
         if ($needFfmpeg -and (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
             Write-Success "ffmpeg installed via scoop"
             $script:HasFfmpeg = $true
@@ -1974,10 +1674,6 @@ function Install-SystemPackages {
     }
 
     # Show manual instructions for anything still missing
-    if ($needRipgrep) {
-        Write-Warn "ripgrep not installed (file search will use findstr fallback)"
-        Write-Info "  winget install BurntSushi.ripgrep.MSVC"
-    }
     if ($needFfmpeg) {
         Write-Warn "ffmpeg not installed (TTS voice messages will be limited)"
         Write-Info "  winget install Gyan.FFmpeg"
@@ -3836,13 +3532,14 @@ function Install-Desktop {
     # so an "unpacked" build (electron-builder --dir) is enough -- we
     # don't need to produce an NSIS/MSI artifact here.
 
-    # Always re-resolve Node here. Stages run in separate PowerShell processes,
-    # so $script:HasNode from Stage-Node isn't visible; more importantly Test-Node
-    # enforces the build floor (Node >=26) and prepends the Hermes-managed
-    # Node to PATH, so the build never runs on a too-old system Node -- the cause
-    # of the opaque "Build desktop app ... exit code 1" failure (Vite crashes on
-    # old Node).
+    # Always re-resolve Node here. Stages run in separate PowerShell
+    # processes, so $script:HasNode from Stage-Node isn't visible, and the
+    # build must never run on a too-old system Node -- the cause of the
+    # opaque "Build desktop app ... exit code 1" failure (Vite crashes on
+    # old Node). Test-Node reports; Invoke-RuntimeProvisioning guarantees a
+    # pinned Node and puts it on PATH (no-op when already satisfied).
     Test-Node | Out-Null
+    if (-not $script:HasNode) { Invoke-RuntimeProvisioning | Out-Null }
     if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
         Write-Warn "Skipping desktop build (Node.js / npm not on PATH)"
         $script:_StageSkippedReason = "Node.js not available"
@@ -4447,11 +4144,6 @@ function Write-Completion {
         Write-Host ""
     }
     
-    if (-not $HasRipgrep) {
-        Write-Host "Note: ripgrep (rg) was not installed. For faster file search:" -ForegroundColor Yellow
-        Write-Host "  winget install BurntSushi.ripgrep.MSVC" -ForegroundColor Yellow
-        Write-Host ""
-    }
 }
 
 # ============================================================================
@@ -4532,7 +4224,7 @@ $InstallStages = @(
     @{ Name = "python";           Title = "Verifying Python $PythonVersion";      Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Python" }
     @{ Name = "git";              Title = "Installing Git";                       Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Git" }
     @{ Name = "node";             Title = "Detecting Node.js";                    Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Node" }
-    @{ Name = "system-packages";  Title = "Installing ripgrep and ffmpeg";        Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-SystemPackages" }
+    @{ Name = "system-packages";  Title = "Installing ffmpeg";                    Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-SystemPackages" }
     @{ Name = "repository";       Title = "Cloning Hermes repository";            Category = "install";      NeedsUserInput = $false; Worker = "Stage-Repository" }
     @{ Name = "venv";             Title = "Creating Python virtual environment";  Category = "install";      NeedsUserInput = $false; Worker = "Stage-Venv" }
     @{ Name = "dependencies";     Title = "Installing Python dependencies";       Category = "install";      NeedsUserInput = $false; Worker = "Stage-Dependencies" }
@@ -4581,15 +4273,17 @@ function Stage-Git              {
 # existing Write-Completion behavior that prints a "Note: Node.js could
 # not be installed" hint instead of aborting.
 function Stage-Node             {
-    if (-not (Test-Node)) {
-        $script:_StageSkippedReason = "Node.js not available; browser tools will be unavailable until node is installed manually from https://nodejs.org/en/download/"
-    }
+    # Reports the machine's Node; the provisioner (Stage-NodeDeps) installs
+    # the pinned one. No manual-install hint: Hermes provisions its own.
+    [void](Test-Node)
 }
 function Stage-SystemPackages   { Install-SystemPackages }
 function Stage-Repository       { Install-Repository }
 function Stage-Venv             { Resolve-UvCmd; Install-Venv }
 function Stage-Dependencies     { Resolve-UvCmd; Install-Dependencies }
-function Stage-NodeDeps         { Install-NodeDeps }
+# Stage NAME is protocol (the GUI driver renders it); its body is now the
+# shared provisioner first, then the npm-installed browser tooling.
+function Stage-NodeDeps         { Invoke-RuntimeProvisioning; Install-NodeDeps }
 function Stage-Desktop          { Install-DesktopVoiceDeps; Install-Desktop }
 function Stage-Path             { Set-PathVariable }
 function Stage-ConfigTemplates  { Copy-ConfigTemplates }
@@ -4716,7 +4410,7 @@ function Invoke-EnsureMode {
                 }
             }
             "ripgrep" {
-                Write-Info "ripgrep: install manually on Windows (scoop install ripgrep)"
+                Invoke-RuntimeProvisioning | Out-Null
             }
             "ffmpeg" {
                 Write-Info "ffmpeg: install manually on Windows (scoop install ffmpeg)"
