@@ -250,8 +250,8 @@ def default_downgrade_notice() -> Optional[str]:
 
 
 def _managed_bin_dir() -> Optional[str]:
-    """Hermes' own bin dir ($HERMES_HOME/bin) — where install.sh puts uv/uvx
-    and where install_cli() links the browser-use binary."""
+    """Hermes' own bin dir ($HERMES_HOME/bin) — where install_cli() links
+    the browser-use binary (UV_TOOL_BIN_DIR)."""
     try:
         from hermes_constants import get_hermes_home
 
@@ -278,6 +278,18 @@ def _user_local_bin_dir() -> Optional[str]:
         return None
 
 
+def _managed_uv_dir() -> Optional[str]:
+    """The install-scoped runtime dir holding the pinned uv + uvx
+    (managed_uv.managed_uv_path()'s parent — where the installers stage them)."""
+    try:
+        from hermes_cli.managed_uv import managed_uv_path
+
+        return str(managed_uv_path().parent)
+    except Exception as e:  # pragma: no cover — defensive
+        logger.debug("Could not resolve managed uv dir: %s", e)
+        return None
+
+
 def _find_cli() -> Optional[List[str]]:
     """Locate the browser-use CLI, or None when it can't be run.
 
@@ -288,15 +300,18 @@ def _find_cli() -> Optional[List[str]]:
     (~/.local/bin / %APPDATA%\\uv\\bin, where a manual ``uv tool install``
     links binaries) are fallbacks for setups that never ran our install,
     and cover Desktop/TUI workers that spawn with a minimal PATH. The uvx
-    zero-install path (same probe order) is the final fallback.
-    """
+    zero-install path is the final fallback: it probes the install-scoped
+    runtime dir first (where the installers stage the pinned uv/uvx —
+    not on the user's PATH), then the same probe order.
+"""
     probe_paths = (_managed_bin_dir(), None, _user_local_bin_dir())
     for probe_path in probe_paths:
         if probe_path is None or probe_path:
             direct = shutil.which("browser-use", path=probe_path)
             if direct:
                 return [direct]
-    for probe_path in probe_paths:
+    uv_dir = _managed_uv_dir()
+    for probe_path in (uv_dir, *probe_paths):
         if probe_path is None or probe_path:
             uvx = shutil.which("uvx", path=probe_path)
             if uvx:
