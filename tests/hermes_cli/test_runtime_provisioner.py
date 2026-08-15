@@ -520,6 +520,84 @@ class TestTheStoreIsShared:
         assert list(store.glob(".staging-*")) == []
 
 
+class TestPublishRetry:
+    """The win32-arm64 payload lane lost the publish rename to a scanner
+    race: WinError 5 on `.staging-* -> git-2.53.0-win32-arm64` while
+    Defender held freshly-extracted PortableGit files. The retry treats
+    winerror 5/32 as transient ON WINDOWS ONLY, with bounded backoff.
+    Platform is data here (is_windows/sleep injection), per the
+    don't-fake-the-host rule."""
+
+    @staticmethod
+    def _win_err(code):
+        class _WinOSError(OSError):
+            winerror: int
+
+        err = _WinOSError(13, "Access is denied")
+        err.winerror = code
+        return err
+
+    def test_a_transient_windows_hold_is_retried_until_it_clears(
+        self, tmp_path, monkeypatch
+    ):
+        staged, entry = tmp_path / "staged", tmp_path / "entry"
+        staged.mkdir()
+        attempts = []
+        real_replace = rp.os.replace
+
+        def flaky(src, dst):
+            attempts.append(1)
+            if len(attempts) < 3:
+                raise self._win_err(5)
+            real_replace(src, dst)
+
+        monkeypatch.setattr(rp.os, "replace", flaky)
+        naps = []
+
+        rp._replace_with_retry(staged, entry, is_windows=True, sleep=naps.append)
+
+        assert entry.is_dir() and not staged.exists()
+        assert len(attempts) == 3
+        assert naps == [0.5, 1.0]  # backoff, not hammering
+
+    def test_the_retry_is_bounded_not_infinite(self, tmp_path, monkeypatch):
+        staged, entry = tmp_path / "staged", tmp_path / "entry"
+        staged.mkdir()
+
+        def always_held(src, dst):
+            raise self._win_err(32)
+
+        monkeypatch.setattr(rp.os, "replace", always_held)
+        naps = []
+
+        with pytest.raises(OSError):
+            rp._replace_with_retry(
+                staged, entry, is_windows=True, sleep=naps.append
+            )
+
+        assert len(naps) == 5  # 6 attempts, 5 waits, then the error surfaces
+
+    def test_posix_never_retries_an_access_error(self, tmp_path, monkeypatch):
+        """EACCES on POSIX is a real permissions problem — retrying would
+        just burn 15s before the same failure."""
+        staged, entry = tmp_path / "staged", tmp_path / "entry"
+        staged.mkdir()
+        attempts = []
+
+        def denied(src, dst):
+            attempts.append(1)
+            raise self._win_err(5)  # same shape; must not matter off-windows
+
+        monkeypatch.setattr(rp.os, "replace", denied)
+
+        with pytest.raises(OSError):
+            rp._replace_with_retry(
+                staged, entry, is_windows=False, sleep=lambda _s: None
+            )
+
+        assert len(attempts) == 1
+
+
 class TestSelectiveProvisioning:
     def test_only_provisions_the_named_tool(self, served, tmp_path, target):
         root, base = served

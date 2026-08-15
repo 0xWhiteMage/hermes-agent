@@ -48,6 +48,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.request
 import uuid
 import zipfile
@@ -752,6 +753,47 @@ def _is_published_entry(entry: Path, tool: str, version: str, target: str) -> bo
     )
 
 
+def _replace_with_retry(
+    staged: Path,
+    entry: Path,
+    *,
+    is_windows: bool | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """``os.replace`` with a bounded retry for Windows scanner races.
+
+    On Windows a directory rename fails with access-denied (winerror 5)
+    or sharing-violation (winerror 32) while ANY file inside is held
+    open — and Defender/the search indexer scan freshly-extracted trees.
+    PortableGit's thousands of files make git the reliable loser of that
+    race (observed on the win32-arm64 payload lane). The hold is
+    transient: retry with backoff for ~15s total before giving up.
+    Non-Windows takes the first call, and a non-transient error (real
+    permissions, wrong filesystem) still raises immediately.
+
+    *is_windows* and *sleep* are data/injection points so the retry
+    policy is testable on any host (AGENTS.md: platform as data, not a
+    faked host).
+    """
+    if is_windows is None:
+        is_windows = sys.platform == "win32"
+    delay = 0.5
+    for attempt in range(6):
+        try:
+            os.replace(staged, entry)
+            return
+        except OSError as exc:
+            transient = is_windows and getattr(exc, "winerror", None) in (5, 32)
+            if not transient or attempt == 5:
+                raise
+            logger.debug(
+                "publish rename blocked (winerror %s), retry %d in %.1fs",
+                getattr(exc, "winerror", None), attempt + 1, delay,
+            )
+            sleep(delay)
+            delay *= 2
+
+
 def _publish(staged: Path, entry: Path, tool: str, version: str, target: str) -> bool:
     """Move a staged tree into the store under its final name.
 
@@ -773,7 +815,7 @@ def _publish(staged: Path, entry: Path, tool: str, version: str, target: str) ->
             return False
         shutil.rmtree(entry, ignore_errors=True)
     try:
-        os.replace(staged, entry)
+        _replace_with_retry(staged, entry)
     except OSError:
         # Lost the race between the check and the rename, or the platform
         # refuses to replace a directory (Windows raises for a non-empty
