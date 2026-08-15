@@ -1227,6 +1227,32 @@ class TestSystemGitFirst:
         ]
         assert rr.load_facts(rt)["git"].source == "managed"
 
+    def test_a_self_contained_runtime_dir_never_takes_the_system_git(
+        self, served, tmp_path, target, monkeypatch
+    ):
+        """A packager's runtime dir (facts == bytes: the desktop payload,
+        the Nix bundle) ships to OTHER machines. A system fact would bake
+        this build host's absolute git path into the artifact — the
+        desktop's arch gate rejects exactly that. The pinned download must
+        win even when a floor-clearing system git is right there."""
+        pins = self._git_pins(served, tmp_path, target)
+        payload = tmp_path / "payload"
+        system = self._fake_system_git(tmp_path, "2.44.1")
+        monkeypatch.setattr(
+            rp.shutil, "which", lambda n: str(system) if n == "git" else None
+        )
+
+        # runtime_dir named, no store: resolve_bases' packager case.
+        results = rp.provision_runtimes(runtime_dir=payload, install_root=pins)
+
+        assert [(r.action, r.version) for r in results] == [
+            ("downloaded", "2.53.0")
+        ]
+        fact = rr.load_facts(payload)["git"]
+        assert fact.source == "managed"
+        assert not Path(fact.path).is_absolute()
+        assert (payload / fact.path).is_file()
+
     def test_a_below_floor_git_is_rejected(
         self, served, tmp_path, target, monkeypatch
     ):

@@ -274,6 +274,33 @@ test('probeElfArch returns null for a non-ELF file', () => {
 
 // ─── the payload's arch gate ───────────────────────────────────────
 
+// The gate reads tool paths from the runtimes.json the provisioner wrote
+// (store-entry layout: `<tool>-<version>-<target>/<binary>`), never from a
+// hardcoded map — the map diverged from the store naming once already and
+// killed every bundled build with "node/node.exe missing".
+const PAYLOAD_TOOL_PATHS = {
+  node: 'node-22.19.0-linux-x64/bin/node',
+  uv: 'uv-0.12.3-linux-x64/uv',
+  git: 'git-2.51.0-linux-x64/bin/git',
+  gh: 'gh-2.82.1-linux-x64/bin/gh',
+  ripgrep: 'ripgrep-15.2.0-linux-x64/rg',
+}
+
+function stagePayloadFixture(dir, { skip = [], factsOverride } = {}) {
+  const tools = {}
+  for (const [tool, rel] of Object.entries(PAYLOAD_TOOL_PATHS)) {
+    tools[tool] = { version: rel.split('-')[1], path: rel }
+    if (skip.includes(tool)) continue
+    const file = path.join(dir, rel)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, elf({ machine: 0x3e })) // EM_X86_64
+  }
+  fs.writeFileSync(
+    path.join(dir, 'runtimes.json'),
+    JSON.stringify(factsOverride ?? { schemaVersion: 2, tools }, null, 2)
+  )
+}
+
 test('assertPayloadArch accepts a payload whose binaries match the target', () => {
   // The payload IS a runtime dir: its tools are staged by the Python
   // provisioner from exact pins. This is the gate that the staged bytes
@@ -282,11 +309,7 @@ test('assertPayloadArch accepts a payload whose binaries match the target', () =
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-payload-'))
   const target = resolveTargets('linux', 'x64')
 
-  for (const rel of ['node/bin/node', 'uv/uv', 'git/bin/git', 'gh/bin/gh', 'ripgrep/rg']) {
-    const file = path.join(dir, rel)
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(file, elf({ machine: 0x3e })) // EM_X86_64
-  }
+  stagePayloadFixture(dir)
 
   assert.doesNotThrow(() => assertPayloadArch(target, dir))
 })
@@ -295,13 +318,9 @@ test('assertPayloadArch rejects a wrong-arch binary', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-payload-'))
   const target = resolveTargets('linux', 'x64')
 
-  for (const rel of ['node/bin/node', 'uv/uv', 'git/bin/git', 'gh/bin/gh', 'ripgrep/rg']) {
-    const file = path.join(dir, rel)
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(file, elf({ machine: 0x3e }))
-  }
+  stagePayloadFixture(dir)
   // One arm64 straggler is exactly the defect this catches.
-  fs.writeFileSync(path.join(dir, 'gh/bin/gh'), elf({ machine: 0xb7 }))
+  fs.writeFileSync(path.join(dir, PAYLOAD_TOOL_PATHS.gh), elf({ machine: 0xb7 }))
 
   assert.throws(() => assertPayloadArch(target, dir), /gh: staged binary is arm64/)
 })
@@ -310,9 +329,38 @@ test('assertPayloadArch rejects a payload missing a tool entirely', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-payload-'))
   const target = resolveTargets('linux', 'x64')
 
-  const file = path.join(dir, 'node/bin/node')
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(file, elf({ machine: 0x3e }))
+  // The fact exists but the bytes are gone — a truncated copy.
+  stagePayloadFixture(dir, { skip: ['uv'] })
 
-  assert.throws(() => assertPayloadArch(target, dir), /uv: uv\/uv missing/)
+  assert.throws(() => assertPayloadArch(target, dir), /uv: uv-0\.12\.3-linux-x64\/uv missing/)
+})
+
+test('assertPayloadArch rejects a payload with no fact for a tool', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-payload-'))
+  const target = resolveTargets('linux', 'x64')
+
+  stagePayloadFixture(dir, {
+    factsOverride: { schemaVersion: 2, tools: {} },
+  })
+
+  assert.throws(() => assertPayloadArch(target, dir), /node: no fact/)
+})
+
+test('assertPayloadArch rejects a system-tool (absolute-path) fact', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-payload-'))
+  const target = resolveTargets('linux', 'x64')
+
+  stagePayloadFixture(dir)
+  const facts = JSON.parse(fs.readFileSync(path.join(dir, 'runtimes.json'), 'utf8'))
+  facts.tools.git = { version: '2.51.0', path: '/usr/bin/git', source: 'system' }
+  fs.writeFileSync(path.join(dir, 'runtimes.json'), JSON.stringify(facts))
+
+  assert.throws(() => assertPayloadArch(target, dir), /git: fact records an absolute path/)
+})
+
+test('assertPayloadArch rejects a payload with no runtimes.json at all', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-payload-'))
+  const target = resolveTargets('linux', 'x64')
+
+  assert.throws(() => assertPayloadArch(target, dir), /cannot read runtimes\.json/)
 })

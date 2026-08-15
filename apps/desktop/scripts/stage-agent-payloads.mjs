@@ -307,27 +307,43 @@ function stageManagedRuntimes(target, outDir, pythonExe) {
 /**
  * Confirm every staged tool binary is built for the target.
  *
+ * Paths come from the runtimes.json the provisioner just wrote — the
+ * payload dir is its own store (installation.paths.resolve_bases), so
+ * each fact's relative path names a store entry like
+ * `node-22.19.0-win32-x64/node.exe`. The facts are the layout authority;
+ * a hardcoded `node/node.exe` map here silently diverged when the
+ * store-entry naming landed and every bundled build died on it.
+ *
  * Header inspection, not execution: the build host usually cannot run
  * what it just staged, and emulation would make a wrong-arch binary look
  * fine anyway.
  */
 export function assertPayloadArch(target, outDir) {
-  const win = target.platform === "win32"
-  const binaries = {
-    node: win ? "node/node.exe" : "node/bin/node",
-    uv: win ? "uv/uv.exe" : "uv/uv",
-    git: win ? "git/cmd/git.exe" : "git/bin/git",
-    gh: win ? "gh/bin/gh.exe" : "gh/bin/gh",
-    ripgrep: win ? "ripgrep/rg.exe" : "ripgrep/rg",
+  const required = ["node", "uv", "git", "gh", "ripgrep"]
+
+  let facts
+  try {
+    facts = JSON.parse(fs.readFileSync(path.join(outDir, "runtimes.json"), "utf8"))
+  } catch (err) {
+    throw new Error(`payload arch audit: cannot read runtimes.json in ${outDir}: ${err.message}`)
   }
 
-  for (const [tool, rel] of Object.entries(binaries)) {
-    const binary = path.join(outDir, rel)
+  for (const tool of required) {
+    const fact = facts.tools?.[tool]
+    if (!fact || !fact.path) {
+      throw new Error(`${tool}: no fact in the staged payload's runtimes.json`)
+    }
+    if (path.isAbsolute(fact.path)) {
+      // A "system" fact records a machine binary outside the payload —
+      // never acceptable in a sealed artifact that must carry its own.
+      throw new Error(`${tool}: fact records an absolute path (${fact.path}) — a sealed payload must carry the managed tool`)
+    }
+    const binary = path.join(outDir, fact.path)
     if (!fs.existsSync(binary)) {
-      throw new Error(`${tool}: ${rel} missing from the staged payload`)
+      throw new Error(`${tool}: ${fact.path} missing from the staged payload`)
     }
 
-    const arch = win
+    const arch = target.platform === "win32"
       ? probePeArch(binary)
       : (probeMachOArch(binary) ?? probeElfArch(binary))
 

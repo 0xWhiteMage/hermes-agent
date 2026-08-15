@@ -823,7 +823,13 @@ def _provision_one(
     # every later sweep. If the binary vanished (uninstall) or now fails
     # the floor (downgrade — rare but real on distro rollbacks), fall
     # through to the pinned download rather than limping.
-    if tool == "git":
+    #
+    # NEVER for a self-contained runtime dir (facts and bytes in one
+    # directory — resolve_bases' packager case). That artifact ships to
+    # OTHER machines: a system fact would record this build runner's
+    # absolute git path into the payload, and the desktop's arch gate
+    # rightly rejects it. A sealed payload carries its own git, always.
+    if tool == "git" and facts_dir != store:
         if (
             fact is not None
             and fact.source == "system"
