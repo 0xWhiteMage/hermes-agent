@@ -112,12 +112,33 @@ test('PortableGit internals stay exempt from the arch audit', () => {
   }
 })
 
+test('PortableGit stays exempt under its STORE-ENTRY name', () => {
+  // The payload is its own tool store, so the provisioner stages git at
+  // `git-<version>-<target>` — not bare `git/`. The exemption keyed on
+  // the bare name while the tree used the store name, and the win32-x64
+  // lane failed on 91 Git Credential Manager ia32 assemblies. Windows
+  // paths arrive with backslashes; both separators must match.
+  for (const relPath of [
+    'resources/agent-payload/git-2.53.0-win32-x64/mingw64/bin/Avalonia.dll',
+    'resources\\agent-payload\\git-2.53.0-win32-x64\\mingw64\\libexec\\git-core\\GitHub.dll',
+    'resources\\agent-payload\\git-2.53.0-win32-x64\\usr\\libexec\\getprocaddr32.exe',
+    'resources/agent-payload/git-2.54.0-win32-arm64/clangarm64/libexec/git-core/msalruntime.dll'
+  ]) {
+    assert.equal(isExemptPath(relPath), true, relPath)
+  }
+})
+
 test('dugite-native git IS audited — it has no format-neutral binaries', () => {
   // Exempting the whole git/ tree would hide a wrong-arch git in exactly
   // the payload that has no system git to fall back to.
   for (const relPath of [
     'resources/agent-payload/git/bin/git',
-    'resources/agent-payload/git/libexec/git-core/git-remote-https'
+    'resources/agent-payload/git/libexec/git-core/git-remote-https',
+    // ...including under the store-entry name: the POSIX layout has no
+    // mingw64/clangarm64/usr/cmd segment, so the wider name alternative
+    // must not accidentally cover it.
+    'resources/agent-payload/git-2.53.0-linux-x64/bin/git',
+    'resources/agent-payload/git-2.53.0-darwin-arm64/libexec/git-core/git-remote-https'
   ]) {
     assert.equal(isExemptPath(relPath), false, relPath)
   }

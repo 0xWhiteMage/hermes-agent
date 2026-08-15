@@ -202,7 +202,13 @@ const EXEMPT_PATTERNS = [
   // in it, so exempting it would hide a genuinely wrong-arch git — the
   // exact defect this audit exists to catch, in the payload that cannot
   // fall back to a system git.
-  /agent-payload[/\\]git[/\\](mingw64|clangarm64|usr|cmd)[/\\]/i,
+  //
+  // The git dir is a STORE ENTRY: `git-<version>-<target>` (the payload is
+  // its own tool store; see installation/registry.py store_entry_name).
+  // The bare `git` alternative keeps any pre-store layout passing. This
+  // pattern diverging from the store naming is exactly how the win32-x64
+  // lane failed with 91 GCM ia32 "mismatches".
+  /agent-payload[/\\]git(-[^/\\]+)?[/\\](mingw64|clangarm64|usr|cmd)[/\\]/i,
 ]
 
 export function isExemptPath(relPath) {
