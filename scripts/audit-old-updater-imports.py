@@ -658,7 +658,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"{m}::{s}" for (m, s) in surface.guarded_only
             ),
         }
-        Path(ns.freeze).write_text(json.dumps(payload, indent=2) + "\n")
+        Path(ns.freeze).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         print(
             f"froze {len(payload['bare'])} bare + "
             f"{len(payload['guarded_only'])} guarded pairs -> {ns.freeze}"
