@@ -1411,6 +1411,54 @@ def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
     return prelude + cmd_string
 
 
+def _read_terminal_memory_limit_bytes() -> int:
+    """Return ``terminal.memory_limit_mb`` from config.yaml, in bytes.
+
+    0 means "no limit" (the default). Best-effort: any config read failure
+    or invalid value disables the limit so terminal execution never breaks
+    because config.yaml is unreadable. Windows has no ``resource`` module,
+    so the limit is POSIX-only by construction.
+
+    Inspired by Claude Code's ``CLAUDE_CODE_TOOL_MEMORY_LIMIT`` (v2.1.233),
+    adapted to Hermes's config.yaml (``.env`` is for secrets only).
+    """
+    if _IS_WINDOWS:
+        return 0
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        terminal_cfg = cfg.get("terminal") or {}
+        raw = terminal_cfg.get("memory_limit_mb", 0)
+        mb = int(raw)
+        if mb <= 0:
+            return 0
+        return mb * 1024 * 1024
+    except Exception:
+        return 0
+
+
+def _make_memory_limit_preexec(limit_bytes: int):
+    """Build a ``preexec_fn`` that applies RLIMIT_AS in the child process.
+
+    The limit is inherited by every descendant of the spawned bash, so the
+    whole command tree (build, test runner, compiler jobs) is covered. A
+    process that exceeds it gets a MemoryError/ENOMEM instead of stalling
+    the machine into swap. Never raises: if ``setrlimit`` fails (e.g. the
+    hard limit is already lower), the command still runs unlimited.
+    """
+
+    def _preexec() -> None:  # pragma: no cover - runs in the forked child
+        try:
+            import resource
+
+            resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+        except Exception:
+            pass
+
+    return _preexec
+
+
 class LocalEnvironment(BaseEnvironment):
     """Run commands directly on the host machine.
 
@@ -1527,7 +1575,15 @@ class LocalEnvironment(BaseEnvironment):
 
         _popen_cwd = self.cwd
 
-        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
+        _popen_kwargs: dict = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
+
+        # Optional per-command memory ceiling (terminal.memory_limit_mb).
+        # Applied via preexec_fn in the forked child so the RLIMIT_AS cap is
+        # inherited by the whole command tree. POSIX-only; the helper returns
+        # 0 on Windows and on any config problem.
+        _mem_limit = _read_terminal_memory_limit_bytes()
+        if _mem_limit > 0:
+            _popen_kwargs["preexec_fn"] = _make_memory_limit_preexec(_mem_limit)
 
         proc = subprocess.Popen(
             args,
