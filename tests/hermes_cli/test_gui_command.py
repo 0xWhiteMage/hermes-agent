@@ -1,7 +1,7 @@
 """Tests for ``hermes gui`` desktop launcher wiring."""
 
-import pathlib
 from __future__ import annotations
+import pathlib
 
 import argparse
 import subprocess
