@@ -49,6 +49,26 @@ test('windows targets map to msvc toolchains, darwin to apple, linux to gnu', ()
   assert.match(resolveTargets('linux', 'x64').pythonPlatform, /linux-gnu$/)
 })
 
+test('targets with no published cryptography wheel build it from sdist', () => {
+  // The security floor is an exact pin, so a target that upstream stopped
+  // shipping wheels for must build that exact version on the runner —
+  // never resolve to an older wheel. cryptography 49+ dropped darwin-x64
+  // (48.0.1 was the last universal2) and never shipped win_arm64.
+  // pipTargetArgs turns the list into --no-binary overrides; an empty
+  // list on these targets re-creates the macos-13 lane failure
+  // ("No matching distribution found for cryptography==50.0.0").
+  for (const [platform, arch] of [['darwin', 'x64'], ['win32', 'arm64']]) {
+    const t = resolveTargets(platform, arch)
+    assert.ok(
+      (t.sourceBuild || []).includes('cryptography'),
+      `${t.key}: cryptography must be in sourceBuild — no wheel exists upstream`
+    )
+    const args = pipTargetArgs({ sitePackagesDir: '/out/sp', sourceBuild: t.sourceBuild })
+    assert.ok(args.includes('--no-binary'), `${t.key}: pip args carry no --no-binary override`)
+    assert.match(args[args.indexOf('--no-binary') + 1], /cryptography/)
+  }
+})
+
 // ─── pipTargetArgs ─────────────────────────────────────────────────
 
 test('site-packages install refuses sdists and targets the payload dir', () => {

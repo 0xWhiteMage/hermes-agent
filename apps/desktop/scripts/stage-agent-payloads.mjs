@@ -76,6 +76,12 @@ export function resolveTargets(platform = process.platform, arch = process.arch)
       pythonPlatform: "x86_64-apple-darwin",
       nodeDist: "darwin-x64",
       uvPython: "macos-x86_64-none",
+      // cryptography 49+ publishes macOS wheels for arm64 only (48.0.1
+      // was the last universal2). The pin is a security floor, so the
+      // Intel artifact builds the EXACT pinned version from sdist on
+      // the runner (needs Rust — preinstalled on the macos GitHub
+      // runners), same arrangement as win32-arm64 below.
+      sourceBuild: ["cryptography"],
     },
     "darwin-arm64": {
       uvTarget: "aarch64-apple-darwin",
