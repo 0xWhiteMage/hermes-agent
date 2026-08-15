@@ -175,7 +175,7 @@ terminal:
   backend: local
 ```
 
-`terminal.memory_limit_mb` (default `0` = unlimited) puts a hard per-command memory ceiling on locally spawned command trees. When set, every `terminal` command runs under an `RLIMIT_AS` cap inherited by all of its child processes, so a runaway build or test run fails with an out-of-memory error inside the command instead of stalling the whole machine into swap. POSIX-only (Linux/macOS); ignored on Windows and on container/cloud backends, which have their own isolation.
+`terminal.memory_limit_mb` (default `0` = unlimited) puts a hard per-command memory ceiling on locally spawned command trees. When set, every `terminal` command runs under an `RLIMIT_AS` cap (applied via a `ulimit -v` prelude in the spawned shell) inherited by all of its child processes, so a runaway build or test run fails with an out-of-memory error inside the command instead of stalling the whole machine into swap. POSIX-only (Linux/macOS); ignored on Windows and on container/cloud backends, which have their own isolation.
 
 By default, local tool subprocesses keep your real OS-user `HOME`. This lets
 external CLIs such as `git`, `ssh`, `gh`, `az`, `npm`, Claude Code, and Codex

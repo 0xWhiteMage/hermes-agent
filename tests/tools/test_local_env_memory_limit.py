@@ -1,8 +1,8 @@
 """Tests for the local terminal per-command memory ceiling.
 
 ``terminal.memory_limit_mb`` (config.yaml) applies an RLIMIT_AS cap to
-locally spawned command trees via ``preexec_fn``, so a runaway build can't
-OOM the whole machine. Inspired by Claude Code's
+locally spawned command trees via a ``ulimit -v`` bash prelude, so a
+runaway build can't OOM the whole machine. Inspired by Claude Code's
 ``CLAUDE_CODE_TOOL_MEMORY_LIMIT`` (v2.1.233); adapted to config.yaml per
 the ".env is for secrets only" policy.
 """
@@ -14,7 +14,7 @@ import pytest
 
 from tools.environments import local as local_mod
 from tools.environments.local import (
-    _make_memory_limit_preexec,
+    _memory_limit_prelude,
     _read_terminal_memory_limit_bytes,
 )
 
@@ -60,7 +60,20 @@ class TestReadTerminalMemoryLimit:
             assert _read_terminal_memory_limit_bytes() == 0
 
 
-@pytest.mark.skipif(not IS_POSIX, reason="RLIMIT_AS is POSIX-only")
+class TestMemoryLimitPrelude:
+    def test_converts_bytes_to_kib(self):
+        prelude = _memory_limit_prelude(512 * 1024 * 1024)
+        assert prelude.startswith("ulimit -v 524288 ")
+
+    def test_fails_open_syntax(self):
+        # The prelude must never abort the command when ulimit rejects it.
+        assert "|| true" in _memory_limit_prelude(1024 * 1024)
+
+    def test_minimum_one_kib(self):
+        assert "ulimit -v 1 " in _memory_limit_prelude(17)
+
+
+@pytest.mark.skipif(not IS_POSIX, reason="ulimit -v prelude is POSIX-only")
 class TestMemoryLimitEnforcement:
     """E2E: the spawned command tree really is capped."""
 
@@ -72,14 +85,6 @@ class TestMemoryLimitEnforcement:
         env.env = {}
         env.timeout = 30
         return env
-
-    def test_preexec_fn_attached_when_configured(self, tmp_path):
-        env = self._make_env(tmp_path)
-        with patch.object(
-            local_mod, "_read_terminal_memory_limit_bytes", return_value=64 * 1024 * 1024
-        ):
-            proc = env._run_bash("true", timeout=10)
-            proc.wait(timeout=10)
 
     def test_command_over_limit_fails_under_limit_succeeds(self, tmp_path):
         """A python allocation over the cap dies; the same env runs small
@@ -116,10 +121,18 @@ class TestMemoryLimitEnforcement:
             assert proc.returncode == 0
             assert "ok" in out
 
-
-@pytest.mark.skipif(not IS_POSIX, reason="RLIMIT_AS is POSIX-only")
-def test_preexec_never_raises_even_on_bad_limit():
-    """setrlimit failures inside the child must not kill the command."""
-    fn = _make_memory_limit_preexec(-12345)
-    # Running in-process is safe: the helper swallows every exception.
-    fn()
+    def test_limit_survives_subprocess_descent(self, tmp_path):
+        """The cap is inherited by children of the spawned bash."""
+        env = self._make_env(tmp_path)
+        # bash -> sh -> python3: the grandchild must still be capped.
+        cmd = (
+            "sh -c 'python3 -c \"x = bytearray(800 * 1024 * 1024); print(1)\"'"
+        )
+        with patch.object(
+            local_mod,
+            "_read_terminal_memory_limit_bytes",
+            return_value=512 * 1024 * 1024,
+        ):
+            proc = env._run_bash(cmd, timeout=30)
+            out, _ = proc.communicate(timeout=30)
+            assert proc.returncode != 0

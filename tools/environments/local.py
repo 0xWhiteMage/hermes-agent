@@ -1416,8 +1416,8 @@ def _read_terminal_memory_limit_bytes() -> int:
 
     0 means "no limit" (the default). Best-effort: any config read failure
     or invalid value disables the limit so terminal execution never breaks
-    because config.yaml is unreadable. Windows has no ``resource`` module,
-    so the limit is POSIX-only by construction.
+    because config.yaml is unreadable. POSIX-only (``ulimit -v`` has no
+    Windows equivalent in Git Bash's process model).
 
     Inspired by Claude Code's ``CLAUDE_CODE_TOOL_MEMORY_LIMIT`` (v2.1.233),
     adapted to Hermes's config.yaml (``.env`` is for secrets only).
@@ -1438,25 +1438,23 @@ def _read_terminal_memory_limit_bytes() -> int:
         return 0
 
 
-def _make_memory_limit_preexec(limit_bytes: int):
-    """Build a ``preexec_fn`` that applies RLIMIT_AS in the child process.
+def _memory_limit_prelude(limit_bytes: int) -> str:
+    """Return a bash prelude applying an RLIMIT_AS cap via ``ulimit -v``.
 
-    The limit is inherited by every descendant of the spawned bash, so the
-    whole command tree (build, test runner, compiler jobs) is covered. A
-    process that exceeds it gets a MemoryError/ENOMEM instead of stalling
-    the machine into swap. Never raises: if ``setrlimit`` fails (e.g. the
-    hard limit is already lower), the command still runs unlimited.
+    The limit is set inside the spawned bash before the user command runs
+    and is inherited by every descendant, so the whole command tree (build,
+    test runner, compiler jobs) is covered. A process that exceeds it gets
+    an out-of-memory failure instead of stalling the machine into swap.
+    Fails open: if ``ulimit`` rejects the value (e.g. the hard limit is
+    already lower), the command still runs unlimited.
+
+    Implemented as a shell prelude rather than a Popen pre-exec callback
+    because pre-exec callbacks are thread-unsafe (Hermes spawns terminal
+    commands from multi-threaded contexts) and banned by the Windows-compat
+    guard tests.
     """
-
-    def _preexec() -> None:  # pragma: no cover - runs in the forked child
-        try:
-            import resource
-
-            resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
-        except Exception:
-            pass
-
-    return _preexec
+    limit_kib = max(1, limit_bytes // 1024)
+    return f"ulimit -v {limit_kib} 2>/dev/null || true; "
 
 
 class LocalEnvironment(BaseEnvironment):
@@ -1545,6 +1543,13 @@ class LocalEnvironment(BaseEnvironment):
             init_files = _resolve_shell_init_files()
             if init_files:
                 cmd_string = _prepend_shell_init(cmd_string, init_files)
+        # Optional per-command memory ceiling (terminal.memory_limit_mb).
+        # Applied as a ulimit -v prelude inside the spawned bash so the
+        # RLIMIT_AS cap is inherited by the whole command tree. POSIX-only;
+        # the helper returns 0 on Windows and on any config problem.
+        _mem_limit = _read_terminal_memory_limit_bytes()
+        if _mem_limit > 0:
+            cmd_string = _memory_limit_prelude(_mem_limit) + cmd_string
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
         run_env = _make_run_env(self.env)
 
@@ -1576,14 +1581,6 @@ class LocalEnvironment(BaseEnvironment):
         _popen_cwd = self.cwd
 
         _popen_kwargs: dict = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
-
-        # Optional per-command memory ceiling (terminal.memory_limit_mb).
-        # Applied via preexec_fn in the forked child so the RLIMIT_AS cap is
-        # inherited by the whole command tree. POSIX-only; the helper returns
-        # 0 on Windows and on any config problem.
-        _mem_limit = _read_terminal_memory_limit_bytes()
-        if _mem_limit > 0:
-            _popen_kwargs["preexec_fn"] = _make_memory_limit_preexec(_mem_limit)
 
         proc = subprocess.Popen(
             args,
