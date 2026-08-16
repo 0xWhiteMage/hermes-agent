@@ -176,7 +176,7 @@ export function watchPenSession(): () => void {
       return
     }
 
-    if (entry) {
+    if (entry && !entry.closed) {
       // Swap, not accumulate: fold the previous session's canvas first (its
       // tie survives — `keep`), then bring in this session's. Without this,
       // A→B with canvases on both sides leaves two panes on screen.
@@ -187,7 +187,9 @@ export function watchPenSession(): () => void {
       await restorePenCanvas(sessionId)
     } else if (penCanvasTileOpen()) {
       // `keep` — this is a swap between sessions, not the user closing the
-      // canvas, so the previous session keeps its tie.
+      // canvas, so the previous session keeps its tie. A closed tie lands
+      // here too: the canvas stays attached but stays PUT AWAY until the
+      // reopen pill (or the library) brings it back.
       await pen.close?.({ keep: true }).catch(() => {})
     }
 

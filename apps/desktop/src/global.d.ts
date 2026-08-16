@@ -136,7 +136,7 @@ declare global {
         close: (options?: { keep?: boolean }) => Promise<void>
         tool: (name: string, payload?: Record<string, unknown>) => Promise<PenToolResult>
         /** The canvas tied to a chat session, when it can still be reopened. */
-        session: (sessionId: string) => Promise<null | { docId: string; path?: null | string; width?: number }>
+        session: (sessionId: string) => Promise<null | { closed?: boolean; docId: string; path?: null | string; width?: number }>
         restore: (sessionId: string) => Promise<null | { doc?: PenDocumentInfo; docId?: string; url?: string }>
         /** The canvas library (~/.hermes/pens). */
         library: () => Promise<{
