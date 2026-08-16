@@ -42,6 +42,7 @@ _ACTIONS = {
     "get_app_state",
     "get_guidelines",
     "get_screenshot",
+    "get_selection",
     "export_nodes",
     "export_html",
 }
@@ -160,7 +161,11 @@ PEN_CANVAS_SCHEMA = {
         "on a failed snippet, patch it with {editId, edits:[{find,replace}]}); "
         "'get_screenshot' renders a node to an image file you can view with "
         "vision_analyze (args: {nodeId} or nodeId 'document' — expensive, use "
-        "after a section is done, not after every execute); 'export_nodes' / "
+        "after a section is done, not after every execute); 'get_selection' "
+        "reads what the user has selected RIGHT NOW in the editor (no args; "
+        "returns {nodes: [{id, name, type, bounds}]}) — call it whenever the "
+        "user says 'this'/'these'/'the selected one' so you act on their "
+        "actual selection instead of guessing from names; 'export_nodes' / "
         "'export_html' write PNG/JPEG/WEBP/PDF or HTML files (args: pen's "
         "export payloads: {nodeIds, outputDir|outputPath, format, ...}). "
         "Workflow: open → get_app_state (schema) → get_guidelines → execute in "

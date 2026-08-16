@@ -2033,11 +2033,65 @@ async function idlePenAgentCursor(): Promise<void> {
   }
 }
 
+/** The user's live selection, as the agent's eyes: node ids, names, types,
+ *  and world bounds, read from the scene manager pen itself exposes under
+ *  IS_DEV. Selection is the deictic channel of co-design — it's how "make
+ *  this blue" knows what THIS is. Empty selection is a SUCCESS with an empty
+ *  list (that's an answer, not an error). */
+async function readPenSelection(): Promise<PenToolResult> {
+  const view = penCanvasWebContents()
+
+  if (!view) {
+    return { success: false, error: 'No pen.dev canvas is open.' }
+  }
+
+  try {
+    const result = await view.executeJavaScript(
+      `(() => {
+        const sm = window.__SCENE_MANAGER
+        if (!sm || !sm.selectionManager) return { nodes: [] }
+
+        const nodes = []
+        for (const node of sm.selectionManager.selectedNodes) {
+          try {
+            const entry = { id: node.id }
+            if (node.name) entry.name = node.name
+            if (node.type) entry.type = node.type
+            const bounds =
+              typeof node.getVisualWorldBounds === 'function' ? node.getVisualWorldBounds() : null
+            if (bounds) {
+              entry.bounds = {
+                x: Math.round(bounds.x), y: Math.round(bounds.y),
+                width: Math.round(bounds.width), height: Math.round(bounds.height)
+              }
+            }
+            nodes.push(entry)
+          } catch {}
+        }
+        return { nodes }
+      })()`,
+      true
+    )
+
+    return { success: true, result }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
 export async function runPenTool(name: string, payload: Record<string, unknown>): Promise<PenToolResult> {
   // Editor-side handlers are kebab-case (get-app-state); the agent tool layer
   // speaks pen's MCP names (get_app_state). Normalize once for both rungs —
   // the transport router passes names through verbatim.
   name = name.replaceAll('_', '-')
+
+  // "What is the user pointing at?" — read the live selection off the scene
+  // manager (pen's own dev door, see PEN_AGENT_CURSOR). Host-side action, not
+  // an editor MCP op: it exists so "make THIS blue" resolves this/these to
+  // node ids without the user having to describe what they selected.
+  if (name === 'get-selection') {
+    return readPenSelection()
+  }
 
   // Presence BEFORE the op, so the cursor is already there when nodes start
   // appearing rather than catching up afterwards.
