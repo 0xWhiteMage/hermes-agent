@@ -10,14 +10,14 @@
 
 import { useEffect, useRef } from 'react'
 
-import { $penCanvasTabs } from './pen-tile'
+import { $canvasTabs } from './canvas-tile'
 
 export function PenTilePane({ docId }: { docId: string }) {
   const hostRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     const host = hostRef.current
-    const tab = $penCanvasTabs.get().find(t => t.docId === docId)
+    const tab = $canvasTabs.get().find(t => t.provider === 'pen' && t.docId === docId)
 
     if (!host || !tab) {
       return
