@@ -11,6 +11,7 @@ import { $layoutEditMode, toggleLayoutEditMode } from '@/components/pane-shell/e
 import { allPaneIds, group, groupLeafIds, split } from '@/components/pane-shell/tree/model'
 import { LayoutTreeRoot } from '@/components/pane-shell/tree/renderer'
 import type { DoubleTapContext } from '@/components/pane-shell/tree/renderer/drag-session'
+import { PenLibraryDialog } from '@/components/pen-library-dialog'
 import {
   $layoutTree,
   bindPaneVisibility,
@@ -54,7 +55,7 @@ import {
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH
 } from '@/store/layout'
-import { openPenCanvas, watchPenDrawer } from '@/store/pen'
+import { $penLibraryOpen, openPenCanvas, openPenLibrary, watchPenSession } from '@/store/pen'
 import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
 import { $reviewOpen, closeReview, openReview, REVIEW_PANE_ID } from '@/store/review'
 import { $currentCwd, $selectedStoredSessionId, $sessions, $yoloActive, sessionMatchesStoredId } from '@/store/session'
@@ -63,6 +64,7 @@ import { $statusbarVisible } from '@/store/statusbar-prefs'
 import { isHudWindow } from '@/store/windows'
 
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
+import { watchPenTiles } from '../chat/pen-tile'
 import { watchPreviewTiles } from '../chat/preview-tile'
 import { watchRouteTiles } from '../chat/route-tile'
 import { startSessionDrag } from '../chat/session-drag'
@@ -361,6 +363,31 @@ registry.registerMany([
             }
           })
     } satisfies PaletteContribution
+  },
+  // The canvas library (~/.hermes/pens): every canvas the user has, browsable
+  // and reopenable by name. Registered as a dynamic provider so the rows ARE
+  // the canvases rather than a submenu that lists them.
+  {
+    id: 'pen.library',
+    area: PALETTE_AREA,
+    data: {
+      id: 'pen.library',
+      label: 'Browse canvases…',
+      icon: Pencil,
+      keywords: ['canvas', 'pen', 'pens', 'design', 'library', 'browse', 'recent', 'open', 'pencil'],
+      run: () => void openPenLibrary()
+    } satisfies PaletteContribution
+  },
+  {
+    id: 'pen.closeCanvas',
+    area: PALETTE_AREA,
+    data: {
+      id: 'pen.closeCanvas',
+      label: 'Close canvas',
+      icon: Pencil,
+      keywords: ['canvas', 'pen', 'close', 'hide', 'dismiss', 'pencil'],
+      run: () => void window.hermesDesktop?.pen?.close()
+    } satisfies PaletteContribution
   }
 ])
 
@@ -445,9 +472,12 @@ watchSessionTiles()
 watchRouteTiles()
 watchPreviewTiles()
 
-// Native drawer inset (pen canvas): pins the app's layout to the strip the
-// drawer view leaves free. Margin on #root, zero React involvement.
-watchPenDrawer()
+// Pen canvas panes: mirror open canvases into layout-tree tiles.
+watchPenTiles()
+
+// A canvas belongs to a SESSION: restore the active session's canvas on
+// launch, and swap it when the user switches chats.
+watchPenSession()
 
 // Composer pop-out state is keyed by layout zone, so drop entries for zones the
 // user has since closed or merged away — otherwise a long-lived install keeps a
@@ -739,6 +769,7 @@ function TitlebarSlot({ area, className, style }: TitlebarSlotProps) {
 export function ContribController() {
   const sidebarOpen = useStore($sidebarOpen)
   const statusbarVisible = useStore($statusbarVisible)
+  const penLibraryOpen = useStore($penLibraryOpen)
 
   // HUD mode is the SAME app with its frame removed: the wiring (gateway,
   // sessions, streams, submit) mounts identically, and only the shell around
@@ -816,6 +847,9 @@ export function ContribController() {
 
             {/* "Close running tab?" — the busy/input-blocked tile close gate. */}
             <SessionTileCloseConfirm />
+
+            {/* The canvas library (~/.hermes/pens) — browse/reopen/delete. */}
+            <PenLibraryDialog onOpenChange={(open: boolean) => $penLibraryOpen.set(open)} open={penLibraryOpen} />
 
             {/* The REAL statusbar (model pill, command center, agents, …) with
               statusBar.left/right contributions merged in. Unmounted — not

@@ -1125,6 +1125,15 @@ export const ja = defineLocale({
     tokens: value => `${value} トーク`
   },
 
+  penLibrary: {
+    title: 'キャンバス',
+    searchPlaceholder: 'キャンバスを検索…',
+    empty: 'キャンバスがありません',
+    delete: 'キャンバスを削除',
+    confirmDelete: '削除',
+    cancelDelete: '残す'
+  },
+
   commandCenter: {
     close: 'コマンドセンターを閉じる',
     paletteTitle: 'コマンドパレット',

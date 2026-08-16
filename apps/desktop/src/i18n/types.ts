@@ -1026,6 +1026,15 @@ export interface Translations {
     tokens: (value: number | string) => string
   }
 
+  penLibrary: {
+    title: string
+    searchPlaceholder: string
+    empty: string
+    delete: string
+    confirmDelete: string
+    cancelDelete: string
+  }
+
   commandCenter: {
     close: string
     paletteTitle: string
@@ -1804,6 +1813,20 @@ export interface Translations {
       tip: (skill: string) => string
       done: (skill: string) => string
       doneTip: string
+    }
+    penSuggestions: {
+      reopen: string
+      reopenTip: string
+      untitledCanvas: string
+      newCanvas: string
+      newCanvasTip: string
+      openFile: string
+      openFileTip: string
+      working: string
+      workingTip: string
+      done: string
+      doneTip: string
+      openFailed: string
     }
     repairSuggestions: {
       label: (server: string) => string

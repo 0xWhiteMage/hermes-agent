@@ -125,21 +125,27 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   pen: {
     status: () => ipcRenderer.invoke('hermes:pen:status'),
     open: options => ipcRenderer.invoke('hermes:pen:open', options),
-    close: docId => ipcRenderer.invoke('hermes:pen:close', docId),
+    close: options => ipcRenderer.invoke('hermes:pen:close', options),
     tool: (name, payload) => ipcRenderer.invoke('hermes:pen:tool', name, payload),
+    // A canvas belongs to a chat session: ask what this session has, and
+    // reopen it. That's what makes a canvas come back after a restart instead
+    // of having to be requested again.
+    session: sessionId => ipcRenderer.invoke('hermes:pen:session', sessionId),
+    restore: sessionId => ipcRenderer.invoke('hermes:pen:restore', sessionId),
+    // The canvas library (~/.hermes/pens): browse, rename, delete, reveal.
+    library: () => ipcRenderer.invoke('hermes:pen:library'),
+    libraryDelete: target => ipcRenderer.invoke('hermes:pen:library-delete', target),
+    libraryRename: (target, nextName) => ipcRenderer.invoke('hermes:pen:library-rename', target, nextName),
+    reveal: target => ipcRenderer.invoke('hermes:pen:reveal', target),
+    // Pen's own agent (floating chat panel + composer + launcher). Hidden by
+    // default — hermes is the agent for this canvas.
+    setAgentVisible: visible => ipcRenderer.invoke('hermes:pen:agent-visible', visible),
+    agentHidden: () => ipcRenderer.invoke('hermes:pen:agent-hidden'),
     onEvent: callback => {
       const listener = (_event, payload) => callback(payload)
       ipcRenderer.on('hermes:pen:event', listener)
 
       return () => ipcRenderer.removeListener('hermes:pen:event', listener)
-    },
-    // Drawer inset feed: main tells this window how much of its content strip
-    // a native drawer view occupies, so the app pins its layout to the rest.
-    onDrawerChanged: callback => {
-      const listener = (_event, payload) => callback(payload)
-      ipcRenderer.on('hermes:drawer:changed', listener)
-
-      return () => ipcRenderer.removeListener('hermes:drawer:changed', listener)
     }
   },
   getConnectionConfig: profile => ipcRenderer.invoke('hermes:connection-config:get', profile),

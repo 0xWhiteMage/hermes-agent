@@ -37,6 +37,7 @@ _BASE64_MATERIALIZE_THRESHOLD = 4_096
 
 _ACTIONS = {
     "open",
+    "close",
     "execute",
     "get_app_state",
     "get_guidelines",
@@ -145,7 +146,9 @@ PEN_CANVAS_SCHEMA = {
         "beside this chat. You and the user share one live canvas: your edits "
         "render instantly, and the user can draw alongside you with the full "
         "editor. Actions: 'open' opens a Canvas tab (args: {path?: absolute "
-        ".pen file, template?: name} — omit both for a blank canvas); "
+        ".pen file, template?: name} — omit both for a blank canvas); 'close' "
+        "puts the canvas away (the file is untouched and stays in the "
+        "library); "
         "'get_app_state' reads the document + editor state (args: "
         "{include_schema, include_canvas_design, include_scripts_and_shaders}: "
         "booleans — pass include_schema true on your first call to learn the "

@@ -113,11 +113,35 @@ declare global {
       // feed (save-as re-homes, add-to-chat, …).
       pen?: {
         status: () => Promise<PenStatus>
-        open: (options?: { path?: string; template?: string }) => Promise<PenOpenResult>
-        close: (docId: string) => Promise<void>
+        open: (options?: { path?: string; sessionId?: string; template?: string }) => Promise<PenOpenResult>
+        close: (options?: { keep?: boolean }) => Promise<void>
         tool: (name: string, payload?: Record<string, unknown>) => Promise<PenToolResult>
+        /** The canvas tied to a chat session, when it can still be reopened. */
+        session: (sessionId: string) => Promise<null | { docId: string; path?: null | string; width?: number }>
+        restore: (sessionId: string) => Promise<null | { doc?: PenDocumentInfo; docId?: string; url?: string }>
+        /** The canvas library (~/.hermes/pens). */
+        library: () => Promise<{
+          items: Array<{
+            docId: null | string
+            folder: string
+            modifiedAt: number
+            name: string
+            open: boolean
+            path: string
+            /** The chat session this canvas belongs to, when tied. */
+            sessionId: null | string
+            size: number
+          }>
+          root: string
+        }>
+        libraryDelete: (target: string) => Promise<boolean>
+        libraryRename: (target: string, nextName: string) => Promise<null | string>
+        reveal: (target: string) => Promise<void>
+        /** Pen's own agent inside the canvas (chat panel, composer, launcher).
+         *  Hidden by default — hermes is the agent for this canvas. */
+        setAgentVisible: (visible: boolean) => Promise<{ hidden: boolean }>
+        agentHidden: () => Promise<boolean>
         onEvent: (callback: (payload: { event: string; payload: unknown }) => void) => () => void
-        onDrawerChanged: (callback: (payload: { edge: 'bottom' | 'left' | 'right'; size: number }) => void) => () => void
       }
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
@@ -771,10 +795,15 @@ export interface PenStatus {
   version: string
   running: boolean
   openDocuments: PenDocumentInfo[]
+  /** pen.dev's app icon (data URL), read from the user's installed Pen.app.
+   *  Null until primed / when pen isn't installed — fall back to a glyph. */
+  icon: null | string
 }
 
 export interface PenOpenResult {
   doc: PenDocumentInfo
+  /** hermes-pen:// URL the pen tile mounts in its <webview>. */
+  url: string
 }
 
 export interface PenToolResult {

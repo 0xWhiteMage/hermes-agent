@@ -1090,6 +1090,15 @@ export const zhHant = defineLocale({
     tokens: value => `${value} 詞元`
   },
 
+  penLibrary: {
+    title: '畫布',
+    searchPlaceholder: '搜尋畫布…',
+    empty: '尚無畫布',
+    delete: '刪除畫布',
+    confirmDelete: '刪除',
+    cancelDelete: '保留'
+  },
+
   commandCenter: {
     close: '關閉命令中心',
     paletteTitle: '命令面板',

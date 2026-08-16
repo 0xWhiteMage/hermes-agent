@@ -1,11 +1,11 @@
 /**
  * PEN CANVAS — pen.dev design documents hosted by hermes.
  *
- * The canvas is NOT an in-app pane: Electron main hosts the user's installed
- * pen.dev editor in a chromeless window attached to the app's right edge
- * (electron/pen-canvas.ts + the pen block in electron/main.ts). This store is
- * just the renderer's doors: open/close/status and the agent bridge's tool
- * runner. No tab list, no pane mirroring — the window IS the surface.
+ * The canvas is a LAYOUT-TREE PANE (src/app/chat/pen-tile.tsx) hosting the
+ * user's installed pen.dev editor in a <webview> on hermes-pen://. Main owns
+ * the documents (create/serve/save/session ties); this store is the renderer's
+ * doors: open/close/status, the agent bridge's tool runner, the session
+ * follower, and the library dialog's state.
  */
 
 import { atom } from 'nanostores'
@@ -13,6 +13,9 @@ import { atom } from 'nanostores'
 import type { PenStatus, PenToolResult } from '@/global'
 import { translateNow } from '@/i18n'
 import { notifyError } from '@/store/notifications'
+import { $selectedStoredSessionId } from '@/store/session'
+
+import { closePenCanvasTile, openPenCanvasTile, penCanvasTileOpen } from '@/app/chat/pen-tile'
 
 /** pen.dev host availability — drives the ⌘K rows' enabled state. Refreshed on
  *  demand, not polled. */
@@ -36,9 +39,12 @@ export async function refreshPenStatus(): Promise<PenStatus | null> {
   }
 }
 
-/** Open a canvas window: a .pen file when `path` is given, else a fresh
- *  temporary document (blank canvas by default; pass a template like `shadcn`
- *  for a design-kit start). Re-opening an open document re-fronts its window. */
+/** Open a canvas pane: a .pen file when `path` is given, else a fresh library
+ *  document (blank canvas by default; pass a template like `shadcn` for a
+ *  design-kit start). Re-opening an open document re-fronts its pane.
+ *
+ *  The canvas is tied to the session that opened it, so it comes back with
+ *  that chat — on a later switch, or a later launch. */
 export async function openPenCanvas(options: { path?: string; template?: string } = {}) {
   const pen = window.hermesDesktop?.pen
 
@@ -47,7 +53,15 @@ export async function openPenCanvas(options: { path?: string; template?: string 
   }
 
   try {
-    const { doc } = await pen.open(options)
+    const { doc, url } = await pen.open({ ...options, sessionId: $selectedStoredSessionId.get() ?? undefined })
+
+    if (doc && url) {
+      openPenCanvasTile({ docId: doc.docId, title: doc.displayName || 'Canvas', url })
+    }
+
+    // Refresh status after an open: primes the pane tab's pen.dev icon (main
+    // caches it lazily) and flips openDocuments for the pills.
+    void refreshPenStatus()
 
     return doc
   } catch (error) {
@@ -74,35 +88,136 @@ export async function runPenTool(name: string, payload?: Record<string, unknown>
   }
 }
 
-/** Pin the app's layout to the content strip a native drawer view leaves
- *  free. Main drives (hermes:drawer:changed); the margin on #root is the
- *  whole mechanism — the app never reflows for the drawer beyond it. Call
- *  once from the contrib root; returns a disposer. */
-export function watchPenDrawer(): () => void {
+/** The canvas library (~/.hermes/pens) — browse, reopen, delete. Opened from
+ *  ⌘K; the dialog itself is mounted once by the contrib root. */
+export const $penLibraryOpen = atom(false)
+
+export function openPenLibrary(): void {
+  $penLibraryOpen.set(true)
+}
+
+/** The reopen pill lives in the suggestion provider, which already imports
+ *  this module — so it's pulled in lazily to keep the cycle from becoming a
+ *  load-order problem. */
+async function refreshPenSessionSuggestion(sessionId: null | string): Promise<void> {
+  const { refreshPenSessionSuggestion: refresh } = await import('@/store/suggestion-providers/pen')
+
+  await refresh(sessionId)
+}
+
+/** Restore a session's canvas into a pane (used by the session watcher and
+ *  the reopen pill). */
+export async function restorePenCanvas(sessionId: string): Promise<boolean> {
   const pen = window.hermesDesktop?.pen
 
-  if (!pen?.onDrawerChanged) {
+  if (!pen?.restore) {
+    return false
+  }
+
+  const restored = await pen.restore(sessionId).catch(() => null)
+
+  if (!restored) {
+    return false
+  }
+
+  const docId = restored.doc?.docId ?? restored.docId
+  const url = restored.url
+
+  if (docId && url) {
+    openPenCanvasTile({ docId, title: restored.doc?.displayName || 'Canvas', url })
+    void refreshPenStatus()
+
+    return true
+  }
+
+  return false
+}
+
+/**
+ * Keep the canvas tied to the chat you're looking at.
+ *
+ * A canvas belongs to a session, so switching sessions swaps it: the new
+ * session's canvas is restored, and a session with no canvas closes whatever
+ * was on screen rather than inheriting someone else's document. That's also
+ * what makes it survive a restart — on mount the active session is asked what
+ * it had, so a canvas comes back with its chat instead of being re-requested.
+ *
+ * ONE canvas pane, by design. This watcher is what makes that correct rather
+ * than confusing: the pane always shows the active session's canvas, never a
+ * stale one from another chat.
+ */
+export function watchPenSession(): () => void {
+  const pen = window.hermesDesktop?.pen
+
+  if (!pen?.session) {
     return () => {}
   }
 
-  return pen.onDrawerChanged(({ edge, size }) => {
-    const root = document.getElementById('root')
+  let applied: null | string = null
 
-    if (!root) {
+  const sync = async (sessionId: null | string) => {
+    if (sessionId === applied) {
       return
     }
 
-    root.style.marginLeft = edge === 'left' && size > 0 ? `${size}px` : ''
-    root.style.marginRight = edge === 'right' && size > 0 ? `${size}px` : ''
-    root.style.marginBottom = edge === 'bottom' && size > 0 ? `${size}px` : ''
+    applied = sessionId
 
-    // Margins don't reach vw-derived widths (the titlebar header cap), so the
-    // inset is also published as a var for calc() consumers.
-    for (const side of ['left', 'right', 'bottom'] as const) {
-      document.documentElement.style.setProperty(
-        `--hermes-drawer-${side}`,
-        edge === side && size > 0 ? `${size}px` : '0px'
-      )
+    // No session yet (fresh draft): leave whatever is open alone rather than
+    // yanking the canvas out from under a draft that's about to get an id.
+    if (!sessionId) {
+      return
     }
-  })
+
+    const entry = await pen.session(sessionId).catch(() => null)
+
+    // Guard against an out-of-order answer: the user may have switched again
+    // while this was in flight.
+    if (applied !== sessionId) {
+      return
+    }
+
+    if (entry) {
+      // Swap, not accumulate: fold the previous session's canvas first (its
+      // tie survives — `keep`), then bring in this session's. Without this,
+      // A→B with canvases on both sides leaves two panes on screen.
+      if (penCanvasTileOpen()) {
+        await pen.close?.({ keep: true }).catch(() => {})
+      }
+
+      await restorePenCanvas(sessionId)
+    } else if (penCanvasTileOpen()) {
+      // `keep` — this is a swap between sessions, not the user closing the
+      // canvas, so the previous session keeps its tie.
+      await pen.close?.({ keep: true }).catch(() => {})
+    }
+
+    // The reopen pill mirrors this state: offered when the session has a
+    // canvas that isn't on screen, withdrawn once it is.
+    void refreshPenSessionSuggestion(sessionId)
+  }
+
+  void sync($selectedStoredSessionId.get())
+
+  // Host-side document lifecycle → tab list. close-document prunes the pane
+  // (the ✕, the agent's close, a delete — all converge here), and both edges
+  // re-evaluate the reopen pill.
+  const offEvents =
+    pen.onEvent?.(({ event, payload }) => {
+      const docId = (payload as { docId?: string } | null)?.docId
+
+      if (event === 'close-document' && docId) {
+        closePenCanvasTile(docId)
+      }
+
+      if (event === 'open-document' || event === 'close-document') {
+        void refreshPenSessionSuggestion($selectedStoredSessionId.get())
+      }
+    }) ?? (() => {})
+
+  const offSession = $selectedStoredSessionId.subscribe(sessionId => void sync(sessionId ?? null))
+
+  return () => {
+    offEvents()
+    offSession()
+  }
 }

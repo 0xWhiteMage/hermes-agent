@@ -3,6 +3,7 @@
 // event-driven and registers through the gateway stream instead.
 import '@/store/suggestion-providers/cron'
 import '@/store/suggestion-providers/mcp'
+import '@/store/suggestion-providers/pen'
 import '@/store/suggestion-providers/skill'
 
 import { useAui, useAuiState, useComposerRuntime } from '@assistant-ui/react'

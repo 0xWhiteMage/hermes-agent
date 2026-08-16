@@ -6,7 +6,7 @@ import https from 'node:https'
 import os from 'node:os'
 import path from 'node:path'
 import tls from 'node:tls'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import {
   app,
@@ -154,7 +154,6 @@ import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
-import { drawerStripBounds, expandForDrawer, shrinkAfterDrawer } from './native-drawer'
 import {
   oauthGuardMayHardFail,
   oauthSessionIsLive,
@@ -175,16 +174,30 @@ import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { createKeepAwake } from './power-save'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
+import { findPenInstallation } from './pen-host'
 import {
   bindPenWebview,
   closeDocument as closePenDocument,
+  closeOtherPenDocuments,
+  deletePenCanvas,
+  documentIsOpen,
   handlePenProtocolRequest,
+  isPenAgentHidden,
   onPenEvent,
   openPenCanvas,
   PEN_PROTOCOL,
+  penAgentScript,
   penCanvasUrl,
+  penHostChromeScript,
+  penIconDataUrl,
+  penLibrary,
   penStatus,
+  renamePenCanvas,
+  repaintPenTheme,
+  runPenGuestScript,
   runPenTool,
+  setPenAgentHidden,
+  setPenHostChrome,
   shutdownPenHost
 } from './pen-canvas'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
@@ -1116,23 +1129,86 @@ function registerMediaProtocol() {
 // All the host logic lives in pen-canvas.ts; this block is the Electron doors:
 // the protocol, the IPC surface, and the canvas DRAWER.
 //
-// The drawer is ONE window, not two: opening a canvas GROWS the main window
-// rightward and mounts a WebContentsView over the new strip, while the
-// renderer pins its own content to the original width via the
-// --hermes-drawer-right margin (hermes:drawer:changed). One shadow, one
-// rounded rect — the canvas reads as part of the chrome. The editor owns
-// every pixel of its strip (geometry: native-drawer.ts); the app's layout,
-// statusbar, and sidebars never reflow. Closing shrinks the window back.
+// The canvas is an ATTACHED CHILD WINDOW glued to the host's right edge —
+// see the block comment above bindPenGuest for the architecture history.
+// (WebContentsView + renderer inset) was measured unworkable. The renderer
+// never changes layout for the canvas at all.
 // ---------------------------------------------------------------------------
 
 const PEN_PRELOAD_PATH = path.join(APP_ROOT, 'dist', 'pen-preload.cjs')
 
-// Default drawer depth — enough for pen's panels plus a real drawing area.
-const PEN_CANVAS_WIDTH = 960
-const PEN_DRAWER_EDGE = 'right'
+// Which chat session opened each live document — the tie that lets a save-as
+// upgrade the right session's record, and the ✕ forget the right session.
+const penDocSessions = new Map()
 
-// One drawer per host window (v1: the primary). docId → view state.
-let penDrawer = null
+// Which canvas belongs to which chat session, so a canvas is part of the
+// session rather than a thing you re-ask for. Persisted next to the rest of
+// hermes's desktop state; restored when that session becomes active, on this
+// launch or the next one.
+const PEN_SESSIONS_PATH = path.join(app.getPath('userData'), 'pen-canvas-sessions.json')
+
+
+function readPenSessions() {
+  try {
+    const raw = fs.readFileSync(PEN_SESSIONS_PATH, 'utf8')
+    const parsed = JSON.parse(raw)
+
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function writePenSessions(map) {
+  try {
+    fs.mkdirSync(path.dirname(PEN_SESSIONS_PATH), { recursive: true })
+    fs.writeFileSync(PEN_SESSIONS_PATH, JSON.stringify(map, null, 2))
+  } catch {
+    // Persistence is a convenience; never break opening a canvas over it.
+  }
+}
+
+/** Remember the canvas a session is working in. `path` is what makes it
+ *  restorable across launches — a temporary document has none yet, so it's
+ *  remembered by id for this launch and upgraded when it's saved. */
+function rememberPenSession(sessionId, entry) {
+  if (!sessionId) {
+    return
+  }
+
+  const map = readPenSessions()
+
+  map[sessionId] = { ...map[sessionId], ...entry, at: Date.now() }
+  writePenSessions(map)
+}
+
+function forgetPenSession(sessionId) {
+  if (!sessionId) {
+    return
+  }
+
+  const map = readPenSessions()
+
+  if (map[sessionId]) {
+    delete map[sessionId]
+    writePenSessions(map)
+  }
+}
+
+/** A saved canvas's on-disk path, or null for a never-saved draft. The path
+ *  is what makes a canvas restorable across launches; a draft is only
+ *  restorable while its live document exists. */
+function penDocumentPath(doc) {
+  if (!doc || doc.isTemporary || !doc.fileURI) {
+    return null
+  }
+
+  try {
+    return fileURLToPath(doc.fileURI)
+  } catch {
+    return null
+  }
+}
 
 function registerPenProtocol() {
   protocol.handle(PEN_PROTOCOL, request => handlePenProtocolRequest(request, electronNet))
@@ -1146,111 +1222,63 @@ function broadcastPenEvent(event, payload) {
   }
 }
 
-/** Tell the host window's renderer how much of the content area the drawer
- *  occupies, so it pins its layout to the remaining space. */
-function publishPenDrawerInset(host, size) {
-  if (!host.isDestroyed()) {
-    host.webContents.send('hermes:drawer:changed', { edge: PEN_DRAWER_EDGE, size })
+/**
+ * THE CANVAS IS A LAYOUT-TREE PANE (third architecture; the other two are
+ * documented failures):
+ *
+ *   1. WebContentsView overlay + renderer inset — `position: fixed` sizes
+ *      against the viewport by spec, so every overlay (palette, pickers,
+ *      menus) drew under the canvas, and react-remove-scroll fought the
+ *      body-margin inset. Unfixable in principle.
+ *   2. Attached child window — layout worked, but two OS windows can never
+ *      read as one surface: separate shadows, separate corner radii, a
+ *      visible seam. Rejected on sight.
+ *
+ * Now the editor loads in a <webview> INSIDE a normal layout-tree pane
+ * (src/app/chat/pen-tile.tsx), the same way URL previews host theirs — the
+ * tree owns sizing/sashes/tabs/theme, DOM overlays stack above it natively,
+ * and pen.dev's own VS Code extension embeds the editor the same way.
+ * Main's remaining jobs: create/serve documents (hermes-pen://), bind an
+ * attaching guest to its document IPC, remember session ties, autosave.
+ */
+function bindPenGuest(guestContents) {
+  // A guest attaches before it navigates, so the hermes-pen:// URL (and its
+  // ?doc= id) isn't real yet at attach time. Bind on every navigation —
+  // bindPenWebview is idempotent per guest and ignores non-pen URLs.
+  guestContents.on('did-navigate', () => bindPenWebview(guestContents))
+  bindPenWebview(guestContents)
+
+  // The guest's OWN paint layer defaults to black, and it shows through
+  // whenever pen's page leaves transparency (boot, pan past the pasteboard
+  // edge, resize). That black-behind-the-canvas is a compositor layer no CSS
+  // in the page or the host renderer can reach — only the webContents API.
+  try {
+    guestContents.setBackgroundColor(getWindowBackgroundColor())
+  } catch {
+    // Cosmetic.
   }
+
 }
 
-function layoutPenDrawer() {
-  if (!penDrawer || penDrawer.host.isDestroyed()) {
-    return
-  }
+/** Give hermes-pen:// <webview> guests the pen host preload (the
+ *  window.electronAPI bridge the editor detects its host through), and bind
+ *  each attached guest to its document's IPC. app-level, once. */
+function wirePenWebviewGuests() {
+  app.on('web-contents-created', (_event, contents) => {
+    contents.on('will-attach-webview', (_e, webPreferences, params) => {
+      if (String(params.src || '').startsWith(`${PEN_PROTOCOL}://`)) {
+        webPreferences.preload = PEN_PRELOAD_PATH
+        webPreferences.contextIsolation = true
+        webPreferences.nodeIntegration = false
+        webPreferences.sandbox = false
+      }
+    })
 
-  const [contentWidth, contentHeight] = penDrawer.host.getContentSize()
-
-  penDrawer.view.setBounds(drawerStripBounds(PEN_DRAWER_EDGE, contentWidth, contentHeight, penDrawer.size))
-}
-
-function openPenDrawer(docId) {
-  if (penDrawer && !penDrawer.host.isDestroyed()) {
-    if (penDrawer.docId === docId) {
-      return
-    }
-
-    // One drawer: a second document takes the strip over.
-    void penDrawer.view.webContents.loadURL(penCanvasUrl(docId))
-    penDrawer.docId = docId
-
-    return
-  }
-
-  const host = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
-
-  if (!host) {
-    return
-  }
-
-  const bounds = host.getBounds()
-  const workArea = screen.getDisplayMatching(bounds).workArea
-  const maximized = host.isMaximized() || host.isFullScreen()
-
-  // Grow the window toward the edge; inside a maximized/fullscreen frame the
-  // drawer carves its strip out of the existing content instead.
-  let grewBy = 0
-
-  if (!maximized) {
-    const fit = expandForDrawer(PEN_DRAWER_EDGE, bounds, PEN_CANVAS_WIDTH, workArea)
-
-    grewBy = fit.grewBy
-    host.setBounds(fit.window)
-  }
-
-  const size = maximized ? Math.min(PEN_CANVAS_WIDTH, Math.floor(bounds.width / 2)) : Math.max(grewBy, 320)
-
-  const view = new WebContentsView({
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      preload: PEN_PRELOAD_PATH,
-      sandbox: false
-    }
+    contents.on('did-attach-webview', (_e, guest) => {
+      // bindPenGuest ignores non-pen URLs itself, so no gate needed here.
+      bindPenGuest(guest)
+    })
   })
-
-  view.setBackgroundColor(getWindowBackgroundColor())
-  host.contentView.addChildView(view)
-
-  penDrawer = { docId, grewBy, host, size, view }
-
-  layoutPenDrawer()
-  publishPenDrawerInset(host, size)
-
-  const relayout = () => layoutPenDrawer()
-
-  host.on('resize', relayout)
-  penDrawer.dispose = () => host.removeListener('resize', relayout)
-
-  // Bind the editor to its document's IPC host at navigation commit — after
-  // the URL (with its ?doc= id) is real, before the editor bundle's module
-  // scripts run their boot handshake. bindPenWebview is idempotent per guest.
-  view.webContents.on('did-navigate', () => bindPenWebview(view.webContents))
-
-  void view.webContents.loadURL(penCanvasUrl(docId))
-}
-
-function closePenDrawer() {
-  if (!penDrawer) {
-    return
-  }
-
-  const { dispose, docId, grewBy, host, view } = penDrawer
-
-  penDrawer = null
-  dispose?.()
-
-  if (!host.isDestroyed()) {
-    host.contentView.removeChildView(view)
-    publishPenDrawerInset(host, 0)
-
-    if (grewBy > 0 && !host.isMaximized() && !host.isFullScreen()) {
-      host.setBounds(shrinkAfterDrawer(PEN_DRAWER_EDGE, host.getBounds(), grewBy, 640))
-    }
-  }
-
-  view.webContents.close()
-  closePenDocument(docId)
 }
 
 function wirePenCanvas() {
@@ -1260,25 +1288,188 @@ function wirePenCanvas() {
     onPenEvent(event, payload => broadcastPenEvent(event, payload))
   }
 
-  // A host-initiated close (agent, save-as re-home) folds the drawer.
-  onPenEvent('close-document', payload => {
-    if (penDrawer && penDrawer.docId === payload?.docId) {
-      closePenDrawer()
+  // A save-as re-homes a draft onto disk. That's the moment an unsaved canvas
+  // becomes restorable across restarts, so upgrade the session's record.
+  onPenEvent('open-document', payload => {
+    const sessionId = payload?.docId ? penDocSessions.get(payload.docId) : null
+
+    if (sessionId) {
+      rememberPenSession(sessionId, { docId: payload.docId, path: penDocumentPath(payload) })
     }
   })
 
-  ipcMain.handle('hermes:pen:status', () => penStatus())
-
-  ipcMain.handle('hermes:pen:open', async (_event, options) => {
-    const doc = await openPenCanvas(options || {})
-
-    openPenDrawer(doc.docId)
-
-    return { doc }
+  // The renderer's pen tile watches close-document (broadcast above) and drops
+  // its pane itself — presentation is the tree's job now, not main's.
+  onPenEvent('close-document', payload => {
+    if (payload?.docId) {
+      penDocSessions.delete(payload.docId)
+    }
   })
 
-  ipcMain.handle('hermes:pen:close', () => {
-    closePenDrawer()
+  ipcMain.handle('hermes:pen:status', async () => {
+    const status = penStatus()
+
+    // Await the icon so the FIRST status a renderer sees already carries it —
+    // the sync penStatus() only reads the cache.
+    const icon = await penIconDataUrl(findPenInstallation()?.appPath)
+
+    return { ...status, icon }
+  })
+
+  ipcMain.handle('hermes:pen:open', async (_event, options) => {
+    const { sessionId, ...openOptions } = options || {}
+
+    // Freshen the host chrome the protocol handler injects into the editor
+    // page (background blend + UI scale), so a canvas opened after a theme or
+    // zoom change boots matching the app instead of a stale snapshot.
+    setPenHostChrome({ background: getWindowBackgroundColor() })
+
+    const doc = await openPenCanvas(openOptions)
+
+    // ONE canvas, enforced at the source of truth: whatever else was open is
+    // saved and closed (its close-document event prunes the renderer pane).
+    for (const closedId of closeOtherPenDocuments(doc.docId)) {
+      penDocSessions.delete(closedId)
+    }
+
+    if (sessionId) {
+      penDocSessions.set(doc.docId, sessionId)
+    }
+
+    rememberPenSession(sessionId, { docId: doc.docId, path: penDocumentPath(doc) || openOptions.path || null })
+
+    // `url` is what the renderer's pen tile mounts in its <webview>. Built
+    // here so the hermes-pen:// shape stays main's private detail.
+    return { doc, url: penCanvasUrl(doc.docId) }
+  })
+
+  /** What canvas does this session have? The renderer asks when a session
+   *  becomes active, so a canvas comes BACK with its chat instead of being
+   *  re-requested — including across a restart, and including a draft (a
+   *  never-saved document is remembered by id for the launch, by path once
+   *  it's saved). */
+  ipcMain.handle('hermes:pen:session', (_event, sessionId) => {
+    const entry = sessionId ? readPenSessions()[sessionId] : null
+
+    if (!entry) {
+      return null
+    }
+
+    // A temporary document doesn't survive a restart unless it was saved;
+    // report only what can actually be reopened.
+    const restorable = Boolean(entry.path) || documentIsOpen(entry.docId)
+
+    return restorable ? entry : null
+  })
+
+  /** Reopen a session's canvas. Prefers the live document (same launch), else
+   *  the saved file. */
+  ipcMain.handle('hermes:pen:restore', async (_event, sessionId) => {
+    const entry = sessionId ? readPenSessions()[sessionId] : null
+
+    if (!entry) {
+      return null
+    }
+
+    setPenHostChrome({ background: getWindowBackgroundColor() })
+
+    if (documentIsOpen(entry.docId)) {
+      for (const closedId of closeOtherPenDocuments(entry.docId)) {
+        penDocSessions.delete(closedId)
+      }
+
+      penDocSessions.set(entry.docId, sessionId)
+
+      return { docId: entry.docId, url: penCanvasUrl(entry.docId) }
+    }
+
+    if (!entry.path || !fs.existsSync(entry.path)) {
+      forgetPenSession(sessionId)
+
+      return null
+    }
+
+    const doc = await openPenCanvas({ path: entry.path })
+
+    for (const closedId of closeOtherPenDocuments(doc.docId)) {
+      penDocSessions.delete(closedId)
+    }
+
+    penDocSessions.set(doc.docId, sessionId)
+    rememberPenSession(sessionId, { docId: doc.docId, path: entry.path })
+
+    return { doc, url: penCanvasUrl(doc.docId) }
+  })
+
+  /** Show/hide pen's own agent inside the canvas. Applies to the open canvas
+   *  immediately and to every canvas opened after. */
+  ipcMain.handle('hermes:pen:agent-visible', (_event, visible) => {
+    const hidden = !visible
+
+    setPenAgentHidden(hidden)
+    void runPenGuestScript(penAgentScript(hidden))
+
+    return { hidden }
+  })
+
+  ipcMain.handle('hermes:pen:agent-hidden', () => isPenAgentHidden())
+
+  /** The canvas library: browse, rename, delete. `~/.hermes/pens/<name>/`.
+   *  Enriched with each canvas's chat-session tie, so the browser can say
+   *  "this one belongs to a conversation" instead of showing bare files. */
+  ipcMain.handle('hermes:pen:library', () => {
+    const library = penLibrary()
+    const sessions = readPenSessions()
+    const sessionByPath = new Map()
+
+    for (const [sessionId, entry] of Object.entries(sessions) as [string, { path?: null | string }][]) {
+      if (entry?.path) {
+        sessionByPath.set(path.resolve(entry.path), sessionId)
+      }
+    }
+
+    return {
+      ...library,
+      items: library.items.map(item => ({
+        ...item,
+        sessionId: sessionByPath.get(path.resolve(item.path)) ?? null
+      }))
+    }
+  })
+
+  ipcMain.handle('hermes:pen:library-delete', (_event, target) => {
+    return deletePenCanvas(String(target || ''))
+  })
+
+  ipcMain.handle('hermes:pen:library-rename', (_event, target, nextName) =>
+    renamePenCanvas(String(target || ''), String(nextName || ''))
+  )
+
+  ipcMain.handle('hermes:pen:reveal', (_event, target) => {
+    const file = String(target || '')
+
+    if (file) {
+      shell.showItemInFolder(file)
+    }
+  })
+
+  ipcMain.handle('hermes:pen:close', (_event, options) => {
+    // Closing is an explicit "I don't want this canvas here" — so the session
+    // stops reopening it on launch or on switch-back. The canvas itself is
+    // untouched (it's a file in the library); `keep: true` is for the internal
+    // swap path, where the drawer is being reused for another session and the
+    // tie must survive.
+    // Close ALL live documents — the registry, not penDocSessions. A canvas
+    // opened before its chat had a session id has no tie entry, and keying
+    // close off ties made those canvases unclosable.
+    if (!options?.keep) {
+      for (const sessionId of penDocSessions.values()) {
+        forgetPenSession(sessionId)
+      }
+    }
+
+    penDocSessions.clear()
+    closeOtherPenDocuments(null)
   })
 
   ipcMain.handle('hermes:pen:tool', async (_event, name, payload) => {
@@ -5644,6 +5835,7 @@ function setAndPersistZoomLevel(window, zoomLevel) {
     }`
     )
     .catch(error => rememberLog(`[zoom] persist failed: ${error?.message || error}`))
+
 }
 
 function restorePersistedZoomLevel(window) {
@@ -11399,6 +11591,12 @@ ipcMain.on('hermes:native-theme', (_event, mode) => {
     nativeTheme.themeSource = mode
     writePersistedThemeSource(mode)
   }
+
+  // The canvas blends with the app's chrome, so a theme flip re-paints every
+  // live canvas guest rather than waiting for a reopen — background AND pen's
+  // own dark/light kind (repaintPenTheme nudges the editor when it flips).
+  setPenHostChrome({ background: getWindowBackgroundColor() })
+  void repaintPenTheme()
 })
 
 // See-through window translucency. Persist + re-apply opacity to every open
@@ -12644,6 +12842,7 @@ app.whenReady().then(() => {
   registerMediaProtocol()
   registerPenProtocol()
   wirePenCanvas()
+  wirePenWebviewGuests()
   installEmbedReferer()
   registerDeepLinkProtocol()
   ensureWslWindowsFonts()

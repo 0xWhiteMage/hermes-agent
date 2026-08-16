@@ -953,6 +953,15 @@ export const ar = defineLocale({
     durationMinutes: (minutes, seconds) => `${minutes} د ${seconds} ث`,
     tokens: value => `${value} رمز`
   },
+  penLibrary: {
+    title: 'اللوحات',
+    searchPlaceholder: 'ابحث في اللوحات…',
+    empty: 'لا توجد لوحات بعد',
+    delete: 'حذف اللوحة',
+    confirmDelete: 'حذف',
+    cancelDelete: 'إبقاء'
+  },
+
   commandCenter: {
     close: 'إغلاق',
     paletteTitle: 'لوحة الأوامر',
