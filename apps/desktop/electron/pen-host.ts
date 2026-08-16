@@ -79,6 +79,36 @@ function readBundleVersion(appPath: string): string {
   }
 }
 
+/** The editor bundle to serve, as an ordered ladder:
+ *
+ *    1. HERMES_PEN_EDITOR_ROOT        — explicit override, dev/testing
+ *    2. ~/.hermes/pen/editor          — the BLESSED bundle: pen.dev hands
+ *                                       partners the editor as a plain static
+ *                                       dir (their pen-plugin zip); a symlink
+ *                                       here decouples us from Pen.app's asar
+ *                                       and from needing Pen.app at all for
+ *                                       the canvas surface.
+ *    3. Pen.app's asar (out/editor)   — the original recon path, still the
+ *                                       floor so nothing regresses without
+ *                                       the plugin.
+ *
+ *  A candidate is trusted only if its index.html actually exists — existence
+ *  of the directory is not proof (dangling symlink, half-unzipped bundle). */
+function resolveEditorRoot(asarEditorRoot: string): string {
+  const candidates = [
+    process.env.HERMES_PEN_EDITOR_ROOT || '',
+    path.join(os.homedir(), '.hermes', 'pen', 'editor')
+  ]
+
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(path.join(candidate, 'index.html'))) {
+      return candidate
+    }
+  }
+
+  return asarEditorRoot
+}
+
 /** Locate the installed pen.dev desktop app, or null. Cheap enough to call on
  *  demand; existence is validated at every layer that relies on it. */
 export function findPenInstallation(): PenInstallation | null {
@@ -98,7 +128,7 @@ export function findPenInstallation(): PenInstallation | null {
       appPath,
       asarPath,
       unpackedPath,
-      editorRoot: path.join(asarPath, 'out', 'editor'),
+      editorRoot: resolveEditorRoot(path.join(asarPath, 'out', 'editor')),
       templatesRoot: path.join(asarPath, 'out', 'data'),
       mcpServerPath,
       version: readBundleVersion(appPath)

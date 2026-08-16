@@ -1249,6 +1249,15 @@ const PEN_HOST_CHROME_TAGGER = `<script id="hermes-pen-host-tagger">
         // arrived and nothing was hidden.
         document.documentElement.dataset.hermesPenAgent = '__HERMES_PEN_AGENT__'
 
+        // Expose the editor's scene manager. In pen's own code this flag has
+        // exactly ONE effect (verified in the shipped bundle): the scene
+        // manager assigns itself to window.__SCENE_MANAGER at construction.
+        // That handle carries the REAL selection + camera APIs the agent
+        // cursor needs (selectionManager.getWorldspaceBounds, camera.toScreen,
+        // camera.ensureVisible) — the same calls pen's paste and zoom-keys
+        // use internally.
+        window.IS_DEV = true
+
         // THEME, at the editor's real source of truth. Pen resolves theme as
         // localStorage("theme") ?? "dark" — localStorage BEATS the host's
         // initParams.theme (verified in the shipped bundle), and the default
@@ -1495,17 +1504,15 @@ const PEN_AGENT_CURSOR = `<script id="hermes-pen-agent-cursor">
         }
 
         // The editor's live viewport transform, so canvas coords land on the
-        // right pixels at any pan/zoom.
+        // right pixels at any pan/zoom. __SCENE_MANAGER is exposed by pen
+        // itself under IS_DEV (set in the boot tagger); camera.toScreen is
+        // the same call its own overlays use.
         const toScreen = (x, y) => {
           try {
-            const app = window.pencilApp || window.app || null
-            const vp = app && (app.viewport || app.camera)
-            if (vp && typeof vp.worldToScreen === 'function') {
-              const p = vp.worldToScreen({ x: x, y: y })
-              return [p.x, p.y]
-            }
-            if (vp && typeof vp.zoom === 'number') {
-              return [x * vp.zoom + (vp.x || 0), y * vp.zoom + (vp.y || 0)]
+            const sm = window.__SCENE_MANAGER
+            if (sm && sm.camera && typeof sm.camera.toScreen === 'function') {
+              const p = sm.camera.toScreen(x, y)
+              if (p && typeof p.x === 'number') return [p.x, p.y]
             }
           } catch {}
           return null
@@ -1517,11 +1524,18 @@ const PEN_AGENT_CURSOR = `<script id="hermes-pen-agent-cursor">
 
           if (label) node.querySelector('[data-label]').textContent = label
 
-          if (point) {
-            const screen = toScreen(point.x, point.y)
-            if (screen) {
-              node.style.transform = 'translate3d(' + Math.round(screen[0]) + 'px,' + Math.round(screen[1]) + 'px,0)'
-            }
+          let screen = point ? toScreen(point.x, point.y) : null
+
+          // No selection / no mappable point: still show up. Parked at
+          // (-100,-100) the cursor is invisible even lit — reads, boots, and
+          // ops that clear selection land bottom-center like a presence chip.
+          if (!screen) {
+            const parked = node.style.transform.indexOf('-100px') !== -1
+            if (parked) screen = [Math.round(innerWidth / 2), Math.round(innerHeight * 0.82)]
+          }
+
+          if (screen) {
+            node.style.transform = 'translate3d(' + Math.round(screen[0]) + 'px,' + Math.round(screen[1]) + 'px,0)'
           }
 
           node.style.opacity = '1'
@@ -1565,7 +1579,26 @@ export async function handlePenProtocolRequest(request: any, electronNet: any): 
     const doc = documents.get(docId)
 
     if (!doc) {
-      return new Response('Unknown canvas document', { status: 404 })
+      // A docId is only valid for the lifetime of its document in THIS
+      // process — a webview reload after a close or an app restart arrives
+      // here with a dead id. Self-heal instead of erroring:
+      //   1. another document is live (single-canvas: there's at most one) →
+      //      redirect the reload onto it;
+      //   2. nothing is live → tell the renderer to drop the pane (the same
+      //      close-document event every other teardown path uses) and show a
+      //      quiet, theme-matched blank while it does.
+      const live = [...documents.keys()][0]
+
+      if (live) {
+        return Response.redirect(`${PEN_PROTOCOL}://canvas/index.html?doc=${encodeURIComponent(live)}`, 302)
+      }
+
+      events.emit('close-document', { docId })
+
+      return new Response(
+        `<!doctype html><html><body style="margin:0;background:${penHostChrome.background}"></body></html>`,
+        { headers: { 'content-type': 'text/html' } }
+      )
     }
 
     let html = await fs.promises.readFile(path.join(rt.install.editorRoot, 'index.html'), 'utf8')
@@ -1948,14 +1981,17 @@ async function showPenAgentCursor(name: string, follow: boolean): Promise<void> 
         const api = window.hermesPenCursor
         if (!api) return
 
-        // Where is the selection? The editor owns this; we only read it.
+        // Where is the selection? The editor's scene manager owns this —
+        // exposed by pen itself as __SCENE_MANAGER (IS_DEV, set at boot).
+        // getWorldspaceBounds is the same call pen's rotate/zoom-to-selection
+        // paths use. World coords; the cursor script maps them to screen.
         let point = null
         try {
-          const app = window.pencilApp || window.app || null
-          const sel = app && app.selectionManager
-          const bounds = sel && (sel.selectionBoundsWorld || sel.getSelectionBounds?.())
+          const sm = window.__SCENE_MANAGER
+          const bounds = sm && sm.selectionManager && sm.selectionManager.getWorldspaceBounds()
           if (bounds) {
-            point = { x: bounds.x ?? bounds.left ?? 0, y: bounds.y ?? bounds.top ?? 0 }
+            // Bottom-right corner reads as "hand at work", not covering it.
+            point = { x: bounds.x + bounds.width, y: bounds.y + bounds.height }
           }
         } catch {}
 
@@ -1964,9 +2000,13 @@ async function showPenAgentCursor(name: string, follow: boolean): Promise<void> 
         ${
           follow
             ? `try {
-          const app = window.pencilApp || window.app || null
-          if (app && typeof app.zoomToSelection === 'function') app.zoomToSelection()
-          else if (app && app.viewport && typeof app.viewport.zoomToFit === 'function') app.viewport.zoomToFit()
+          const sm = window.__SCENE_MANAGER
+          const bounds = sm && sm.selectionManager && sm.selectionManager.getWorldspaceBounds()
+          if (sm && bounds && sm.camera && typeof sm.camera.ensureVisible === 'function') {
+            // ensureVisible, not zoomToBounds: pans only when the work is
+            // OFF-SCREEN, never yanks the zoom the user set.
+            sm.camera.ensureVisible(bounds)
+          }
         } catch {}`
             : ''
         }
@@ -1974,7 +2014,7 @@ async function showPenAgentCursor(name: string, follow: boolean): Promise<void> 
       true
     )
   } catch {
-    // Presence is cosmetic: never let it surface as a tool failure.
+    // Presence is a nicety; never let it surface as a tool failure.
   }
 }
 
