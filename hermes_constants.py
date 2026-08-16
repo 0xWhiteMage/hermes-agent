@@ -367,6 +367,7 @@ def agent_browser_runnable(path: str | None) -> bool:
 
     try:
         from hermes_cli._subprocess_compat import windows_hide_flags
+        from installation import env as runtime_env
 
         result = subprocess.run(
             [path, "--version"],
