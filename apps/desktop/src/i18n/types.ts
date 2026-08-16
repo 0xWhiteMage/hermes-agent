@@ -1602,6 +1602,9 @@ export interface Translations {
     kindImage: string
     kindFile: string
     kindLink: string
+    kindCanvas: string
+    tabCanvases: string
+    openCanvas: string
     chat: string
     copyUrl: string
     copyPath: string

@@ -147,6 +147,8 @@ declare global {
             name: string
             open: boolean
             path: string
+            /** Rendered canvas preview PNG beside the .pen, when one exists. */
+            previewPath: null | string
             /** The chat session this canvas belongs to, when tied. */
             sessionId: null | string
             size: number

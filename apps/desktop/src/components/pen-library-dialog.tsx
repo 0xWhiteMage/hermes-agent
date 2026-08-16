@@ -82,7 +82,18 @@ export function PenLibraryDialog({ onOpenChange, open }: PenLibraryDialogProps) 
                       }}
                       value={`${item.name} ${item.path}`}
                     >
-                      <Pencil className="size-4 shrink-0 text-muted-foreground" />
+                      {/* Real canvas thumbnail when the editor has pushed one
+                          (preview.png beside the .pen); pencil glyph until
+                          the first save renders it. */}
+                      {item.previewPath ? (
+                        <img
+                          alt=""
+                          className="h-7 w-9 shrink-0 rounded-[4px] border border-(--ui-stroke-secondary) object-cover"
+                          src={`hermes-media://stream/${encodeURIComponent(item.previewPath)}`}
+                        />
+                      ) : (
+                        <Pencil className="size-4 shrink-0 text-muted-foreground" />
+                      )}
                       <span className="min-w-0 flex-1 truncate">{item.name}</span>
                       {/* Chat-tied canvas: this file belongs to a conversation
                           and comes back with it. The glyph makes per-session

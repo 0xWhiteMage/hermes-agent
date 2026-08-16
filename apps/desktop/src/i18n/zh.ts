@@ -2099,6 +2099,9 @@ export const zh: Translations = {
     kindImage: '图片',
     kindFile: '文件',
     kindLink: '链接',
+    kindCanvas: '画布',
+    tabCanvases: '画布',
+    openCanvas: '打开画布',
     chat: '对话',
     copyUrl: '复制 URL',
     copyPath: '复制路径'

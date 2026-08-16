@@ -1074,7 +1074,32 @@ export function bindPenWebview(guestContents: any): boolean {
 
     return JSON.stringify(config)
   })
-  ipc.on('save-preview', () => {})
+  // The editor pushes a rendered canvas preview (base64 PNG) after saves —
+  // Pen.app's host writes it via its previews store; ours writes preview.png
+  // beside the .pen so the library (⌘K + Artifacts) can show REAL thumbnails
+  // instead of filenames. Best-effort: a failed thumbnail never surfaces.
+  ipc.on('save-preview', (payload: unknown) => {
+    try {
+      const image =
+        typeof payload === 'string'
+          ? payload
+          : ((payload as Record<string, unknown>)?.image as string | undefined)
+
+      if (!image) {
+        return
+      }
+
+      const filePath = doc.fileURI.startsWith('file:') ? fileURLToPath(doc.fileURI) : null
+
+      if (!filePath) {
+        return
+      }
+
+      fs.writeFileSync(path.join(path.dirname(filePath), 'preview.png'), Buffer.from(image, 'base64'))
+    } catch {
+      // Thumbnail is decoration.
+    }
+  })
   ipc.on('set-native-theme', () => {})
   ipc.on('toggle-theme', () => {})
   ipc.on('desktop-open-terminal', () => {})

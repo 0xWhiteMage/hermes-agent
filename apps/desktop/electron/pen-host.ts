@@ -191,6 +191,9 @@ export interface PenLibraryEntry {
   name: string
   modifiedAt: number
   size: number
+  /** Rendered canvas preview (preview.png beside the .pen, written from the
+   *  editor's save-preview pushes), when one exists. */
+  previewPath: null | string
 }
 
 /** Every canvas in the library, newest first. One shallow scan — the library
@@ -231,13 +234,15 @@ export function listPenLibrary(): PenLibraryEntry[] {
 
       try {
         const stat = fs.statSync(full)
+        const preview = path.join(dir, 'preview.png')
 
         entries.push({
           path: full,
           folder: dir,
           name: file.replace(/\.pen$/, ''),
           modifiedAt: stat.mtimeMs,
-          size: stat.size
+          size: stat.size,
+          previewPath: fs.existsSync(preview) ? preview : null
         })
       } catch {
         // A canvas being written right now — skip it this pass.
