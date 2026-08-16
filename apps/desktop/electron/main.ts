@@ -236,7 +236,7 @@ import {
   setPenAgentHidden,
   setPenHostChrome,
   shutdownPenHost
-} from './pen-canvas'
+} from './pen'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import {
   fetchPrimaryProfileSessions,
