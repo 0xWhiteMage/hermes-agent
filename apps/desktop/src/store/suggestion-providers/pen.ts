@@ -2,6 +2,7 @@ import { translateNow } from '@/i18n'
 import { getAllSessionMessages } from '@/hermes'
 import { type ComposerSuggestion, offerSuggestions, registerDraftProvider } from '@/store/composer-suggestions'
 import { openPenCanvas, refreshPenStatus } from '@/store/pen'
+import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
 /**
  * Pen canvas draft provider: the draft talks about designing on a canvas, so
@@ -240,6 +241,28 @@ async function canvasPathFromTranscript(sessionId: string): Promise<null | strin
   return null
 }
 
+/** The bus keys offerings by the COMPOSER'S session id, and the composer
+ *  wears a different identity than the route when a session has been
+ *  compacted/rotated: the route (and this refresh) speaks the durable stored
+ *  id, the live tile's strip reads under the tip id. Proven live: a pill
+ *  offered under the stored id sat invisible while the identical pill under
+ *  the tile id rendered instantly. Publish to every identity the
+ *  conversation currently wears — the strip dedupes by provider:id, so the
+ *  double write can never double-render. */
+function pillTargets(sessionId: string): string[] {
+  const targets = new Set([sessionId])
+
+  if ($selectedStoredSessionId.get() === sessionId) {
+    const active = $activeSessionId.get()
+
+    if (active) {
+      targets.add(active)
+    }
+  }
+
+  return [...targets]
+}
+
 /** Re-evaluate the reopen pill for the active session. Called on session
  *  switch and whenever a canvas opens or closes. */
 export async function refreshPenSessionSuggestion(sessionId: null | string): Promise<void> {
@@ -254,9 +277,15 @@ export async function refreshPenSessionSuggestion(sessionId: null | string): Pro
     pen.status().catch(() => null)
   ])
 
+  const offerAll = (suggestions: ComposerSuggestion[]) => {
+    for (const target of pillTargets(sessionId)) {
+      offerSuggestions(target, 'pen', suggestions)
+    }
+  }
+
   // Its canvas is already on screen — nothing to offer.
   if ((status?.openDocuments.length ?? 0) > 0) {
-    offerSuggestions(sessionId, 'pen', [])
+    offerAll([])
 
     return
   }
@@ -269,7 +298,7 @@ export async function refreshPenSessionSuggestion(sessionId: null | string): Pro
     path = await canvasPathFromTranscript(sessionId)
 
     if (!path) {
-      offerSuggestions(sessionId, 'pen', [])
+      offerAll([])
 
       return
     }
@@ -277,5 +306,5 @@ export async function refreshPenSessionSuggestion(sessionId: null | string): Pro
 
   const name = path ? (path.split('/').pop() || '').replace(/\.pen$/, '') : ''
 
-  offerSuggestions(sessionId, 'pen', [reopenSuggestion(name || copy('untitledCanvas'), entry ? null : path)])
+  offerAll([reopenSuggestion(name || copy('untitledCanvas'), entry ? null : path)])
 }
