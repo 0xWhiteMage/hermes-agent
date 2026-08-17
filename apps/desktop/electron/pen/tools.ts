@@ -26,6 +26,7 @@ import {
   requirePenModule
 } from '../pen-host'
 
+import { checkpointPenDocument, revertPenDocument } from './documents'
 import { documents, log, runtime } from './state'
 
 export interface PenToolResult {
@@ -306,6 +307,33 @@ export async function runPenTool(name: string, payload: Record<string, unknown>)
   // node ids without the user having to describe what they selected.
   if (name === 'get-selection') {
     return readPenSelection()
+  }
+
+  // Canvas version control (hermes-side; pen ships none). 'revert' pops the
+  // newest checkpoint — the document as it was before the agent's last edit
+  // burst. Mutating ops below take the matching snapshot.
+  if (name === 'revert') {
+    const doc = [...documents.values()][0]
+
+    if (!doc) {
+      return { success: false, error: 'No canvas is open.' }
+    }
+
+    const stamp = await revertPenDocument(doc)
+
+    return stamp
+      ? { success: true, result: { revertedTo: new Date(stamp).toISOString() } }
+      : { success: false, error: 'No checkpoint to revert to — Hermes has not edited this canvas yet.' }
+  }
+
+  // Checkpoint BEFORE the first mutating op of a burst, so "undo everything
+  // Hermes just did" is one action. execute is the only door that mutates.
+  if (name === 'execute') {
+    const doc = [...documents.values()][0]
+
+    if (doc) {
+      await checkpointPenDocument(doc)
+    }
   }
 
   // Presence BEFORE the op, so the cursor is already there when nodes start

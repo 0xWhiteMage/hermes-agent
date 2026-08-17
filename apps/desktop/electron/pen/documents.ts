@@ -187,6 +187,113 @@ export function schedulePenAutosave(doc: PenDocument): void {
   )
 }
 
+// ---------------------------------------------------------------------------
+// Checkpoints — canvas version control, hermes-side (pen has none upstream)
+// ---------------------------------------------------------------------------
+
+/** Snapshots live beside the document: `<folder>/.checkpoints/<ts>.pen`.
+ *  Taken at the START of an agent edit burst (first mutating op after a
+ *  quiet gap), so "revert" always means "back to before Hermes touched it" —
+ *  the user's own ⌘Z history inside the editor stays intact for hand edits. */
+const PEN_CHECKPOINT_LIMIT = 20
+const PEN_CHECKPOINT_BURST_GAP_MS = 60_000
+
+const lastAgentEditAt = new Map<string, number>()
+
+function checkpointDir(filePath: string): string {
+  return path.join(path.dirname(filePath), '.checkpoints')
+}
+
+/** Take a checkpoint if this mutating op STARTS a burst (no agent edit in
+ *  the last minute). Flushes pending autosave first so the snapshot is the
+ *  document as the user last saw it, not a stale on-disk state. */
+export async function checkpointPenDocument(doc: PenDocument): Promise<void> {
+  const now = Date.now()
+  const last = lastAgentEditAt.get(doc.docId) ?? 0
+
+  lastAgentEditAt.set(doc.docId, now)
+
+  if (now - last < PEN_CHECKPOINT_BURST_GAP_MS) {
+    return
+  }
+
+  try {
+    const filePath = doc.fileURI?.startsWith('file:') ? fileURLToPath(doc.fileURI) : null
+
+    if (!filePath) {
+      return
+    }
+
+    await savePenDocument(doc)
+
+    if (!fs.existsSync(filePath)) {
+      return
+    }
+
+    const dir = checkpointDir(filePath)
+
+    await fs.promises.mkdir(dir, { recursive: true })
+    await fs.promises.copyFile(filePath, path.join(dir, `${now}.pen`))
+
+    // Bounded history, oldest out.
+    const stamps = (await fs.promises.readdir(dir)).filter(f => f.endsWith('.pen')).sort()
+
+    for (const stale of stamps.slice(0, Math.max(0, stamps.length - PEN_CHECKPOINT_LIMIT))) {
+      await fs.promises.unlink(path.join(dir, stale)).catch(() => {})
+    }
+  } catch (error) {
+    log.warn('checkpoint failed', error)
+  }
+}
+
+/** Revert to the newest checkpoint: the document as it was before the agent's
+ *  current/last burst. The checkpoint is consumed (popped), so repeated
+ *  reverts walk further back through history. Returns the restored stamp or
+ *  null. The document reloads through the SAME door pen's own file watching
+ *  uses (load-file), so the editor repaints without a reopen. */
+export async function revertPenDocument(doc: PenDocument): Promise<null | number> {
+  const filePath = doc.fileURI?.startsWith('file:') ? fileURLToPath(doc.fileURI) : null
+
+  if (!filePath) {
+    return null
+  }
+
+  const dir = checkpointDir(filePath)
+  const stamps = fs.existsSync(dir) ? fs.readdirSync(dir).filter(f => f.endsWith('.pen')).sort() : []
+  const latest = stamps[stamps.length - 1]
+
+  if (!latest) {
+    return null
+  }
+
+  const snapshot = path.join(dir, latest)
+
+  // Cancel any pending autosave so it can't overwrite the revert with the
+  // pre-revert buffer.
+  const pending = penAutosaveTimers.get(doc.docId)
+
+  if (pending) {
+    clearTimeout(pending)
+    penAutosaveTimers.delete(doc.docId)
+  }
+
+  await fs.promises.copyFile(snapshot, filePath)
+  await fs.promises.unlink(snapshot).catch(() => {})
+  lastAgentEditAt.delete(doc.docId)
+
+  // Reload the editor from disk through the device's own load path.
+  try {
+    const content = await fs.promises.readFile(filePath, 'utf8')
+
+    doc.device.setFileContent?.(content)
+    doc.ipc?.notify('file-updated', { content, fileURI: doc.fileURI, isDirty: false, zoomToFit: false })
+  } catch (error) {
+    log.warn('revert reload failed', error)
+  }
+
+  return Number(latest.replace(/\.pen$/, '')) || null
+}
+
 /** Flush every dirty canvas right now — before a close, a session swap, or
  *  app quit, where waiting out the debounce would lose the tail of the work. */
 export async function flushPenAutosaves(): Promise<void> {

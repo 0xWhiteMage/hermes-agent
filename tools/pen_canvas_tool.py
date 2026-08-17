@@ -43,6 +43,7 @@ _ACTIONS = {
     "get_guidelines",
     "get_screenshot",
     "get_selection",
+    "revert",
     "export_nodes",
     "export_html",
 }
