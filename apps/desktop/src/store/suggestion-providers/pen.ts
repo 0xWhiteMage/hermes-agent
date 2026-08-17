@@ -1,4 +1,5 @@
 import { translateNow } from '@/i18n'
+import { getAllSessionMessages } from '@/hermes'
 import { type ComposerSuggestion, offerSuggestions, registerDraftProvider } from '@/store/composer-suggestions'
 import { openPenCanvas, refreshPenStatus } from '@/store/pen'
 
@@ -140,7 +141,7 @@ registerDraftProvider('pen', async ({ text }) => {
  * Self-limiting by construction: withdrawn the moment the canvas is open
  * (offer []), so it can't sit there duplicating what's already visible.
  */
-function reopenSuggestion(name: string): ComposerSuggestion {
+function reopenSuggestion(name: string, minedPath: null | string = null): ComposerSuggestion {
   return {
     doneLabel: copy('done'),
     doneTip: copy('doneTip'),
@@ -151,8 +152,12 @@ function reopenSuggestion(name: string): ComposerSuggestion {
         return
       }
 
-      const { restorePenCanvas } = await import('@/store/pen')
-      const restored = await restorePenCanvas(sessionId)
+      // A mined (transcript-recovered) canvas has no tie entry to restore —
+      // open it by path instead, which records a FRESH tie so the store is
+      // healed for every future launch.
+      const restored = minedPath
+        ? await openPenCanvas({ path: minedPath }, sessionId)
+        : await (await import('@/store/pen')).restorePenCanvas(sessionId)
 
       if (!restored && !cancelled()) {
         throw new Error(copy('openFailed'))
@@ -166,6 +171,70 @@ function reopenSuggestion(name: string): ComposerSuggestion {
     workingLabel: copy('working'),
     workingTip: copy('workingTip')
   }
+}
+
+/** Transcript fallback: the SESSION ITSELF is the durable record of its
+ *  canvases — pen tool results and chat text carry the .pen paths (that is
+ *  exactly how the Artifacts page ties pens to chats). The side tie-store is
+ *  a fast cache that has already missed once (draft-chat hole); when it has
+ *  no answer, mine the transcript and cross-check the library so the offer
+ *  is only made for a file that still exists. Newest mention wins. */
+const PEN_PATH_RE = /(?:^|[\s"'`(=])((?:\/|~\/)[^\s"'`<>)]+\.pen)\b/g
+
+async function canvasPathFromTranscript(sessionId: string): Promise<null | string> {
+  try {
+    const [{ messages }, library] = await Promise.all([
+      getAllSessionMessages(sessionId),
+      window.hermesDesktop?.pen?.library().catch(() => null) ?? Promise.resolve(null)
+    ])
+
+    if (!messages?.length) {
+      return null
+    }
+
+    const known = new Set((library?.items ?? []).map(item => item.path))
+
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const message = messages[i]
+      const haystacks: string[] = []
+
+      if (typeof message.content === 'string') {
+        haystacks.push(message.content)
+      }
+
+      const calls = Array.isArray((message as { tool_calls?: unknown }).tool_calls)
+        ? ((message as { tool_calls?: Array<{ function?: { arguments?: unknown } }> }).tool_calls ?? [])
+        : []
+
+      for (const call of calls) {
+        const args = call?.function?.arguments
+
+        if (typeof args === 'string') {
+          haystacks.push(args)
+        }
+      }
+
+      for (const haystack of haystacks) {
+        for (const match of haystack.matchAll(PEN_PATH_RE)) {
+          // Library paths are absolute; a ~/ mention matches by suffix.
+          const found = match[1]
+          const hit = known.has(found)
+            ? found
+            : [...known].find(k => found.startsWith('~/') && k.endsWith(found.slice(1)))
+
+          // Only offer files the library still has — a mined path may have
+          // been renamed or deleted since the chat mentioned it.
+          if (hit) {
+            return hit
+          }
+        }
+      }
+    }
+  } catch {
+    // Mining is best-effort; the pill just doesn't appear.
+  }
+
+  return null
 }
 
 /** Re-evaluate the reopen pill for the active session. Called on session
@@ -182,14 +251,28 @@ export async function refreshPenSessionSuggestion(sessionId: null | string): Pro
     pen.status().catch(() => null)
   ])
 
-  // Nothing tied to this chat, or its canvas is already on screen.
-  if (!entry || (status?.openDocuments.length ?? 0) > 0) {
+  // Its canvas is already on screen — nothing to offer.
+  if ((status?.openDocuments.length ?? 0) > 0) {
     offerSuggestions(sessionId, 'pen', [])
 
     return
   }
 
-  const name = entry.path ? (entry.path.split('/').pop() || '').replace(/\.pen$/, '') : ''
+  // Tie store first (fast, covers the normal case), transcript second (the
+  // durable record — catches canvases the store missed).
+  let path = entry?.path ?? null
 
-  offerSuggestions(sessionId, 'pen', [reopenSuggestion(name || copy('untitledCanvas'))])
+  if (!entry) {
+    path = await canvasPathFromTranscript(sessionId)
+
+    if (!path) {
+      offerSuggestions(sessionId, 'pen', [])
+
+      return
+    }
+  }
+
+  const name = path ? (path.split('/').pop() || '').replace(/\.pen$/, '') : ''
+
+  offerSuggestions(sessionId, 'pen', [reopenSuggestion(name || copy('untitledCanvas'), entry ? null : path)])
 }
