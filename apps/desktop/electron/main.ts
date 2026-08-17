@@ -1235,6 +1235,32 @@ function rememberPenSession(sessionId, entry) {
   writePenSessions(map)
 }
 
+/** Resolve the canvas for a session. PROJECT priority: a chat inside a
+ *  project shares the project's canvas — the most recently touched entry
+ *  tagged with that project (the session's own tie is part of that pool).
+ *  Per-session ties rule only in isolation (no project), or as fallback for
+ *  legacy entries recorded before project tagging. */
+function resolvePenEntry(sessionId, projectId) {
+  const map = readPenSessions()
+  const own = sessionId ? map[sessionId] : null
+
+  if (projectId) {
+    let best = null
+
+    for (const entry of Object.values(map) as Array<{ at?: number; path?: null | string; projectId?: null | string }>) {
+      if (entry.projectId === projectId && entry.path && (!best || (entry.at ?? 0) > (best.at ?? 0))) {
+        best = entry
+      }
+    }
+
+    if (best) {
+      return { entry: best, via: 'project' }
+    }
+  }
+
+  return own ? { entry: own, via: 'session' } : { entry: null, via: null }
+}
+
 function forgetPenSession(sessionId) {
   if (!sessionId) {
     return
@@ -1370,7 +1396,7 @@ function wirePenCanvas() {
   })
 
   ipcMain.handle('hermes:pen:open', async (_event, options) => {
-    const { sessionId, ...openOptions } = options || {}
+    const { projectId, sessionId, ...openOptions } = options || {}
 
     // Freshen the host chrome the protocol handler injects into the editor
     // page (background blend + UI scale), so a canvas opened after a theme or
@@ -1389,7 +1415,7 @@ function wirePenCanvas() {
       penDocSessions.set(doc.docId, sessionId)
     }
 
-    rememberPenSession(sessionId, { docId: doc.docId, path: penDocumentPath(doc) || openOptions.path || null, closed: false })
+    rememberPenSession(sessionId, { docId: doc.docId, path: penDocumentPath(doc) || openOptions.path || null, projectId: projectId || null, closed: false })
 
     // `url` is what the renderer's pen tile mounts in its <webview>. Built
     // here so the hermes-pen:// shape stays main's private detail.
@@ -1406,7 +1432,7 @@ function wirePenCanvas() {
    *  selected-session atom was null), so the canvas silently detached — no
    *  reopen pill, no restore, ever. The renderer calls this the moment a
    *  draft is promoted to a real session with a canvas on screen. */
-  ipcMain.handle('hermes:pen:adopt', (_event, sessionId) => {
+  ipcMain.handle('hermes:pen:adopt', (_event, sessionId, projectId) => {
     if (!sessionId) {
       return false
     }
@@ -1420,16 +1446,22 @@ function wirePenCanvas() {
     }
 
     penDocSessions.set(doc.docId, sessionId)
-    rememberPenSession(sessionId, { docId: doc.docId, path: penDocumentPath(doc), closed: false })
+    rememberPenSession(sessionId, { docId: doc.docId, path: penDocumentPath(doc), projectId: projectId || null, closed: false })
 
     return true
   })
 
-  ipcMain.handle('hermes:pen:session', (_event, sessionId) => {
-    const entry = sessionId ? readPenSessions()[sessionId] : null
+  ipcMain.handle('hermes:pen:session', (_event, sessionId, projectId) => {
+    const { entry, via } = resolvePenEntry(sessionId, projectId)
 
     if (!entry) {
       return null
+    }
+
+    // A project-shared canvas is never "closed" for a session that hasn't
+    // seen it — closed is a per-session put-away, not a project state.
+    if (via === 'project' && entry.closed) {
+      return { ...entry, closed: false }
     }
 
     // A temporary document doesn't survive a restart unless it was saved;
@@ -1441,11 +1473,17 @@ function wirePenCanvas() {
 
   /** Reopen a session's canvas. Prefers the live document (same launch), else
    *  the saved file. */
-  ipcMain.handle('hermes:pen:restore', async (_event, sessionId) => {
-    const entry = sessionId ? readPenSessions()[sessionId] : null
+  ipcMain.handle('hermes:pen:restore', async (_event, sessionId, projectId) => {
+    const { entry, via } = resolvePenEntry(sessionId, projectId)
 
     if (!entry) {
       return null
+    }
+
+    // Picking up the project's canvas ties THIS session to it too, so the
+    // chat keeps it across restarts without re-resolving through the project.
+    if (via === 'project' && sessionId) {
+      rememberPenSession(sessionId, { docId: entry.docId, path: entry.path, projectId, closed: false })
     }
 
     setPenHostChrome({ background: getWindowBackgroundColor() })

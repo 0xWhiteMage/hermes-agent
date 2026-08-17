@@ -13,7 +13,21 @@ import { atom } from 'nanostores'
 import type { PenStatus, PenToolResult } from '@/global'
 import { translateNow } from '@/i18n'
 import { notifyError } from '@/store/notifications'
+import { projectIdForCwd } from '@/store/projects'
 import { $selectedStoredSessionId, $sessions } from '@/store/session'
+
+/** The project owning a session's cwd — the scope a canvas belongs to when
+ *  the chat lives in a project. Null outside projects; everything then keys
+ *  per-session exactly as before. */
+function projectIdForSession(sessionId: null | string | undefined): null | string {
+  if (!sessionId) {
+    return null
+  }
+
+  const cwd = $sessions.get().find(s => s.id === sessionId)?.cwd
+
+  return cwd ? projectIdForCwd(cwd) : null
+}
 
 import { closePenCanvasTile, openPenCanvasTile, penCanvasTileOpen } from '@/app/chat/pen-tile'
 
@@ -76,7 +90,7 @@ export async function openPenCanvas(
       }
     }
 
-    const { doc, url } = await pen.open({ ...options, name, sessionId: tieTo })
+    const { doc, url } = await pen.open({ ...options, name, projectId: projectIdForSession(tieTo) ?? undefined, sessionId: tieTo })
 
     if (doc && url) {
       openPenCanvasTile({ docId: doc.docId, title: doc.displayName || 'Canvas', url })
@@ -137,7 +151,7 @@ export async function restorePenCanvas(sessionId: string): Promise<boolean> {
     return false
   }
 
-  const restored = await pen.restore(sessionId).catch(() => null)
+  const restored = await pen.restore(sessionId, projectIdForSession(sessionId) ?? undefined).catch(() => null)
 
   if (!restored) {
     return false
@@ -198,13 +212,13 @@ export function watchPenSession(): () => void {
     // Adopt it now: this is the same chat, promoted, and losing the tie here
     // is how canvases silently detached from their conversations.
     if (wasDraft && penCanvasTileOpen()) {
-      await pen.adopt?.(sessionId).catch(() => {})
+      await pen.adopt?.(sessionId, projectIdForSession(sessionId) ?? undefined).catch(() => {})
       void refreshPenSessionSuggestion(sessionId)
 
       return
     }
 
-    const entry = await pen.session(sessionId).catch(() => null)
+    const entry = await pen.session(sessionId, projectIdForSession(sessionId) ?? undefined).catch(() => null)
 
     // Guard against an out-of-order answer: the user may have switched again
     // while this was in flight.
