@@ -6,9 +6,11 @@ tool registration or provider resolution.
 """
 
 import ast
+import functools
 import logging
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -696,6 +698,103 @@ def find_project_root(start: Optional[Path] = None) -> Optional[Path]:
     return None
 
 
+# Timeout for the one-shot ``git rev-parse`` probe that canonicalizes trust
+# identity. Short by design: this runs at agent-build time on the session's
+# fixed cwd, and any git slowness must degrade to the plain-resolve fallback
+# rather than stall prompt construction.
+_GIT_IDENTITY_TIMEOUT_S = 2.0
+
+
+@functools.lru_cache(maxsize=256)
+def _canonical_project_identity_str(root_str: str) -> str:
+    """Canonical trust identity for *root_str* (a resolved path string).
+
+    All git worktrees of one repository — plus the symlinked-root case — share
+    a single ``--git-common-dir`` (the main checkout's ``.git``), so we key the
+    trust principal off the *parent of the resolved common dir* (the main
+    checkout root). Trusting any worktree of a repo then covers every other
+    worktree of that same repo.
+
+    Falls back to ``Path(root).resolve()`` (as a string) whenever git can't
+    give us a better answer: git binary missing, not a repo, timeout, or a
+    layout the parent-of-common-dir heuristic can't reason about safely (bare
+    repos, submodules — see below).
+
+    Submodule nuance: a submodule's common dir lives under the superproject's
+    ``.git/modules/<name>``, so parent-of-common-dir would resolve to the
+    superproject's ``.git`` rather than the submodule checkout — a wrong,
+    surprising identity. We detect that (``rev-parse
+    --show-superproject-working-tree`` is non-empty, or the common dir sits
+    under a ``.git/modules`` segment) and fall back to the resolved root so a
+    submodule keeps its own distinct identity.
+
+    Cached per process on the string path: cwd is fixed for the life of a
+    session and the git layout of a checkout doesn't change under us, matching
+    the existing cache-safety contract for project-skill discovery.
+    """
+    fallback = str(Path(root_str).resolve())
+
+    def _git(*extra_args: str) -> Optional[str]:
+        try:
+            out = subprocess.run(
+                ["git", "-C", root_str, "rev-parse", *extra_args],
+                capture_output=True,
+                text=True,
+                timeout=_GIT_IDENTITY_TIMEOUT_S,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if out.returncode != 0:
+            return None
+        return out.stdout.strip()
+
+    common_dir = _git("--git-common-dir")
+    if not common_dir:
+        # git missing / not a repo / timeout — keep per-root identity.
+        return fallback
+
+    # Resolve the common dir relative to the root (git may return a relative
+    # path like ".git" or an absolute one).
+    common_path = Path(common_dir)
+    if not common_path.is_absolute():
+        common_path = Path(root_str) / common_path
+    try:
+        common_path = common_path.resolve()
+    except OSError:
+        return fallback
+
+    # Submodule: common dir under a superproject's ``.git/modules/...``. The
+    # parent-of-common-dir heuristic is meaningless here, so keep the
+    # submodule's own resolved root as its identity. Two independent signals;
+    # either is sufficient.
+    superproject = _git("--show-superproject-working-tree")
+    parts = common_path.parts
+    in_git_modules = ".git" in parts and "modules" in parts[parts.index(".git") + 1 :]
+    if superproject or in_git_modules:
+        return fallback
+
+    # Bare repos have no working-tree parent to key off; fall back.
+    if common_path.name != ".git":
+        return fallback
+
+    # Canonical identity = the main checkout root = parent of the common .git.
+    return str(common_path.parent)
+
+
+def canonical_project_identity(root: Path) -> Path:
+    """Canonical trust principal shared by all worktrees of *root*'s repo.
+
+    Thin ``Path`` wrapper over :func:`_canonical_project_identity_str` (the
+    ``lru_cache``'d worker keyed on a plain string). See that function for the
+    full contract and fallback rules.
+    """
+    try:
+        root_str = str(Path(root).resolve())
+    except OSError:
+        root_str = str(root)
+    return Path(_canonical_project_identity_str(root_str))
+
+
 def _project_trusted_dirs_from_config() -> Set[Path]:
     """Resolved set of trusted project roots from ``skills.trusted_project_dirs``."""
     parsed = _load_raw_config()
@@ -722,11 +821,22 @@ def _project_trusted_dirs_from_config() -> Set[Path]:
 
 
 def is_project_root_trusted(root: Path) -> bool:
-    """True when *root* is listed in ``skills.trusted_project_dirs``."""
+    """True when *root* — or any git worktree of the same repo — is trusted.
+
+    Trust is keyed off the repository's canonical identity (the main checkout
+    root, via :func:`canonical_project_identity`) rather than the raw worktree
+    path, so running ``hermes skills trust`` in the main checkout OR in any
+    worktree of that repo covers all of them. Non-git paths and git failures
+    degrade to a plain resolved-path comparison (identity == resolved root).
+    """
     try:
-        return Path(root).resolve() in _project_trusted_dirs_from_config()
+        target = canonical_project_identity(root)
     except OSError:
         return False
+    trusted_identities = {
+        canonical_project_identity(t) for t in _project_trusted_dirs_from_config()
+    }
+    return target in trusted_identities
 
 
 def _candidate_project_skills_dirs(root: Path) -> List[Path]:
