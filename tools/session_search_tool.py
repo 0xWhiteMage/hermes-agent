@@ -35,6 +35,8 @@ support.
 
 import json
 import logging
+import re
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
@@ -184,18 +186,36 @@ def _session_end_reason(db, session_id: str) -> Optional[str]:
         return None
 
 
-def _parse_iso_bound(value: Optional[str], *, as_exclusive_end: bool = False) -> Optional[int]:
-    """Parse an ISO date/datetime into a UTC unix timestamp.
+_RELATIVE_BOUND_RE = re.compile(r"^(\d+)\s*(h|d|w)$", re.IGNORECASE)
 
-    A date-only value (``YYYY-MM-DD``) is midnight UTC on that day. When
-    ``as_exclusive_end`` is True, that midnight is the exclusive upper bound
-    (``before=2026-07-01`` keeps June, drops July 1 00:00).
+# Seconds per relative-duration unit: hours, days, weeks.
+_RELATIVE_UNIT_SECONDS = {"h": 3600, "d": 86400, "w": 604800}
+
+
+def _parse_iso_bound(value: Optional[str], *, as_exclusive_end: bool = False) -> Optional[int]:
+    """Parse an ISO date/datetime OR relative duration into a UTC unix timestamp.
+
+    Accepts two forms (mirroring Amp's thread-feed time filters):
+
+    - ISO date/datetime: a date-only value (``YYYY-MM-DD``) is midnight UTC
+      on that day. When ``as_exclusive_end`` is True, that midnight is the
+      exclusive upper bound (``before=2026-07-01`` keeps June, drops July 1
+      00:00).
+    - Relative duration: ``"7d"``, ``"24h"``, ``"2w"`` — "now minus N
+      hours/days/weeks". ``after="7d"`` means sessions started within the
+      last week; ``before="7d"`` means sessions with no activity more recent
+      than a week ago.
     """
     if value is None:
         return None
     text = str(value).strip()
     if not text:
         return None
+    rel = _RELATIVE_BOUND_RE.match(text)
+    if rel:
+        amount = int(rel.group(1))
+        unit = rel.group(2).lower()
+        return int(time.time()) - amount * _RELATIVE_UNIT_SECONDS[unit]
     normalized = text.replace("Z", "+00:00")
     parsed: Optional[datetime] = None
     try:
@@ -203,7 +223,10 @@ def _parse_iso_bound(value: Optional[str], *, as_exclusive_end: bool = False) ->
     except ValueError:
         parsed = None
     if parsed is None:
-        raise ValueError(f"invalid ISO timestamp: {value!r}")
+        raise ValueError(
+            f"invalid time bound: {value!r} (expected ISO date/datetime like "
+            f"2026-07-01, or a relative duration like 7d, 24h, 2w)"
+        )
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     if as_exclusive_end and len(text) == 10 and text[4] == "-" and text[7] == "-":
@@ -1218,13 +1241,15 @@ def session_search(
     window: int = 5,
     # Discovery shape
     sort: str = None,
-    after: str = None,
-    before: str = None,
-    exclude_session_ids: Optional[List[str]] = None,
     # Cross-profile (any shape)
     profile: str = None,
     # Discovery result shaping (appended to preserve positional compatibility)
     detail: str = "adaptive",
+    # Temporal narrowing + re-find controls (appended to preserve positional
+    # compatibility)
+    after: str = None,
+    before: str = None,
+    exclude_session_ids: Optional[List[str]] = None,
 ) -> str:
     """Run session search and close databases opened by this invocation."""
     owned_dbs: List[Any] = []
@@ -1401,17 +1426,18 @@ SESSION_SEARCH_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Discovery shape only. Inclusive lower bound on session start "
-                    "time (ISO date or datetime, e.g. 2026-06-01). Use only when the "
-                    "user names a time frame. sort is a ranking bias, not a bound."
+                    "time. ISO date/datetime (e.g. 2026-06-01) or relative duration "
+                    "(7d, 24h, 2w = within the last N). Use only when the user names "
+                    "a time frame. sort is a ranking bias, not a bound."
                 ),
             },
             "before": {
                 "type": "string",
                 "description": (
                     "Discovery shape only. Exclusive upper bound on session start "
-                    "time (ISO date or datetime, e.g. 2026-07-01). A date-only value "
-                    "is midnight UTC that day. Use only when the user names a time "
-                    "frame."
+                    "time. ISO date/datetime (a date-only value is midnight UTC that "
+                    "day) or relative duration (7d = older than a week). Use only "
+                    "when the user names a time frame."
                 ),
             },
             "exclude_session_ids": {
