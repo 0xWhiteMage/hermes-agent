@@ -22,8 +22,8 @@
 // Everything degrades to "unavailable" when Pen.app is missing; nothing
 // throws at import time and nothing runs until the first canvas opens.
 
-export { isPenAgentHidden, penAgentScript, penHostBackground, penHostChromeScript, repaintPenTheme, setPenAgentHidden, setPenHostChrome } from './chrome'
-export { closeDocument, closeOtherPenDocuments, documentIsOpen, flushPenAutosaves, getDocument, savePenDocument } from './documents'
+export { isPenAgentHidden, penAgentScript, penHostChromeScript, repaintPenTheme, setPenAgentHidden, setPenHostChrome } from './chrome'
+export { closeDocument, closeOtherPenDocuments, documentIsOpen } from './documents'
 export { deletePenCanvas, openPenCanvas, penIconDataUrl, penLibrary, type PenLibraryItem, penStatus, type PenStatus, renamePenCanvas } from './library'
 export { handlePenProtocolRequest, PEN_PROTOCOL, penCanvasUrl } from './protocol'
 export { shutdownPenHost } from './runtime'
