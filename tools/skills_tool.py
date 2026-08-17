@@ -690,6 +690,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
         get_project_skills_dirs,
         iter_project_skill_files,
         iter_skill_index_files,
+        project_skill_paths_blocked,
     )
 
     cache_key = _SKILLS_CACHE_KEY_DISABLED if skip_disabled else _SKILLS_CACHE_KEY_FILTERED
@@ -710,7 +711,15 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
         dirs_to_scan.append(active_skills_dir)
     dirs_to_scan.extend(get_external_skills_dirs())
 
-    signature = _skills_scan_signature(dirs_to_scan, disabled)
+    # Per-skill fingerprint gate (injection-swap boundary): resolved SKILL.md
+    # paths in a TRUSTED project whose name is new OR whose normalised content
+    # hash changed since approval. These are excluded from the index (and thus
+    # from loading) until the user re-runs `hermes skills trust`. Empty for
+    # untrusted projects (whole tier already excluded) and unchanged projects.
+    blocked_project_skill_paths = project_skill_paths_blocked()
+
+    signature = (_skills_scan_signature(dirs_to_scan, disabled),
+                 tuple(sorted(blocked_project_skill_paths)))
     now = time.monotonic()
 
     cached = _SKILLS_CACHE.get(cache_key)
@@ -740,6 +749,17 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
         for skill_md in _iter:
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                 continue
+
+            # Fingerprint gate: skip a project skill whose name/content changed
+            # since trust approval (or is brand new). It stays out of the index
+            # until re-approved via `hermes skills trust`.
+            if blocked_project_skill_paths:
+                try:
+                    if str(skill_md.resolve()) in blocked_project_skill_paths:
+                        continue
+                except OSError:
+                    if str(skill_md) in blocked_project_skill_paths:
+                        continue
 
             skill_dir = skill_md.parent
 

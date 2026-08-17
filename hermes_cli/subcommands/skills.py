@@ -38,6 +38,13 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         default=None,
         help="Project root to untrust (default: enclosing git checkout of cwd)",
     )
+    skills_untrust.add_argument(
+        "--deny",
+        action="store_true",
+        help="Sticky deny: never load this repo's skills and never prompt about "
+        "them again (silence). Plain untrust just forgets the trust so the "
+        "one-line notice returns.",
+    )
 
     skills_browse = skills_subparsers.add_parser(
         "browse", help="Browse all available skills (paginated)"

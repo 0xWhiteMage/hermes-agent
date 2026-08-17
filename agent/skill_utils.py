@@ -633,10 +633,24 @@ def get_all_skills_dirs() -> List[Path]:
 # TRUST GATE: unlike AGENTS.md (plain instruction text), skills are load-on-
 # demand procedure documents an agent will follow — auto-sourcing them from any
 # cloned repo is a prompt-injection vector. Project skills therefore only load
-# when the project root is listed in ``skills.trusted_project_dirs`` in
-# config.yaml (Codex-style per-path trust). Untrusted dirs are still
-# *discoverable* via get_untrusted_project_skills_root() so the CLI can print
-# a one-line "run `hermes skills trust`" notice.
+# when the project root is trusted in the machine-written sidecar
+# ``~/.hermes/project-trust.json`` (see ``agent/project_trust.py``). Trust lives
+# in the sidecar — NEVER in config.yaml — precisely so a repo-committed file
+# (including a checked-in config.yaml) can never grant itself trust. Untrusted
+# dirs are still *discoverable* via get_untrusted_project_skills_root() so the
+# CLI can print a one-line "run `hermes skills trust`" notice.
+#
+# PER-SKILL FINGERPRINTS: trusting a project records a sha256 of each skill's
+# normalised SKILL.md. At agent-build time the gate re-fingerprints and EXCLUDES
+# any skill that is new or hash-changed since approval (injection-swap defense),
+# surfacing a one-line "N project skill(s) changed/added since approval" notice.
+# A denied project (sticky deny) produces no notice ever.
+#
+# BACK-COMPAT: a legacy ``skills.trusted_project_dirs`` entry in config.yaml is
+# fingerprint-free, so honoring it as-is would be trust WITHOUT the hash gate.
+# The first time the agent/CLI sees such an entry for a project with no sidecar
+# record, it auto-migrates it into the sidecar by fingerprinting current skills;
+# thereafter it behaves like any sidecar-trusted project.
 #
 # PRECEDENCE: trusted project skills override same-named profile/bundled
 # skills (index scans project dirs first; skill_view resolves cross-tier
@@ -644,10 +658,11 @@ def get_all_skills_dirs() -> List[Path]:
 # harnesses and is the point of the feature: vendored repo skills win inside
 # their repo.
 #
-# CACHE SAFETY: cwd is fixed for the life of a session, and the trust list is
-# read from config at agent build time — the resolved dirs are stable for the
-# conversation, so the skills index (and with it the system prompt) stays
-# byte-stable. Same contract as AGENTS.md injection and project plugins.
+# CACHE SAFETY: cwd is fixed for the life of a session, and trust + fingerprints
+# are read from the sidecar at agent build time — the resolved dirs and the
+# per-skill hash gate are stable for the conversation, so the skills index (and
+# with it the system prompt) stays byte-stable. Same contract as AGENTS.md
+# injection and project plugins.
 
 PROJECT_SKILLS_SUBDIRS = (
     os.path.join(".hermes", "skills"),
@@ -722,11 +737,28 @@ def _project_trusted_dirs_from_config() -> Set[Path]:
 
 
 def is_project_root_trusted(root: Path) -> bool:
-    """True when *root* is listed in ``skills.trusted_project_dirs``."""
+    """True when *root* is trusted in the sidecar (``project-trust.json``).
+
+    A sidecar ``trusted`` entry wins. Otherwise, a legacy
+    ``skills.trusted_project_dirs`` entry auto-migrates into the sidecar on
+    first sight (fingerprinting current project skills) and then reads as
+    trusted; see :func:`agent.project_trust.migrate_legacy_if_needed`. A
+    ``denied`` sidecar entry (or no record at all) is not trusted.
+    """
+    from agent import project_trust as pt
+
     try:
-        return Path(root).resolve() in _project_trusted_dirs_from_config()
+        resolved = Path(root).resolve()
     except OSError:
         return False
+    if pt.is_trusted(resolved):
+        return True
+    if pt.is_denied(resolved):
+        return False
+    # No sidecar record — honor a legacy config entry by migrating it once.
+    if pt.migrate_legacy_if_needed(resolved, _candidate_project_skills_dirs(resolved)):
+        return pt.is_trusted(resolved)
+    return False
 
 
 def _candidate_project_skills_dirs(root: Path) -> List[Path]:
@@ -772,14 +804,20 @@ def get_untrusted_project_skills_root() -> Optional[Tuple[Path, int]]:
 
     Used by the CLI to print a one-line notice pointing at
     ``hermes skills trust``. Returns None when there is nothing to notify
-    about (no project, no skills, already trusted, or discovery disabled).
+    about (no project, no skills, already trusted, discovery disabled, or the
+    project is sticky-*denied* — a denied project is silent forever).
     """
+    from agent import project_trust as pt
+
     parsed = _load_raw_config()
     skills_cfg = parsed.get("skills") if isinstance(parsed, dict) else None
     if isinstance(skills_cfg, dict) and skills_cfg.get("project_discovery") is False:
         return None
     root = find_project_root()
     if root is None or is_project_root_trusted(root):
+        return None
+    # Sticky deny: a denied project never nags.
+    if pt.is_denied(root):
         return None
     count = 0
     for d in _candidate_project_skills_dirs(root):
@@ -790,6 +828,72 @@ def get_untrusted_project_skills_root() -> Optional[Tuple[Path, int]]:
     if count == 0:
         return None
     return root, count
+
+
+def _relpath_for_gate(skills_dir: Path, skill_md: Path) -> str:
+    """Skill identity key used by the fingerprint gate for a SKILL.md path.
+
+    Matches :func:`agent.project_trust.fingerprint_project_skills`: the skill
+    directory relative to its containing skills root, falling back to the
+    directory basename.
+    """
+    try:
+        return str(Path(skill_md).parent.relative_to(Path(skills_dir)))
+    except ValueError:
+        return Path(skill_md).parent.name
+
+
+def project_skill_paths_blocked() -> Set[str]:
+    """Resolved SKILL.md paths in the current project that are gated OUT.
+
+    A project skill is blocked when its name is new since approval OR its
+    normalised-content sha256 differs from the approved fingerprint (the
+    injection-swap boundary). Empty when the project is untrusted (the whole
+    tier is already excluded by :func:`get_project_skills_dirs`) or when every
+    skill matches its approved fingerprint.
+
+    The returned set is resolved absolute path strings so a scanner can test
+    membership cheaply per SKILL.md. Computed once per call from disk + the
+    sidecar; both are stable for the session so this is cache-safe.
+    """
+    from agent import project_trust as pt
+
+    root = find_project_root()
+    if root is None or not is_project_root_trusted(root):
+        return set()
+    dirs = _candidate_project_skills_dirs(root)
+    current = pt.fingerprint_project_skills(dirs)
+    flagged = set(pt.changed_or_new_skills(root, current))
+    if not flagged:
+        return set()
+    blocked: Set[str] = set()
+    for d in dirs:
+        try:
+            for skill_md in iter_skill_index_files(d, "SKILL.md"):
+                if _relpath_for_gate(d, skill_md) in flagged:
+                    try:
+                        blocked.add(str(Path(skill_md).resolve()))
+                    except OSError:
+                        blocked.add(str(skill_md))
+        except OSError:
+            continue
+    return blocked
+
+
+def get_project_skill_change_notice() -> Optional[Tuple[Path, int]]:
+    """When a trusted project has changed/new skills gated out: (root, count).
+
+    Drives the CLI banner's re-approval nudge. Returns None when the project is
+    untrusted (handled by :func:`get_untrusted_project_skills_root`), denied, or
+    when nothing changed since approval.
+    """
+    root = find_project_root()
+    if root is None or not is_project_root_trusted(root):
+        return None
+    blocked = project_skill_paths_blocked()
+    if not blocked:
+        return None
+    return root, len(blocked)
 
 
 def get_scan_ordered_skills_dirs() -> List[Path]:

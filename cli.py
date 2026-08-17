@@ -8393,23 +8393,40 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 "[dim]   Switch with: /model sonnet  or  /model gpt5[/]"
             )
 
-        # Project-local skills: one-line status. Trusted → show count;
-        # untrusted-with-skills → point at `hermes skills trust`. Never raises.
+        # Project-local skills: one-line status. Trusted → show loaded count and
+        # a re-approval nudge if any skills changed/were added since approval;
+        # untrusted-with-skills → point at `hermes skills trust`. A sticky-denied
+        # project shows nothing (silence). Never raises.
         try:
             from agent.skill_utils import (
+                get_project_skill_change_notice,
                 get_project_skills_dirs,
                 get_untrusted_project_skills_root,
                 iter_skill_index_files,
+                project_skill_paths_blocked,
             )
             _proj_dirs = get_project_skills_dirs()
             if _proj_dirs:
-                _n = sum(
-                    sum(1 for _ in iter_skill_index_files(d, "SKILL.md"))
-                    for d in _proj_dirs
-                )
+                _blocked = project_skill_paths_blocked()
+                _n = 0
+                for d in _proj_dirs:
+                    for _smd in iter_skill_index_files(d, "SKILL.md"):
+                        try:
+                            _is_blocked = str(_smd.resolve()) in _blocked
+                        except OSError:
+                            _is_blocked = str(_smd) in _blocked
+                        if not _is_blocked:
+                            _n += 1
                 if _n:
                     self._console_print(
                         f"[dim]◆ {_n} project skill(s) loaded from this repo[/]"
+                    )
+                _changed = get_project_skill_change_notice()
+                if _changed is not None:
+                    _, _cn = _changed
+                    self._console_print(
+                        f"[yellow]◆ {_cn} project skill(s) changed/added since "
+                        f"approval — run `hermes skills trust` to re-approve.[/]"
                     )
             else:
                 _untrusted = get_untrusted_project_skills_root()

@@ -1967,12 +1967,18 @@ DEFAULT_CONFIG = {
         # Project-local skill discovery: when a session starts inside a git
         # checkout, ``<root>/.hermes/skills/`` and ``<root>/.agents/skills/``
         # are sourced as the highest-precedence skill tier — but ONLY when the
-        # project root is listed in trusted_project_dirs below. Trust a repo
-        # with ``hermes skills trust`` (run from inside it). Set to false to
+        # project root is trusted in the machine-written sidecar
+        # ``~/.hermes/project-trust.json``. Trust a repo with
+        # ``hermes skills trust`` (run from inside it). Set to false to
         # disable discovery entirely (no scan, no untrusted-skills notice).
         "project_discovery": True,
-        # Absolute paths of project roots whose repo-local skills may load.
-        # Managed by ``hermes skills trust`` / ``hermes skills untrust``.
+        # DEPRECATED / legacy back-compat only. Trust now lives in the sidecar
+        # ``~/.hermes/project-trust.json`` (with per-skill sha256 fingerprints),
+        # NEVER in config.yaml — a repo-committed config must not be able to
+        # grant itself trust. Any leftover entry here is auto-migrated into the
+        # sidecar (fingerprinting current skills) the first time the agent/CLI
+        # sees it, then removed from config by ``hermes skills trust``. Do not
+        # add new entries here; use ``hermes skills trust``.
         "trusted_project_dirs": [],
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id

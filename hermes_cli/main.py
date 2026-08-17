@@ -12082,23 +12082,36 @@ def cmd_skills(args):
 
 
 def _cmd_skills_trust(args):
-    """``hermes skills trust [path]`` / ``hermes skills untrust [path]``.
+    """``hermes skills trust [path]`` / ``hermes skills untrust [path] [--deny]``.
 
-    Manages ``skills.trusted_project_dirs`` in config.yaml. With no path,
-    operates on the project root enclosing the current directory (nearest
-    ancestor with ``.git``).
+    Trust lives in the machine-written sidecar ``~/.hermes/project-trust.json``
+    (``agent/project_trust.py``), NOT in config.yaml — a repo-committed file must
+    never be able to grant itself trust. With no path, operates on the project
+    root enclosing the current directory (nearest ancestor with ``.git``).
+
+    * ``trust`` — fingerprint every current project skill (sha256 of normalised
+      SKILL.md) and record a ``trusted`` sidecar entry. Re-running re-fingerprints
+      everything (the re-approval) and prunes skills no longer on disk.
+    * ``untrust`` — remove the sidecar entry (back to notice-eligible).
+    * ``untrust --deny`` — record a sticky ``denied`` entry: the project is never
+      loaded and never nags again.
+
+    A legacy ``skills.trusted_project_dirs`` entry for this root (from the old
+    config-list trust) is removed from config.yaml in every branch, since the
+    sidecar is now the single source of truth.
     """
     from pathlib import Path
 
+    from agent import project_trust as pt
     from agent.skill_utils import (
         PROJECT_SKILLS_SUBDIRS,
         _candidate_project_skills_dirs,
         find_project_root,
-        iter_skill_index_files,
     )
     from hermes_cli.config import load_config, save_config
 
     action = args.skills_action
+    deny = bool(getattr(args, "deny", False))
     raw_path = getattr(args, "path", None)
     if raw_path:
         root = Path(raw_path).expanduser().resolve()
@@ -12114,42 +12127,60 @@ def _cmd_skills_trust(args):
             )
             return
 
-    config = load_config()
-    skills_cfg = config.setdefault("skills", {})
-    trusted = skills_cfg.get("trusted_project_dirs") or []
-    if not isinstance(trusted, list):
-        trusted = [trusted]
-    trusted = [str(t) for t in trusted]
-    root_str = str(root)
-
-    if action == "untrust":
-        kept = [t for t in trusted if str(Path(t).expanduser().resolve()) != root_str]
+    # Drop any legacy config-list trust for this root — the sidecar supersedes
+    # it. Returns True when config.yaml was actually edited.
+    def _strip_legacy_config_entry() -> bool:
+        config = load_config()
+        skills_cfg = config.get("skills")
+        if not isinstance(skills_cfg, dict):
+            return False
+        trusted = skills_cfg.get("trusted_project_dirs") or []
+        if not isinstance(trusted, list):
+            trusted = [trusted]
+        trusted = [str(t) for t in trusted]
+        root_str = str(root)
+        kept = [
+            t for t in trusted
+            if str(Path(t).expanduser().resolve()) != root_str
+        ]
         if len(kept) == len(trusted):
-            print(f"{root} was not trusted.")
-            return
+            return False
         skills_cfg["trusted_project_dirs"] = kept
         save_config(config)
+        return True
+
+    if action == "untrust":
+        legacy_removed = _strip_legacy_config_entry()
+        if deny:
+            pt.deny_project(root)
+            print(f"Denied: {root}")
+            print(
+                "Project skills from this repo will not load, and Hermes will "
+                "not prompt about them again. Run `hermes skills trust` to undo."
+            )
+            return
+        removed = pt.forget_project(root)
+        if not removed and not legacy_removed:
+            print(f"{root} was not trusted.")
+            return
         print(f"Untrusted: {root}")
         print("Project skills from this repo will no longer load.")
         return
 
-    # trust
-    if any(str(Path(t).expanduser().resolve()) == root_str for t in trusted):
-        print(f"Already trusted: {root}")
-    else:
-        trusted.append(root_str)
-        skills_cfg["trusted_project_dirs"] = trusted
-        save_config(config)
-        print(f"Trusted: {root}")
+    # trust — fingerprint current skills and write a trusted sidecar entry.
+    _strip_legacy_config_entry()
+    skills_dirs = _candidate_project_skills_dirs(root)
+    fingerprints = pt.fingerprint_project_skills(skills_dirs)
+    pt.trust_project(root, fingerprints)
+    print(f"Trusted: {root}")
 
-    # Show what this unlocks
-    count = 0
-    for d in _candidate_project_skills_dirs(root):
-        count += sum(1 for _ in iter_skill_index_files(d, "SKILL.md"))
+    count = len(fingerprints)
     if count:
         print(
             f"{count} project skill(s) will load in sessions started inside "
-            "this repo (they take precedence over same-named profile skills)."
+            "this repo (they take precedence over same-named profile skills). "
+            "Their contents are fingerprinted — if a skill changes or a new one "
+            "is added, it is held back until you re-run `hermes skills trust`."
         )
     else:
         subdirs = " or ".join(PROJECT_SKILLS_SUBDIRS)
