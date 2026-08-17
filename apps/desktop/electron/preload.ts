@@ -139,6 +139,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     // reopen it. That's what makes a canvas come back after a restart instead
     // of having to be requested again.
     session: sessionId => ipcRenderer.invoke('hermes:pen:session', sessionId),
+    adopt: sessionId => ipcRenderer.invoke('hermes:pen:adopt', sessionId),
     restore: sessionId => ipcRenderer.invoke('hermes:pen:restore', sessionId),
     // The canvas library (~/.hermes/pens): browse, rename, delete, reveal.
     library: () => ipcRenderer.invoke('hermes:pen:library'),

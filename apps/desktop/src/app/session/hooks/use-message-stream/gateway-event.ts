@@ -1349,10 +1349,15 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           // MCP operations — everything else passes through to the editor.
           const run =
             action === 'open'
-              ? openPenCanvas({
-                  path: typeof args.path === 'string' ? args.path : undefined,
-                  template: typeof args.template === 'string' ? args.template : undefined
-                }).then(doc =>
+              ? openPenCanvas(
+                  {
+                    path: typeof args.path === 'string' ? args.path : undefined,
+                    template: typeof args.template === 'string' ? args.template : undefined
+                  },
+                  // The route's session — the chat this agent is designing in.
+                  // The selected atom is null in a draft; this never is.
+                  sessionId
+                ).then(doc =>
                   doc ? { success: true, result: { docId: doc.docId, fileURI: doc.fileURI || null } } : null
                 )
               : action === 'close'

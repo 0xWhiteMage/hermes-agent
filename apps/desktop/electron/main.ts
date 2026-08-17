@@ -1401,6 +1401,30 @@ function wirePenCanvas() {
    *  re-requested — including across a restart, and including a draft (a
    *  never-saved document is remembered by id for the launch, by path once
    *  it's saved). */
+  /** Adopt: tie the live canvas to a session AFTER the fact. The draft-chat
+   *  hole: a canvas opened before its chat had an id recorded no tie (the
+   *  selected-session atom was null), so the canvas silently detached — no
+   *  reopen pill, no restore, ever. The renderer calls this the moment a
+   *  draft is promoted to a real session with a canvas on screen. */
+  ipcMain.handle('hermes:pen:adopt', (_event, sessionId) => {
+    if (!sessionId) {
+      return false
+    }
+
+    const openDocs = penStatus().openDocuments
+    const tied = [...penDocSessions.keys()]
+    const doc = (tied.length > 0 ? openDocs.find(d => d.docId === tied[0]) : openDocs[0]) ?? openDocs[0]
+
+    if (!doc) {
+      return false
+    }
+
+    penDocSessions.set(doc.docId, sessionId)
+    rememberPenSession(sessionId, { docId: doc.docId, path: penDocumentPath(doc), closed: false })
+
+    return true
+  })
+
   ipcMain.handle('hermes:pen:session', (_event, sessionId) => {
     const entry = sessionId ? readPenSessions()[sessionId] : null
 

@@ -45,7 +45,10 @@ export async function refreshPenStatus(): Promise<PenStatus | null> {
  *
  *  The canvas is tied to the session that opened it, so it comes back with
  *  that chat — on a later switch, or a later launch. */
-export async function openPenCanvas(options: { path?: string; template?: string } = {}) {
+export async function openPenCanvas(
+  options: { path?: string; template?: string } = {},
+  sessionId?: null | string
+) {
   const pen = window.hermesDesktop?.pen
 
   if (!pen) {
@@ -53,7 +56,11 @@ export async function openPenCanvas(options: { path?: string; template?: string 
   }
 
   try {
-    const { doc, url } = await pen.open({ ...options, sessionId: $selectedStoredSessionId.get() ?? undefined })
+    // The tie target: an explicit session (the agent's route — always real)
+    // beats the selected atom, which is NULL in a draft chat — the silent
+    // hole that produced untied canvases and a reopen pill that never fired.
+    const tieTo = sessionId ?? $selectedStoredSessionId.get() ?? undefined
+    const { doc, url } = await pen.open({ ...options, sessionId: tieTo })
 
     if (doc && url) {
       openPenCanvasTile({ docId: doc.docId, title: doc.displayName || 'Canvas', url })
@@ -160,11 +167,24 @@ export function watchPenSession(): () => void {
       return
     }
 
+    const wasDraft = applied === null
+
     applied = sessionId
 
     // No session yet (fresh draft): leave whatever is open alone rather than
     // yanking the canvas out from under a draft that's about to get an id.
     if (!sessionId) {
+      return
+    }
+
+    // The draft just became a real session with a canvas already on screen —
+    // the canvas was opened BEFORE the id existed, so no tie was recorded.
+    // Adopt it now: this is the same chat, promoted, and losing the tie here
+    // is how canvases silently detached from their conversations.
+    if (wasDraft && penCanvasTileOpen()) {
+      await pen.adopt?.(sessionId).catch(() => {})
+      void refreshPenSessionSuggestion(sessionId)
+
       return
     }
 
