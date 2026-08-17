@@ -132,7 +132,7 @@ declare global {
       // feed (save-as re-homes, add-to-chat, …).
       pen?: {
         status: () => Promise<PenStatus>
-        open: (options?: { path?: string; sessionId?: string; template?: string }) => Promise<PenOpenResult>
+        open: (options?: { name?: string; path?: string; sessionId?: string; template?: string }) => Promise<PenOpenResult>
         close: (options?: { keep?: boolean }) => Promise<void>
         tool: (name: string, payload?: Record<string, unknown>) => Promise<PenToolResult>
         /** The canvas tied to a chat session, when it can still be reopened. */

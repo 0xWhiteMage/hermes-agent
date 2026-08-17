@@ -13,7 +13,7 @@ import { atom } from 'nanostores'
 import type { PenStatus, PenToolResult } from '@/global'
 import { translateNow } from '@/i18n'
 import { notifyError } from '@/store/notifications'
-import { $selectedStoredSessionId } from '@/store/session'
+import { $selectedStoredSessionId, $sessions } from '@/store/session'
 
 import { closePenCanvasTile, openPenCanvasTile, penCanvasTileOpen } from '@/app/chat/pen-tile'
 
@@ -46,7 +46,7 @@ export async function refreshPenStatus(): Promise<PenStatus | null> {
  *  The canvas is tied to the session that opened it, so it comes back with
  *  that chat — on a later switch, or a later launch. */
 export async function openPenCanvas(
-  options: { path?: string; template?: string } = {},
+  options: { name?: string; path?: string; template?: string } = {},
   sessionId?: null | string
 ) {
   const pen = window.hermesDesktop?.pen
@@ -60,7 +60,23 @@ export async function openPenCanvas(
     // beats the selected atom, which is NULL in a draft chat — the silent
     // hole that produced untied canvases and a reopen pill that never fired.
     const tieTo = sessionId ?? $selectedStoredSessionId.get() ?? undefined
-    const { doc, url } = await pen.open({ ...options, sessionId: tieTo })
+
+    // Friendly names, the way sessions get auto titles: a NEW canvas (no
+    // path, no explicit name) borrows the chat's title — the same "derive
+    // from intent, instantly, free" stage session titling starts with. The
+    // agent's opens pass an explicit name; a title-less draft stays
+    // Untitled N and the library rename remains the user's override.
+    let name = options.name
+
+    if (!name && !options.path && tieTo) {
+      const title = $sessions.get().find(s => s.id === tieTo)?.title?.trim()
+
+      if (title) {
+        name = title.slice(0, 60)
+      }
+    }
+
+    const { doc, url } = await pen.open({ ...options, name, sessionId: tieTo })
 
     if (doc && url) {
       openPenCanvasTile({ docId: doc.docId, title: doc.displayName || 'Canvas', url })

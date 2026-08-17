@@ -1519,9 +1519,30 @@ function wirePenCanvas() {
     return deletePenCanvas(String(target || ''))
   })
 
-  ipcMain.handle('hermes:pen:library-rename', (_event, target, nextName) =>
-    renamePenCanvas(String(target || ''), String(nextName || ''))
-  )
+  ipcMain.handle('hermes:pen:library-rename', (_event, target, nextName) => {
+    const oldResolved = path.resolve(String(target || ''))
+    const renamed = renamePenCanvas(String(target || ''), String(nextName || ''))
+
+    // A rename moves the file — session ties that pointed at the old path
+    // must follow, or every reopen/restore door goes dark for those chats.
+    if (renamed) {
+      const map = readPenSessions()
+      let changed = false
+
+      for (const entry of Object.values(map) as Array<{ path?: null | string }>) {
+        if (entry.path && path.resolve(entry.path) === oldResolved) {
+          entry.path = renamed
+          changed = true
+        }
+      }
+
+      if (changed) {
+        writePenSessions(map)
+      }
+    }
+
+    return renamed
+  })
 
   ipcMain.handle('hermes:pen:reveal', (_event, target) => {
     const file = String(target || '')

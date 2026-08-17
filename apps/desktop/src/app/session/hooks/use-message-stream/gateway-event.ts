@@ -1351,6 +1351,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             action === 'open'
               ? openPenCanvas(
                   {
+                    // The agent names the canvas from its design brief — the
+                    // same "derive from the opening intent" stage sessions
+                    // use for instant titles. No name = Untitled N.
+                    name: typeof args.name === 'string' ? args.name : undefined,
                     path: typeof args.path === 'string' ? args.path : undefined,
                     template: typeof args.template === 'string' ? args.template : undefined
                   },
