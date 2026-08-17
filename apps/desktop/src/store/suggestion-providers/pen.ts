@@ -177,10 +177,15 @@ function reopenSuggestion(name: string, minedPath: null | string = null): Compos
  *  canvases — pen tool results and chat text carry the .pen paths (that is
  *  exactly how the Artifacts page ties pens to chats). The side tie-store is
  *  a fast cache that has already missed once (draft-chat hole); when it has
- *  no answer, mine the transcript and cross-check the library so the offer
- *  is only made for a file that still exists. Newest mention wins. */
-const PEN_PATH_RE = /(?:^|[\s"'`(=])((?:\/|~\/)[^\s"'`<>)]+\.pen)\b/g
-
+ *  no answer, mine the transcript.
+ *
+ *  Direction matters: we search the transcript FOR each library path, never
+ *  extract path-shaped strings FROM the transcript. Real canvas names carry
+ *  spaces ("Untitled 8.pen") and appear percent-encoded in file:// URIs —
+ *  both defeat forward extraction (found empirically: a session whose
+ *  transcript mentioned its canvas twice matched neither form). Matching
+ *  known library paths in both raw and URI-encoded shapes is immune to
+ *  either, and only ever offers files that still exist. */
 async function canvasPathFromTranscript(sessionId: string): Promise<null | string> {
   try {
     const [{ messages }, library] = await Promise.all([
@@ -188,18 +193,24 @@ async function canvasPathFromTranscript(sessionId: string): Promise<null | strin
       window.hermesDesktop?.pen?.library().catch(() => null) ?? Promise.resolve(null)
     ])
 
-    if (!messages?.length) {
+    const items = library?.items ?? []
+
+    if (!messages?.length || items.length === 0) {
       return null
     }
 
-    const known = new Set((library?.items ?? []).map(item => item.path))
+    // Each library canvas, with every spelling a transcript might contain.
+    const needles = items.map(item => ({
+      path: item.path,
+      forms: [item.path, encodeURI(item.path)]
+    }))
 
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const message = messages[i]
-      const haystacks: string[] = []
+      const blobs: string[] = []
 
       if (typeof message.content === 'string') {
-        haystacks.push(message.content)
+        blobs.push(message.content)
       }
 
       const calls = Array.isArray((message as { tool_calls?: unknown }).tool_calls)
@@ -210,22 +221,14 @@ async function canvasPathFromTranscript(sessionId: string): Promise<null | strin
         const args = call?.function?.arguments
 
         if (typeof args === 'string') {
-          haystacks.push(args)
+          blobs.push(args)
         }
       }
 
-      for (const haystack of haystacks) {
-        for (const match of haystack.matchAll(PEN_PATH_RE)) {
-          // Library paths are absolute; a ~/ mention matches by suffix.
-          const found = match[1]
-          const hit = known.has(found)
-            ? found
-            : [...known].find(k => found.startsWith('~/') && k.endsWith(found.slice(1)))
-
-          // Only offer files the library still has — a mined path may have
-          // been renamed or deleted since the chat mentioned it.
-          if (hit) {
-            return hit
+      for (const blob of blobs) {
+        for (const needle of needles) {
+          if (needle.forms.some(form => blob.includes(form))) {
+            return needle.path
           }
         }
       }
