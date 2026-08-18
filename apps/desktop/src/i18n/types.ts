@@ -2077,6 +2077,7 @@ export interface Translations {
     versionDetailsRuntimeEmbedded: string
     versionDetailsRuntimeExternal: string
     versionDetailsRuntime: string
+    versionDetailsInstallId: string
     versionDetailsUncommittedChanges: string
     connectionRetry: string
     latestBody: string

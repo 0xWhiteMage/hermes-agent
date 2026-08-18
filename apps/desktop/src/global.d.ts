@@ -483,6 +483,13 @@ export interface DesktopVersionInfo {
   bundleOutOfSync?: boolean
   /** Commits under apps/desktop/ the running bundle is missing (null unknown). */
   bundleCommitsBehind?: null | number
+  /**
+   * sha16 of the canonical install-root path: the key of this install's
+   * per-install channel record (`update.installs.<sha16>` in config.yaml)
+   * and its `installs/<sha16>/` state folder. Same value
+   * `hermes update --install-id` prints.
+   */
+  installId?: string
   distribution?: 'desktop-app' | 'docker' | 'nix'
   source?: 'build' | 'ci' | 'docker' | 'fallback' | 'git' | 'local' | 'nix' | 'unknown'
   /**
