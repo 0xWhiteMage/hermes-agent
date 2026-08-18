@@ -179,7 +179,10 @@ class TestNonInteractiveInheritance:
 
     def test_explicit_start_beats_env(self, project_env, monkeypatch, tmp_path):
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
-        assert su.find_project_root(start=project_env["repo"]) == project_env["repo"].resolve()
+        assert (
+            su.find_project_root(start=project_env["repo"])
+            == project_env["repo"].resolve()
+        )
 
 
 class TestQuarantine:
@@ -335,7 +338,9 @@ class TestSidecarTrust:
 
 class TestHashGate:
     def test_same_name_in_both_roots_is_keyed_and_blocked_exactly(
-        self, project_env, monkeypatch,
+        self,
+        project_env,
+        monkeypatch,
     ):
         agents_skill = project_env["repo"] / ".agents" / "skills" / "same"
         hermes_skill = project_env["repo"] / ".hermes" / "skills" / "same"
@@ -372,7 +377,9 @@ class TestHashGate:
 
         script.write_text("print('swapped')\n")
         assert "repo-skill" not in _index_skill_names(monkeypatch)
-        assert str((skill_dir / "SKILL.md").resolve()) in su.project_skill_paths_blocked()
+        assert (
+            str((skill_dir / "SKILL.md").resolve()) in su.project_skill_paths_blocked()
+        )
 
     def test_changed_skill_excluded_and_notice(self, project_env, monkeypatch):
         _hermes_trust(project_env["repo"])
@@ -400,7 +407,7 @@ class TestHashGate:
         )
         names = _index_skill_names(monkeypatch)
         assert "added-later" not in names  # new since approval → gated
-        assert "repo-skill" in names        # untouched → still loads
+        assert "repo-skill" in names  # untouched → still loads
         notice = su.get_project_skill_change_notice()
         assert notice is not None and notice[1] == 1
 
@@ -426,7 +433,9 @@ class TestHashGate:
 class TestRemovedSkillPrune:
     def test_removed_skill_pruned_on_next_trust(self, project_env):
         _hermes_trust(project_env["repo"])
-        assert ".agents/skills/conv-skill" in pt.approved_fingerprints(project_env["repo"].resolve())
+        assert ".agents/skills/conv-skill" in pt.approved_fingerprints(
+            project_env["repo"].resolve()
+        )
         # Delete the .agents skill entirely, then re-trust.
         import shutil
 
@@ -494,7 +503,9 @@ class TestLegacyMigration:
         assert (project_env["home"] / "project-trust.json").read_text() == "{broken"
 
     def test_concurrent_deny_wins_over_inflight_migration(
-        self, project_env, monkeypatch,
+        self,
+        project_env,
+        monkeypatch,
     ):
         _trust(project_env["config"], project_env["repo"])
         real_fingerprint = pt.fingerprint_project_skills
@@ -535,7 +546,8 @@ class TestAtomicSidecarWrite:
         p = project_env["home"] / "project-trust.json"
         # No stray temp files left behind after an atomic replace.
         leftovers = [
-            f for f in os.listdir(project_env["home"])
+            f
+            for f in os.listdir(project_env["home"])
             if f.startswith("project-trust.json.") and f.endswith(".tmp")
         ]
         assert leftovers == []
@@ -549,14 +561,18 @@ class TestAtomicSidecarWrite:
         assert pt.load_sidecar()["projects"] == {}
         assert su.is_project_root_trusted(project_env["repo"].resolve()) is False
 
-    def test_save_failure_propagates_before_cli_success(self, project_env, monkeypatch, capsys):
+    def test_save_failure_propagates_before_cli_success(
+        self, project_env, monkeypatch, capsys
+    ):
         from hermes_cli import main as cli_main
 
         def fail_replace(source, destination):
             raise OSError("disk full")
 
         monkeypatch.setattr(pt, "atomic_replace", fail_replace)
-        args = SimpleNamespace(skills_action="trust", path=str(project_env["repo"]), deny=False)
+        args = SimpleNamespace(
+            skills_action="trust", path=str(project_env["repo"]), deny=False
+        )
         with pytest.raises(OSError, match="disk full"):
             cli_main._cmd_skills_trust(args)
         assert "Trusted:" not in capsys.readouterr().out

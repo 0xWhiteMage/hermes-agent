@@ -101,6 +101,7 @@ _write_lock = threading.Lock()
 # Fingerprints
 # ---------------------------------------------------------------------------
 
+
 def normalize_skill_content(text: str) -> str:
     """Normalise SKILL.md content for hashing: collapse line endings to ``\\n``.
 
@@ -145,7 +146,9 @@ def fingerprint_skill_package(skill_dir: Path) -> Tuple[Optional[str], Optional[
     try:
         if skill_dir.is_symlink() or not skill_dir.is_dir():
             return None, None
-        entries = sorted(skill_dir.rglob("*"), key=lambda p: p.relative_to(skill_dir).as_posix())
+        entries = sorted(
+            skill_dir.rglob("*"), key=lambda p: p.relative_to(skill_dir).as_posix()
+        )
         for path in entries:
             if path.is_symlink():
                 return None, None
@@ -167,7 +170,9 @@ def fingerprint_skill_package(skill_dir: Path) -> Tuple[Optional[str], Optional[
         return None, None
     if skill_md_bytes is None:
         return None, None
-    encoded = json.dumps(manifest, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    encoded = json.dumps(manifest, ensure_ascii=False, separators=(",", ":")).encode(
+        "utf-8"
+    )
     return hashlib.sha256(encoded).hexdigest(), skill_md_bytes
 
 
@@ -197,6 +202,7 @@ def fingerprint_project_skills(skills_dirs: List[Path]) -> Dict[str, str]:
 # Sidecar I/O
 # ---------------------------------------------------------------------------
 
+
 def sidecar_path() -> Path:
     """Path to the machine-written project-trust sidecar under HERMES_HOME."""
     return get_hermes_home() / SIDECAR_FILENAME
@@ -211,7 +217,9 @@ class SidecarData(dict):
 
 
 def _empty_sidecar(*, load_state: str = "absent") -> SidecarData:
-    return SidecarData({"version": SCHEMA_VERSION, "projects": {}}, load_state=load_state)
+    return SidecarData(
+        {"version": SCHEMA_VERSION, "projects": {}}, load_state=load_state
+    )
 
 
 def load_sidecar() -> SidecarData:
@@ -226,14 +234,23 @@ def load_sidecar() -> SidecarData:
     except FileNotFoundError:
         return _empty_sidecar(load_state="absent")
     except (json.JSONDecodeError, OSError) as exc:
-        print(f"Warning: project trust sidecar is corrupt; project skills are blocked: {exc}", file=sys.stderr)
+        print(
+            f"Warning: project trust sidecar is corrupt; project skills are blocked: {exc}",
+            file=sys.stderr,
+        )
         return _empty_sidecar(load_state="corrupt")
     if not isinstance(raw, dict) or raw.get("version") != SCHEMA_VERSION:
-        print("Warning: project trust sidecar is corrupt or has an unsupported version; project skills are blocked.", file=sys.stderr)
+        print(
+            "Warning: project trust sidecar is corrupt or has an unsupported version; project skills are blocked.",
+            file=sys.stderr,
+        )
         return _empty_sidecar(load_state="corrupt")
     projects = raw.get("projects")
     if not isinstance(projects, dict):
-        print("Warning: project trust sidecar has an invalid projects map; project skills are blocked.", file=sys.stderr)
+        print(
+            "Warning: project trust sidecar has an invalid projects map; project skills are blocked.",
+            file=sys.stderr,
+        )
         return _empty_sidecar(load_state="corrupt")
     return SidecarData(raw, load_state="valid")
 
@@ -248,7 +265,9 @@ def save_sidecar(data: Dict[str, Any]) -> None:
     p = sidecar_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
-        prefix=f"{p.name}.", suffix=".tmp", dir=str(p.parent),
+        prefix=f"{p.name}.",
+        suffix=".tmp",
+        dir=str(p.parent),
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -322,6 +341,7 @@ def _key(root: Path) -> str:
 # Read API (agent build time)
 # ---------------------------------------------------------------------------
 
+
 def get_project_entry(root: Path) -> Optional[Dict[str, Any]]:
     """The sidecar entry dict for *root*, or None when there is none."""
     entry = load_sidecar().get("projects", {}).get(_key(root))
@@ -350,7 +370,8 @@ def approved_fingerprints(root: Path) -> Dict[str, str]:
 
 
 def changed_or_new_skills(
-    root: Path, current: Dict[str, str],
+    root: Path,
+    current: Dict[str, str],
 ) -> List[str]:
     """Skill names present on disk (``current``) that are new OR hash-changed.
 
@@ -371,6 +392,7 @@ def changed_or_new_skills(
 # ---------------------------------------------------------------------------
 # Write API (CLI + migration)
 # ---------------------------------------------------------------------------
+
 
 def trust_project(root: Path, fingerprints: Dict[str, str]) -> Dict[str, Any]:
     """Record *root* as trusted with a fresh fingerprint snapshot.
@@ -426,6 +448,7 @@ def _clear_resolved_snapshot_cache() -> None:
     """Invalidate build resolution after an explicit local trust mutation."""
     try:
         from agent.skill_utils import _resolve_project_skill_snapshot_cached
+
         _resolve_project_skill_snapshot_cached.cache_clear()
     except ImportError:
         pass
@@ -434,6 +457,7 @@ def _clear_resolved_snapshot_cache() -> None:
 # ---------------------------------------------------------------------------
 # Legacy config migration
 # ---------------------------------------------------------------------------
+
 
 def legacy_config_trusts(root: Path) -> bool:
     """True when *root* is listed in the legacy ``skills.trusted_project_dirs``.
@@ -488,7 +512,8 @@ def migrate_legacy_if_needed(root: Path, skills_dirs: List[Path]) -> bool:
     logger.info(
         "Migrated legacy skills.trusted_project_dirs entry for %s into the "
         "project-trust sidecar (%d skill fingerprint(s) recorded).",
-        root, len(fingerprints),
+        root,
+        len(fingerprints),
     )
     return True
 
@@ -526,6 +551,7 @@ def _remove_legacy_config_entry(root: Path) -> bool:
     save_config(config)
     try:
         from agent.skill_utils import _raw_config_cache_clear
+
         _raw_config_cache_clear()
     except ImportError:
         pass
