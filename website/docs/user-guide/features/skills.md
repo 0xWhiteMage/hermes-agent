@@ -446,7 +446,7 @@ Set `skills.project_discovery: false` in `config.yaml` to turn the feature off e
 
 ### Re-approval on change (per-skill fingerprints)
 
-When you trust a repo, Hermes records a `sha256` fingerprint of every project skill's `SKILL.md` (line endings normalised, so a CRLF/LF change alone is not a "change"). At the start of each session it re-fingerprints the skills on disk and compares:
+When you trust a repo, Hermes records a `sha256` manifest fingerprint covering every regular file in each project skill package (so editing a supporting script, reference, template, or asset also counts as a change). Line endings are normalised for `SKILL.md`, so a CRLF/LF change to that file alone is not a "change". At the start of each session it re-fingerprints the skills on disk and compares:
 
 - a skill whose **content changed** since you approved it, or a **newly added** skill, is **held back** (not loaded) — this is the injection-swap boundary: the content you approved is not silently replaced by an edit made after approval;
 - the banner surfaces a one-line nudge:
