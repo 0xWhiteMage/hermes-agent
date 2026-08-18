@@ -77,6 +77,11 @@ Routines are plain [Hermes cron jobs](./features/cron.md) namespaced `[bot:<name
 
 Right-click a local Bot → **Manage groups** to add or remove it from any number of group chats. Pick existing groups independently or create one inline. Local membership is stored in the Bot's backend-synced profile metadata, so it follows that profile across desktops; older profiles with one legacy group continue to work. Connections Bots join through the New Group Chat picker and remain source-qualified in that room's local Desktop state.
 
+A group's identity is editable, at creation and after:
+
+- **New Group Chat** lets you set an optional **room picture** alongside the name — upload one from your device or generate one (when an image backend is configured), using the same pipeline as Bot avatars. The picture replaces the fanned member faces in the roster row and leads the title in the room header.
+- The room header's **gear** button opens **Group settings**, where you can **rename** the group or set, replace, or remove its picture any time. A rename carries everything with it — the room log, each member's `Group: <name>` session, memberships, and the picture — so no history is lost. Renaming to a name that's already taken is rejected rather than silently suffixed.
+
 Groups are standalone rows in the same activity-ordered roster as Bot DMs. A Bot keeps one DM row even when it belongs to several groups, while every group gets its own room row with member count, latest-message preview, timestamp, and needs-you state.
 
 **Open chat** on any group row (2–6 Bots) opens a shared room where the whole group coordinates:
