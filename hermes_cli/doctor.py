@@ -394,37 +394,6 @@ def _check_install_state_hygiene() -> None:
     _check_channel_record_hygiene()
 
 
-def _check_channel_record_hygiene() -> None:
-    """Stale per-install channel records (``update.installs.<sha16>``).
-
-    Same report-don't-delete posture as the state sweep. Three shapes
-    (hermes_cli.update_channel.stale_channel_records): a record whose path
-    holds a DIFFERENT install now (``replaced``), a record whose path is
-    gone (``missing``), and a record no live install-state folder claims
-    (``unclaimed``). Keep-on-doubt: doctor names the config key, the user
-    removes it.
-    """
-    try:
-        from hermes_cli.config import load_config
-        from hermes_cli.update_channel import stale_channel_records
-
-        stale = stale_channel_records(load_config() or {})
-    except Exception as exc:
-        check_warn("Channel-record hygiene unreadable", f"({exc})")
-        return
-    if not stale:
-        return
-    for sha16, record, reason in stale:
-        recorded = record.get("path") or "<no path>"
-        if reason == "replaced":
-            detail = f"(the install at {recorded} is a different install now — stale channel entry)"
-        elif reason == "missing":
-            detail = f"(nothing at {recorded} — safe to remove update.installs.{sha16})"
-        else:  # unclaimed
-            detail = f"(no live install claims {sha16} — safe to remove update.installs.{sha16})"
-        check_warn(f"Stale channel record: {sha16}", detail)
-
-
 def _has_provider_env_config(content: str) -> bool:
     """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
     return any(key in content for key in _PROVIDER_ENV_HINTS)
@@ -2187,11 +2156,17 @@ def run_doctor(args):
                     issues.append(f"Missing {_cmd_link_display}/hermes symlink — run 'hermes doctor --fix'")
 
     _section("External Tools")
-    # Git
-    if _safe_which("git"):
-        check_ok("git")
+    # Git. git_path() answers with the git Hermes would actually run:
+    # the managed one, else a system one that clears the flag floor and
+    # is not the macOS xcode-select shim. A bare PATH probe says "found"
+    # for both of those, and then Hermes fails on the real call.
+    from installation.git import git_install_guidance, git_path
+
+    _git_bin = git_path()
+    if _git_bin is not None:
+        check_ok("git", f"({_git_bin})")
     else:
-        check_warn("git not found", "(optional)")
+        check_warn("no usable git", f"(optional) {git_install_guidance()}")
     
     # Managed runtimes: what the registry says this install provisioned.
     # A tool that is missing here is not a "go install it yourself"
