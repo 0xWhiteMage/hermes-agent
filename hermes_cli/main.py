@@ -4757,7 +4757,6 @@ _LAZY_COMMAND_EXPORTS = {
         "_discard_stashed_changes",
         "_ensure_acp_launcher",
         "_ensure_fhs_path_guard",
-        "_ensure_uv_for_termux",
         "_finish_dashboard_update_cleanup",
         "_for_each_systemd_gateway_unit",
         "_format_concurrent_instances_message",
@@ -4766,9 +4765,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_gateway_prompt",
         "_get_origin_url",
         "_has_upstream_remote",
-        "_install_psutil_android_compat",
         "_invalidate_update_cache",
-        "_is_android_python",
         "_is_fork",
         "_leftover_pausable_gateway_pids",
         "_log_only_write",
@@ -8521,12 +8518,19 @@ def _recover_core_update_marker_locked() -> None:
 
         ensure_uv()
 
-        # Delegate the install itself to the shared stdlib executor so both
-        # this late path and the pre-import early pass run exactly the same
-        # reinstall.  Called inside the same stdout→stderr redirect already
-        # established by _recover_from_interrupted_install, so
-        # run_core_install's own redirect nests harmlessly.
-        _ir.run_core_install(PROJECT_ROOT)
+        uv_bin = ensure_uv()
+        if uv_bin:
+            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+            _install_python_dependencies_with_optional_fallback(
+                [uv_bin, "pip"],
+                env=uv_env,
+                group="all",
+            )
+        else:
+            _install_python_dependencies_with_optional_fallback(
+                [sys.executable, "-m", "pip"],
+                group="all",
+            )
 
         _clear_update_incomplete_marker()
         print("✓ Dependency installation recovered — your install is healthy again.")
@@ -8597,9 +8601,6 @@ def _default_venv_install_target() -> tuple[list[str], dict[str, str] | None]:
         uv_bin = None
     if uv_bin:
         env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-        if _is_termux_env(env):
-            env.pop("PYTHONPATH", None)
-            env.pop("PYTHONHOME", None)
         return [uv_bin, "pip"], env
     return [sys.executable, "-m", "pip"], None
 
