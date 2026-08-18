@@ -162,7 +162,9 @@ def test_make_tui_argv_omits_workspace_and_scrubs_esbuild_override(
     monkeypatch.setenv("PREFIX", "/usr")
     monkeypatch.setenv("ESBUILD_BINARY_PATH", "/opt/esbuild-0.28.2")
     monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
-    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    # The bootstrap resolves from the runtime facts, which a hermetic test
+    # HERMES_HOME does not carry. Stub it out: this test is about the argv.
+    monkeypatch.setattr(main_mod, "_ensure_tui_node", lambda: None)
     monkeypatch.setattr(
         "installation.nodejs.node_path", lambda: pathlib.Path("/bin/node")
     )
