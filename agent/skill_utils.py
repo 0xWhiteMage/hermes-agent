@@ -26,24 +26,22 @@ PLATFORM_MAP = {
     "windows": "win32",
 }
 
-EXCLUDED_SKILL_DIRS = frozenset(
-    (
-        ".git",
-        ".github",
-        ".hub",
-        ".archive",
-        ".venv",
-        "venv",
-        "node_modules",
-        "site-packages",
-        "__pycache__",
-        ".tox",
-        ".nox",
-        ".pytest_cache",
-        ".mypy_cache",
-        ".ruff_cache",
-    )
-)
+EXCLUDED_SKILL_DIRS = frozenset((
+    ".git",
+    ".github",
+    ".hub",
+    ".archive",
+    ".venv",
+    "venv",
+    "node_modules",
+    "site-packages",
+    "__pycache__",
+    ".tox",
+    ".nox",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+))
 
 # Supporting files live inside a skill package and are loaded explicitly via
 # skill_view(skill, file_path=...). They are not standalone skills and must not
@@ -115,6 +113,7 @@ def is_excluded_skill_path(path, *, root: Optional[Path] = None) -> bool:
         parts = path.parts  # Path
     except AttributeError:
         from pathlib import PurePath
+
         parts = PurePath(str(path)).parts
     return any(part in EXCLUDED_SKILL_DIRS for part in parts) or is_skill_support_path(
         path, root=root
@@ -342,9 +341,7 @@ def _detect_environment(env: str) -> bool:
         # its runtime scaffolding under /run/s6 and ships its admin tree under
         # /package/admin/s6-overlay. Either marker means we're inside an
         # s6-supervised container.
-        result = os.path.isdir("/run/s6") or os.path.isdir(
-            "/package/admin/s6-overlay"
-        )
+        result = os.path.isdir("/run/s6") or os.path.isdir("/package/admin/s6-overlay")
 
     _ENV_DETECT_CACHE[env] = result
     return result
@@ -458,6 +455,7 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
         return set()
 
     from gateway.session_context import get_session_env
+
     resolved_platform = (
         platform
         or os.getenv("HERMES_PLATFORM")
@@ -736,7 +734,10 @@ def _canonical_project_identity_str(root_str: str) -> str:
         )
     except (OSError, subprocess.SubprocessError):
         return fallback
-    if result.returncode != 0:
+    # A test double or a stripped-down subprocess shim may leave stdout as
+    # None; treat unreadable output exactly like a failed listing: fall back to
+    # path-specific trust (fail-closed), never raise into the trust check.
+    if result.returncode != 0 or result.stdout is None:
         return fallback
 
     worktrees: List[str] = []
@@ -1008,6 +1009,7 @@ def normalize_skill_lookup_name(identifier: str) -> str:
     # module cycle (tools.skills_tool imports agent.skill_utils).
     try:
         from tools import skills_tool as _skills_tool
+
         primary_root = Path(_skills_tool.SKILLS_DIR)
     except Exception:
         primary_root = get_skills_dir()
@@ -1265,7 +1267,7 @@ def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
     if not desc:
         return ""
     if len(desc) > SKILL_PROMPT_DESC_LIMIT:
-        return desc[:SKILL_PROMPT_DESC_LIMIT - 3] + "..."
+        return desc[: SKILL_PROMPT_DESC_LIMIT - 3] + "..."
     return desc
 
 
@@ -1299,7 +1301,11 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     matches: list[str] = []
     for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
         has_skill_md = "SKILL.md" in files
-        if root == skills_dir_str and ORG_MIRROR_DIR_NAME in dirs and active_org is None:
+        if (
+            root == skills_dir_str
+            and ORG_MIRROR_DIR_NAME in dirs
+            and active_org is None
+        ):
             dirs.remove(ORG_MIRROR_DIR_NAME)
         elif root == org_root:
             # Inside _org/: descend ONLY into the active org's mirror.
