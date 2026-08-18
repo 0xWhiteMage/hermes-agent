@@ -12108,8 +12108,6 @@ def _cmd_skills_trust(args):
         _candidate_project_skills_dirs,
         find_project_root,
     )
-    from hermes_cli.config import load_config, save_config
-
     action = args.skills_action
     deny = bool(getattr(args, "deny", False))
     raw_path = getattr(args, "path", None)
@@ -12127,32 +12125,10 @@ def _cmd_skills_trust(args):
             )
             return
 
-    # Drop any legacy config-list trust for this root — the sidecar supersedes
-    # it. Returns True when config.yaml was actually edited.
-    def _strip_legacy_config_entry() -> bool:
-        config = load_config()
-        skills_cfg = config.get("skills")
-        if not isinstance(skills_cfg, dict):
-            return False
-        trusted = skills_cfg.get("trusted_project_dirs") or []
-        if not isinstance(trusted, list):
-            trusted = [trusted]
-        trusted = [str(t) for t in trusted]
-        root_str = str(root)
-        kept = [
-            t for t in trusted
-            if str(Path(t).expanduser().resolve()) != root_str
-        ]
-        if len(kept) == len(trusted):
-            return False
-        skills_cfg["trusted_project_dirs"] = kept
-        save_config(config)
-        return True
-
     if action == "untrust":
-        legacy_removed = _strip_legacy_config_entry()
         if deny:
             pt.deny_project(root)
+            pt._remove_legacy_config_entry(root)
             print(f"Denied: {root}")
             print(
                 "Project skills from this repo will not load, and Hermes will "
@@ -12160,6 +12136,7 @@ def _cmd_skills_trust(args):
             )
             return
         removed = pt.forget_project(root)
+        legacy_removed = pt._remove_legacy_config_entry(root)
         if not removed and not legacy_removed:
             print(f"{root} was not trusted.")
             return
@@ -12168,10 +12145,10 @@ def _cmd_skills_trust(args):
         return
 
     # trust — fingerprint current skills and write a trusted sidecar entry.
-    _strip_legacy_config_entry()
     skills_dirs = _candidate_project_skills_dirs(root)
     fingerprints = pt.fingerprint_project_skills(skills_dirs)
     pt.trust_project(root, fingerprints)
+    pt._remove_legacy_config_entry(root)
     print(f"Trusted: {root}")
 
     count = len(fingerprints)

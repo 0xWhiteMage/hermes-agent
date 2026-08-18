@@ -16,7 +16,7 @@ versioned schema, atomic ``mkstemp`` + ``os.replace`` writes, and a sibling
 Schema (``version`` bumps only on a breaking change)::
 
     {
-      "version": 1,
+      "version": 2,
       "projects": {
         "/abs/resolved/project/root": {
           "status": "trusted",              # "trusted" | "denied"
@@ -31,9 +31,13 @@ Schema (``version`` bumps only on a breaking change)::
 
 Fingerprints
 ------------
-At trust time we record ``sha256`` of each discovered project skill's
-*normalised* ``SKILL.md`` content (line endings collapsed to ``\\n``). At
-agent-build time the trust gate re-fingerprints the on-disk skills and compares:
+At trust time we record one deterministic manifest digest for every discovered
+project skill package.  The manifest includes every regular file below the
+skill directory as ``(relative path, sha256(contents))`` and refuses packages
+containing symlinks.  Keys include the source root (for example
+``.hermes/skills/repo-skill``), so an identically named ``.agents`` package is
+a distinct approval.  At agent-build time the trust gate re-reads each package
+once and compares:
 
 * a skill whose name is **new** since approval — excluded (not yet approved);
 * a skill whose hash **changed** since approval — excluded (injection-swap
@@ -47,9 +51,14 @@ re-approval. A project with ``status == "denied"`` produces no notice ever
 
 Cache safety
 ------------
-Every read here happens at agent build time exactly like the previous
-config-list lookup did; there are no mid-session rescans and the resolved skill
-set stays byte-stable for the life of a conversation.
+The resolved approved-package snapshot is computed once per project/profile at
+agent build.  Its cached ``SKILL.md`` bytes are reused by index/parse surfaces,
+so verification and instruction parsing operate on the same read.  Supporting
+scripts are necessarily opened later when executed, leaving a residual window
+in which an already-approved script can be replaced after the build snapshot.
+A future hardening follow-up can eliminate that window by copying approved
+packages into a private immutable session directory; that larger architecture
+is intentionally outside this change.
 """
 
 from __future__ import annotations
@@ -58,6 +67,8 @@ import hashlib
 import json
 import logging
 import os
+import stat
+import sys
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -75,7 +86,7 @@ from utils import atomic_replace
 logger = logging.getLogger(__name__)
 
 SIDECAR_FILENAME = "project-trust.json"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 STATUS_TRUSTED = "trusted"
 STATUS_DENIED = "denied"
@@ -110,15 +121,58 @@ def fingerprint_skill_md(path: Path) -> Optional[str]:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def fingerprint_project_skills(skills_dirs: List[Path]) -> Dict[str, str]:
-    """Map ``{relative skill dir -> sha256}`` across every project skills dir.
+def skill_identity(skills_dir: Path, skill_dir: Path) -> str:
+    """Return a root-keyed identity such as ``.hermes/skills/foo``."""
+    try:
+        relative = Path(skill_dir).relative_to(Path(skills_dir)).as_posix()
+    except ValueError:
+        relative = Path(skill_dir).name
+    source = Path(skills_dir).parent.name
+    return f"{source}/skills/{relative}"
 
-    The key is the skill's directory path relative to its containing skills
-    root (e.g. ``repo-skill`` or ``team/deploy``) — the stable identity the
-    trust gate compares against. Prefixed with the containing subdir's basename
-    (``.hermes`` vs ``.agents``) is unnecessary because a project rarely defines
-    the same relative name in both roots; when it does, last-writer wins and the
-    gate treats either copy changing as a change, which is the safe behaviour.
+
+def fingerprint_skill_package(skill_dir: Path) -> Tuple[Optional[str], Optional[bytes]]:
+    """Return ``(manifest_digest, SKILL.md bytes)`` from one package walk.
+
+    Every filesystem entry must be a real directory or regular file.  Symlinks
+    and unsupported entry types invalidate the package instead of being
+    followed.  File bytes are read once; the returned ``SKILL.md`` bytes are
+    therefore exactly those folded into the manifest.
+    """
+    skill_dir = Path(skill_dir)
+    manifest: List[Tuple[str, str]] = []
+    skill_md_bytes: Optional[bytes] = None
+    try:
+        if skill_dir.is_symlink() or not skill_dir.is_dir():
+            return None, None
+        entries = sorted(skill_dir.rglob("*"), key=lambda p: p.relative_to(skill_dir).as_posix())
+        for path in entries:
+            if path.is_symlink():
+                return None, None
+            mode = path.stat(follow_symlinks=False).st_mode
+            if stat.S_ISDIR(mode):
+                continue
+            if not stat.S_ISREG(mode):
+                return None, None
+            raw = path.read_bytes()
+            rel = path.relative_to(skill_dir).as_posix()
+            hashed_raw = raw
+            if rel == "SKILL.md":
+                text = raw.decode("utf-8-sig", errors="replace")
+                hashed_raw = normalize_skill_content(text).encode("utf-8")
+            manifest.append((rel, hashlib.sha256(hashed_raw).hexdigest()))
+            if rel == "SKILL.md":
+                skill_md_bytes = raw
+    except OSError:
+        return None, None
+    if skill_md_bytes is None:
+        return None, None
+    encoded = json.dumps(manifest, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest(), skill_md_bytes
+
+
+def fingerprint_project_skills(skills_dirs: List[Path]) -> Dict[str, str]:
+    """Map ``{root-keyed skill package -> manifest sha256}`` for a project.
 
     Imports :func:`iter_skill_index_files` lazily to avoid a module import cycle
     (``skill_utils`` imports this module for the gate).
@@ -130,13 +184,10 @@ def fingerprint_project_skills(skills_dirs: List[Path]) -> Dict[str, str]:
         d = Path(d)
         try:
             for skill_md in iter_skill_index_files(d, "SKILL.md"):
-                try:
-                    rel = str(Path(skill_md).parent.relative_to(d))
-                except ValueError:
-                    rel = Path(skill_md).parent.name
-                digest = fingerprint_skill_md(skill_md)
+                identity = skill_identity(d, Path(skill_md).parent)
+                digest, _ = fingerprint_skill_package(Path(skill_md).parent)
                 if digest is not None:
-                    fingerprints[rel] = digest
+                    fingerprints[identity] = digest
         except OSError:
             continue
     return fingerprints
@@ -151,12 +202,20 @@ def sidecar_path() -> Path:
     return get_hermes_home() / SIDECAR_FILENAME
 
 
-def _empty_sidecar() -> Dict[str, Any]:
-    return {"version": SCHEMA_VERSION, "projects": {}}
+class SidecarData(dict):
+    """Mapping-compatible sidecar payload carrying its load state."""
+
+    def __init__(self, *args, load_state: str = "valid", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.load_state = load_state
 
 
-def load_sidecar() -> Dict[str, Any]:
-    """Return the parsed sidecar, or an empty skeleton if absent/corrupt.
+def _empty_sidecar(*, load_state: str = "absent") -> SidecarData:
+    return SidecarData({"version": SCHEMA_VERSION, "projects": {}}, load_state=load_state)
+
+
+def load_sidecar() -> SidecarData:
+    """Return the parsed sidecar with ``absent``/``valid``/``corrupt`` state.
 
     A malformed sidecar fails *closed* (empty → nothing trusted): we never let a
     parse error silently promote an untrusted project. ``projects`` is always a
@@ -164,47 +223,54 @@ def load_sidecar() -> Dict[str, Any]:
     """
     try:
         raw = json.loads(sidecar_path().read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return _empty_sidecar()
-    if not isinstance(raw, dict):
-        return _empty_sidecar()
+    except FileNotFoundError:
+        return _empty_sidecar(load_state="absent")
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"Warning: project trust sidecar is corrupt; project skills are blocked: {exc}", file=sys.stderr)
+        return _empty_sidecar(load_state="corrupt")
+    if not isinstance(raw, dict) or raw.get("version") != SCHEMA_VERSION:
+        print("Warning: project trust sidecar is corrupt or has an unsupported version; project skills are blocked.", file=sys.stderr)
+        return _empty_sidecar(load_state="corrupt")
     projects = raw.get("projects")
     if not isinstance(projects, dict):
-        raw["projects"] = {}
-    raw.setdefault("version", SCHEMA_VERSION)
-    return raw
+        print("Warning: project trust sidecar has an invalid projects map; project skills are blocked.", file=sys.stderr)
+        return _empty_sidecar(load_state="corrupt")
+    return SidecarData(raw, load_state="valid")
 
 
 def save_sidecar(data: Dict[str, Any]) -> None:
     """Atomically persist the sidecar (mkstemp + ``atomic_replace``).
 
     Cross-process read-modify-write races are serialised by
-    :func:`_locked_update` (``fcntl.flock``). On OSError the failure is logged
-    and the write is dropped — the in-memory decision is lost, so the next run
-    re-derives from disk rather than acting on a half-written file.
+    :func:`_locked_update` (``fcntl.flock``). Failures propagate to the caller;
+    success means the temporary file and containing directory were fsynced.
     """
     p = sidecar_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=f"{p.name}.", suffix=".tmp", dir=str(p.parent),
+    )
     try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(
-            prefix=f"{p.name}.", suffix=".tmp", dir=str(p.parent),
-        )
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, indent=2, sort_keys=True))
+            fh.flush()
+            os.fsync(fh.fileno())
+        atomic_replace(tmp_path, p)
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(json.dumps(data, indent=2, sort_keys=True))
-            atomic_replace(tmp_path, p)
-        except Exception:
+            parent_fd = os.open(str(p.parent), os.O_RDONLY)
+        except OSError:
+            parent_fd = None
+        if parent_fd is not None:
             try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-    except OSError as exc:
-        logger.warning(
-            "Failed to persist project-trust sidecar to %s: %s. The trust "
-            "decision is in-memory for this run only.",
-            p, exc,
-        )
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 @contextmanager
@@ -219,6 +285,8 @@ def _locked_update() -> Iterator[Dict[str, Any]]:
     lock_path = p.with_suffix(p.suffix + ".lock")
 
     if fcntl is None:  # pragma: no cover — non-POSIX fallback
+        # Windows limitation: this protects threads in this process only;
+        # concurrent Hermes processes can still race without a platform lock.
         with _write_lock:
             data = load_sidecar()
             yield data
@@ -320,6 +388,7 @@ def trust_project(root: Path, fingerprints: Dict[str, str]) -> Dict[str, Any]:
     }
     with _locked_update() as data:
         data.setdefault("projects", {})[key] = entry
+    _clear_resolved_snapshot_cache()
     return entry
 
 
@@ -333,6 +402,7 @@ def deny_project(root: Path) -> Dict[str, Any]:
     }
     with _locked_update() as data:
         data.setdefault("projects", {})[key] = entry
+    _clear_resolved_snapshot_cache()
     return entry
 
 
@@ -348,7 +418,17 @@ def forget_project(root: Path) -> bool:
         if key in projects:
             del projects[key]
             removed = True
+    _clear_resolved_snapshot_cache()
     return removed
+
+
+def _clear_resolved_snapshot_cache() -> None:
+    """Invalidate build resolution after an explicit local trust mutation."""
+    try:
+        from agent.skill_utils import _resolve_project_skill_snapshot_cached
+        _resolve_project_skill_snapshot_cached.cache_clear()
+    except ImportError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -382,15 +462,71 @@ def migrate_legacy_if_needed(root: Path, skills_dirs: List[Path]) -> bool:
     Returns True when a migration was performed this call. Idempotent: once a
     sidecar entry (trusted OR denied) exists, the legacy list is ignored.
     """
-    if get_project_entry(root) is not None:
-        return False
     if not legacy_config_trusts(root):
         return False
     fingerprints = fingerprint_project_skills(skills_dirs)
-    trust_project(root, fingerprints)
+    key = _key(root)
+    entry = {
+        "status": STATUS_TRUSTED,
+        "approved_at": _utc_now_iso(),
+        "fingerprints": dict(fingerprints),
+    }
+    try:
+        with _locked_update() as data:
+            if getattr(data, "load_state", "valid") == "corrupt":
+                raise _MigrationSkipped
+            if isinstance(data.get("projects", {}).get(key), dict):
+                raise _MigrationSkipped
+            # Config may have changed while package hashing was in progress.
+            if not legacy_config_trusts(root):
+                raise _MigrationSkipped
+            data.setdefault("projects", {})[key] = entry
+    except _MigrationSkipped:
+        return False
+    _clear_resolved_snapshot_cache()
+    _remove_legacy_config_entry(root)
     logger.info(
         "Migrated legacy skills.trusted_project_dirs entry for %s into the "
         "project-trust sidecar (%d skill fingerprint(s) recorded).",
         root, len(fingerprints),
     )
+    return True
+
+
+class _MigrationSkipped(Exception):
+    """Abort a locked migration without writing the loaded sidecar."""
+
+
+def _remove_legacy_config_entry(root: Path) -> bool:
+    """Remove *root* from legacy config after sidecar persistence succeeds."""
+    from hermes_cli.config import load_config, save_config
+
+    config = load_config()
+    skills_cfg = config.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return False
+    trusted = skills_cfg.get("trusted_project_dirs") or []
+    if not isinstance(trusted, list):
+        trusted = [trusted]
+    root_key = _key(root)
+    kept = []
+    for entry in trusted:
+        try:
+            if _key(Path(str(entry)).expanduser()) == root_key:
+                continue
+        except OSError:
+            pass
+        kept.append(entry)
+    if len(kept) == len(trusted):
+        return False
+    if kept:
+        skills_cfg["trusted_project_dirs"] = kept
+    else:
+        skills_cfg.pop("trusted_project_dirs", None)
+    save_config(config)
+    try:
+        from agent.skill_utils import _raw_config_cache_clear
+        _raw_config_cache_clear()
+    except ImportError:
+        pass
     return True

@@ -10,6 +10,8 @@ import logging
 import os
 import re
 import sys
+from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -640,11 +642,12 @@ def get_all_skills_dirs() -> List[Path]:
 # dirs are still *discoverable* via get_untrusted_project_skills_root() so the
 # CLI can print a one-line "run `hermes skills trust`" notice.
 #
-# PER-SKILL FINGERPRINTS: trusting a project records a sha256 of each skill's
-# normalised SKILL.md. At agent-build time the gate re-fingerprints and EXCLUDES
-# any skill that is new or hash-changed since approval (injection-swap defense),
-# surfacing a one-line "N project skill(s) changed/added since approval" notice.
-# A denied project (sticky deny) produces no notice ever.
+# PER-SKILL FINGERPRINTS: trusting a project records a deterministic manifest
+# digest over every regular file in each package, keyed by its source root.
+# At agent-build time the gate re-fingerprints once and EXCLUDES any package
+# that is new, hash-changed, or contains a symlink, surfacing a one-line
+# "N project skill(s) changed/added since approval" notice. A denied project
+# (sticky deny) produces no notice ever.
 #
 # BACK-COMPAT: a legacy ``skills.trusted_project_dirs`` entry in config.yaml is
 # fingerprint-free, so honoring it as-is would be trust WITHOUT the hash gate.
@@ -659,10 +662,10 @@ def get_all_skills_dirs() -> List[Path]:
 # their repo.
 #
 # CACHE SAFETY: cwd is fixed for the life of a session, and trust + fingerprints
-# are read from the sidecar at agent build time — the resolved dirs and the
-# per-skill hash gate are stable for the conversation, so the skills index (and
-# with it the system prompt) stays byte-stable. Same contract as AGENTS.md
-# injection and project plugins.
+# are resolved into one approved-package snapshot at agent build time. Every
+# surface consumes that same immutable view, so the skills index (and with it
+# the system prompt) stays byte-stable. Same contract as AGENTS.md injection and
+# project plugins.
 
 PROJECT_SKILLS_SUBDIRS = (
     os.path.join(".hermes", "skills"),
@@ -837,10 +840,125 @@ def _relpath_for_gate(skills_dir: Path, skill_md: Path) -> str:
     directory relative to its containing skills root, falling back to the
     directory basename.
     """
+    from agent.project_trust import skill_identity
+
+    return skill_identity(skills_dir, Path(skill_md).parent)
+
+
+@dataclass(frozen=True)
+class ApprovedProjectSkill:
+    """One approved project skill package from the build-time snapshot."""
+
+    identity: str
+    source_root: Path
+    skill_dir: Path
+    skill_md: Path
+    skill_md_bytes: bytes
+    digest: str
+
+
+@dataclass(frozen=True)
+class ProjectSkillSnapshot:
+    """Resolved project-skill decision shared by every loading surface."""
+
+    root: Optional[Path]
+    approved: Tuple[ApprovedProjectSkill, ...] = ()
+    blocked_skill_md_paths: frozenset[str] = frozenset()
+
+
+@lru_cache(maxsize=32)
+def _resolve_project_skill_snapshot_cached(
+    root_key: str, hermes_home_key: str,
+) -> ProjectSkillSnapshot:
+    """Hash project packages once and retain the exact approved SKILL.md bytes."""
+    del hermes_home_key  # cache partition only; lookup uses the active context
+    from agent import project_trust as pt
+
+    root = Path(root_key)
+    parsed = _load_raw_config()
+    skills_cfg = parsed.get("skills") if isinstance(parsed, dict) else None
+    if isinstance(skills_cfg, dict) and skills_cfg.get("project_discovery") is False:
+        return ProjectSkillSnapshot(root=root)
+    if not is_project_root_trusted(root):
+        return ProjectSkillSnapshot(root=root)
+
+    approved_fingerprints = pt.approved_fingerprints(root)
+    approved: List[ApprovedProjectSkill] = []
+    blocked: Set[str] = set()
+    for source_root in _candidate_project_skills_dirs(root):
+        # Route enumeration through the quarantine chokepoint so a dangerous
+        # scan verdict and the fingerprint gate compose: a skill is skipped if
+        # quarantined (#48974) OR fingerprint-mismatched (#48970), never both
+        # surfaces seeing a different subset.
+        for skill_md in iter_project_skill_files(source_root):
+            skill_md = Path(skill_md)
+            identity = pt.skill_identity(source_root, skill_md.parent)
+            digest, skill_md_bytes = pt.fingerprint_skill_package(skill_md.parent)
+            try:
+                canonical_md = str(skill_md.resolve())
+            except OSError:
+                canonical_md = str(skill_md)
+            if (
+                digest is None
+                or skill_md_bytes is None
+                or approved_fingerprints.get(identity) != digest
+            ):
+                blocked.add(canonical_md)
+                continue
+            approved.append(
+                ApprovedProjectSkill(
+                    identity=identity,
+                    source_root=source_root,
+                    skill_dir=skill_md.parent,
+                    skill_md=skill_md,
+                    skill_md_bytes=skill_md_bytes,
+                    digest=digest,
+                )
+            )
+    return ProjectSkillSnapshot(
+        root=root,
+        approved=tuple(approved),
+        blocked_skill_md_paths=frozenset(blocked),
+    )
+
+
+def resolve_project_skill_snapshot() -> ProjectSkillSnapshot:
+    """Return the once-resolved approved view for this project/profile."""
+    root = find_project_root()
+    if root is None:
+        return ProjectSkillSnapshot(root=None)
+    from hermes_constants import get_hermes_home
     try:
-        return str(Path(skill_md).parent.relative_to(Path(skills_dir)))
-    except ValueError:
-        return Path(skill_md).parent.name
+        home_key = str(get_hermes_home().resolve())
+    except OSError:
+        home_key = str(get_hermes_home())
+    return _resolve_project_skill_snapshot_cached(str(root.resolve()), home_key)
+
+
+def approved_project_skills() -> Tuple[ApprovedProjectSkill, ...]:
+    """Exact approved project packages shared by prompt/tool/mount surfaces."""
+    return resolve_project_skill_snapshot().approved
+
+
+def approved_project_skill_dirs() -> List[Path]:
+    """Approved package directories, one entry per skill."""
+    return [entry.skill_dir for entry in approved_project_skills()]
+
+
+def read_approved_project_skill_md(path: Path) -> Optional[bytes]:
+    """Return verified bytes for an exact canonical project ``SKILL.md``."""
+    try:
+        wanted = str(Path(path).resolve())
+    except OSError:
+        wanted = str(path)
+    for entry in approved_project_skills():
+        try:
+            candidate = str(entry.skill_md.resolve())
+        except OSError:
+            candidate = str(entry.skill_md)
+        if candidate == wanted:
+            return entry.skill_md_bytes
+    return None
 
 
 def project_skill_paths_blocked() -> Set[str]:
@@ -856,28 +974,7 @@ def project_skill_paths_blocked() -> Set[str]:
     membership cheaply per SKILL.md. Computed once per call from disk + the
     sidecar; both are stable for the session so this is cache-safe.
     """
-    from agent import project_trust as pt
-
-    root = find_project_root()
-    if root is None or not is_project_root_trusted(root):
-        return set()
-    dirs = _candidate_project_skills_dirs(root)
-    current = pt.fingerprint_project_skills(dirs)
-    flagged = set(pt.changed_or_new_skills(root, current))
-    if not flagged:
-        return set()
-    blocked: Set[str] = set()
-    for d in dirs:
-        try:
-            for skill_md in iter_skill_index_files(d, "SKILL.md"):
-                if _relpath_for_gate(d, skill_md) in flagged:
-                    try:
-                        blocked.add(str(Path(skill_md).resolve()))
-                    except OSError:
-                        blocked.add(str(skill_md))
-        except OSError:
-            continue
-    return blocked
+    return set(resolve_project_skill_snapshot().blocked_skill_md_paths)
 
 
 def get_project_skill_change_notice() -> Optional[Tuple[Path, int]]:
@@ -902,7 +999,7 @@ def get_scan_ordered_skills_dirs() -> List[Path]:
     First-wins name deduplication over this order gives project skills
     priority over profile-local and external ones.
     """
-    dirs = list(get_project_skills_dirs())
+    dirs = approved_project_skill_dirs()
     dirs.append(get_skills_dir())
     dirs.extend(get_external_skills_dirs())
     return dirs
@@ -1029,7 +1126,18 @@ def normalize_skill_lookup_name(identifier: str) -> str:
 
     trusted_roots = [primary_root]
     try:
-        trusted_roots.extend(get_project_skills_dirs())
+        for project_skill in approved_project_skills():
+            if identifier_path == project_skill.skill_dir:
+                return str(project_skill.skill_dir.relative_to(project_skill.source_root))
+            try:
+                if identifier_path.resolve() == project_skill.skill_dir.resolve():
+                    return str(project_skill.skill_dir.relative_to(project_skill.source_root))
+            except OSError:
+                continue
+    except Exception:
+        pass
+    try:
+        trusted_roots.extend(approved_project_skill_dirs())
     except Exception:
         pass
     try:
@@ -1081,7 +1189,7 @@ def is_external_skill_path(path) -> bool:
     # Trusted project-local dirs are repo-owned — same read-only boundary
     # for autonomous lifecycle maintenance as configured external dirs.
     try:
-        roots.extend(get_project_skills_dirs())
+        roots.extend(approved_project_skill_dirs())
     except Exception:
         pass
     for root in roots:

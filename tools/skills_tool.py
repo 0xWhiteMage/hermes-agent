@@ -686,11 +686,9 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     after a short TTL to bound staleness from in-place SKILL.md edits.
     """
     from agent.skill_utils import (
+        approved_project_skills,
         get_external_skills_dirs,
-        get_project_skills_dirs,
-        iter_project_skill_files,
         iter_skill_index_files,
-        project_skill_paths_blocked,
     )
 
     cache_key = _SKILLS_CACHE_KEY_DISABLED if skip_disabled else _SKILLS_CACHE_KEY_FILTERED
@@ -704,22 +702,21 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     # SKILLS_DIR can be stale in long-lived runtimes). Trusted project-local
     # dirs come FIRST: first-wins dedup below gives them precedence over
     # same-named local/external skills.
-    project_dirs = list(get_project_skills_dirs())
-    dirs_to_scan: list = list(project_dirs)
+    project_skills = approved_project_skills()
+    dirs_to_scan: list = [entry.skill_dir for entry in project_skills]
+    verified_project_bytes = {
+        str(entry.skill_md.resolve()): entry.skill_md_bytes
+        for entry in project_skills
+    }
     active_skills_dir = _skills_dir()
     if active_skills_dir.exists():
         dirs_to_scan.append(active_skills_dir)
     dirs_to_scan.extend(get_external_skills_dirs())
 
-    # Per-skill fingerprint gate (injection-swap boundary): resolved SKILL.md
-    # paths in a TRUSTED project whose name is new OR whose normalised content
-    # hash changed since approval. These are excluded from the index (and thus
-    # from loading) until the user re-runs `hermes skills trust`. Empty for
-    # untrusted projects (whole tier already excluded) and unchanged projects.
-    blocked_project_skill_paths = project_skill_paths_blocked()
-
-    signature = (_skills_scan_signature(dirs_to_scan, disabled),
-                 tuple(sorted(blocked_project_skill_paths)))
+    signature = (
+        _skills_scan_signature(dirs_to_scan, disabled),
+        tuple((entry.identity, entry.digest) for entry in project_skills),
+    )
     now = time.monotonic()
 
     cached = _SKILLS_CACHE.get(cache_key)
@@ -737,34 +734,24 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     seen_names: set = set()
 
     # Scan project dirs first, then local, then external (first-wins) —
-    # dirs_to_scan already resolved above for the signature. Project dirs
-    # iterate through the quarantine chokepoint (scan-time injection gate).
+    # dirs_to_scan already resolved above for the signature. Project-tier dirs
+    # come from the approved snapshot (quarantine + fingerprint both applied at
+    # the chokepoint); local/external dirs iterate plainly.
     for scan_dir in dirs_to_scan:
-        _is_project = scan_dir in project_dirs
-        _iter = (
-            iter_project_skill_files(scan_dir)
-            if _is_project
-            else iter_skill_index_files(scan_dir, "SKILL.md")
-        )
+        _iter = iter_skill_index_files(scan_dir, "SKILL.md")
         for skill_md in _iter:
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                 continue
 
-            # Fingerprint gate: skip a project skill whose name/content changed
-            # since trust approval (or is brand new). It stays out of the index
-            # until re-approved via `hermes skills trust`.
-            if blocked_project_skill_paths:
-                try:
-                    if str(skill_md.resolve()) in blocked_project_skill_paths:
-                        continue
-                except OSError:
-                    if str(skill_md) in blocked_project_skill_paths:
-                        continue
-
             skill_dir = skill_md.parent
 
             try:
-                content = skill_md.read_text(encoding="utf-8-sig", errors="replace")[:4000]
+                verified = verified_project_bytes.get(str(skill_md.resolve()))
+                content = (
+                    verified.decode("utf-8-sig", errors="replace")
+                    if verified is not None
+                    else skill_md.read_text(encoding="utf-8-sig", errors="replace")
+                )[:4000]
                 frontmatter, body = _parse_frontmatter(content)
 
                 if not skill_matches_platform(frontmatter):
@@ -1229,7 +1216,7 @@ def skill_view(
             if bare:
                 local_category_name = f"{namespace}/{bare}"
 
-        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
+        from agent.skill_utils import approved_project_skills, get_external_skills_dirs
 
         # The categorized fall-through form (namespace/bare) joins onto each
         # search dir too; re-validate it since `bare` is not namespace-checked.
@@ -1248,7 +1235,12 @@ def skill_view(
         # Build list of all skill directories to search. Project dirs first —
         # they're the highest-precedence tier and the collision resolver
         # below uses this ordering.
-        project_dirs = get_project_skills_dirs()
+        project_skill_entries = approved_project_skills()
+        project_dirs = [entry.skill_dir for entry in project_skill_entries]
+        verified_project_bytes = {
+            str(entry.skill_md.resolve()): entry.skill_md_bytes
+            for entry in project_skill_entries
+        }
         all_dirs = list(project_dirs)
         active_skills_dir = _skills_dir()
         if active_skills_dir.exists():
@@ -1331,7 +1323,12 @@ def skill_view(
                     _record(found_skill_md.parent, found_skill_md)
                     continue
                 try:
-                    fm_content = found_skill_md.read_text(encoding="utf-8-sig", errors="replace")
+                    verified = verified_project_bytes.get(str(found_skill_md.resolve()))
+                    fm_content = (
+                        verified.decode("utf-8-sig", errors="replace")
+                        if verified is not None
+                        else found_skill_md.read_text(encoding="utf-8-sig", errors="replace")
+                    )
                     fm, _ = _parse_frontmatter(fm_content)
                 except Exception:
                     fm = {}
@@ -1450,7 +1447,12 @@ def skill_view(
 
         # Read the file once — reused for platform check and main content below
         try:
-            content = skill_md.read_text(encoding="utf-8-sig", errors="replace")
+            verified = verified_project_bytes.get(str(skill_md.resolve()))
+            content = (
+                verified.decode("utf-8-sig", errors="replace")
+                if verified is not None
+                else skill_md.read_text(encoding="utf-8-sig", errors="replace")
+            )
         except Exception as e:
             return json.dumps(
                 {

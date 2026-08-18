@@ -8,6 +8,7 @@ legacy-config migration.
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -38,8 +39,10 @@ def project_env(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.chdir(repo)
     su._external_dirs_cache_clear()
+    su._resolve_project_skill_snapshot_cached.cache_clear()
     yield {"home": home, "repo": repo, "config": config}
     su._external_dirs_cache_clear()
+    su._resolve_project_skill_snapshot_cached.cache_clear()
 
 
 def _trust(config: Path, repo: Path) -> None:
@@ -102,6 +105,7 @@ class TestTrustGate:
         )
         su._external_dirs_cache_clear()
         assert su.get_project_skills_dirs() == []
+        assert su.approved_project_skills() == ()
         assert su.get_untrusted_project_skills_root() is None
 
     def test_no_skills_no_notice(self, tmp_path, monkeypatch):
@@ -120,11 +124,11 @@ class TestPrecedence:
     def test_scan_order_project_first(self, project_env):
         _trust(project_env["config"], project_env["repo"])
         order = su.get_scan_ordered_skills_dirs()
-        proj_dirs = {
-            (project_env["repo"] / ".hermes" / "skills").resolve(),
-            (project_env["repo"] / ".agents" / "skills").resolve(),
+        project_packages = {
+            (project_env["repo"] / ".hermes" / "skills" / "repo-skill").resolve(),
+            (project_env["repo"] / ".agents" / "skills" / "conv-skill").resolve(),
         }
-        assert set(order[:2]) == proj_dirs
+        assert set(order[:2]) == project_packages
         assert order[2] == su.get_skills_dir()
 
     def test_project_paths_are_readonly_owned(self, project_env):
@@ -273,6 +277,7 @@ def _index_skill_names(monkeypatch) -> set:
     import tools.skills_tool as st
 
     st._SKILLS_CACHE.clear()
+    su._resolve_project_skill_snapshot_cached.cache_clear()
     return {s["name"] for s in st._find_all_skills(skip_disabled=True)}
 
 
@@ -299,7 +304,10 @@ class TestSidecarTrust:
     def test_fingerprints_recorded_for_every_skill(self, project_env):
         _hermes_trust(project_env["repo"])
         fps = pt.approved_fingerprints(project_env["repo"].resolve())
-        assert set(fps) == {"repo-skill", "conv-skill"}
+        assert set(fps) == {
+            ".hermes/skills/repo-skill",
+            ".agents/skills/conv-skill",
+        }
         for digest in fps.values():
             assert len(digest) == 64  # sha256 hex
 
@@ -314,8 +322,58 @@ class TestSidecarTrust:
         assert "repo-skill" in names
         assert "conv-skill" in names
 
+    def test_project_slash_commands_load_exact_packages(self, project_env):
+        import agent.skill_commands as sc
+
+        _hermes_trust(project_env["repo"])
+        commands = sc.scan_skill_commands()
+        assert commands["/repo-skill"]["skill_dir"].endswith("/repo-skill")
+        assert commands["/conv-skill"]["skill_dir"].endswith("/conv-skill")
+        assert sc.build_skill_invocation_message("/repo-skill") is not None
+        assert sc.build_skill_invocation_message("/conv-skill") is not None
+
 
 class TestHashGate:
+    def test_same_name_in_both_roots_is_keyed_and_blocked_exactly(
+        self, project_env, monkeypatch,
+    ):
+        agents_skill = project_env["repo"] / ".agents" / "skills" / "same"
+        hermes_skill = project_env["repo"] / ".hermes" / "skills" / "same"
+        agents_skill.mkdir()
+        hermes_skill.mkdir()
+        for skill_dir, description in (
+            (agents_skill, "agents copy"),
+            (hermes_skill, "hermes copy"),
+        ):
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: same\ndescription: {description}\n---\nbody\n"
+            )
+        _hermes_trust(project_env["repo"])
+        fps = pt.approved_fingerprints(project_env["repo"].resolve())
+        assert ".hermes/skills/same" in fps
+        assert ".agents/skills/same" in fps
+
+        (hermes_skill / "SKILL.md").write_text(
+            "---\nname: same\ndescription: swapped\n---\nbody\n"
+        )
+        su._resolve_project_skill_snapshot_cached.cache_clear()
+        blocked = su.project_skill_paths_blocked()
+        assert str((hermes_skill / "SKILL.md").resolve()) in blocked
+        assert str((agents_skill / "SKILL.md").resolve()) not in blocked
+        assert "same" in _index_skill_names(monkeypatch)
+
+    def test_support_script_change_blocks_whole_package(self, project_env, monkeypatch):
+        skill_dir = project_env["repo"] / ".hermes" / "skills" / "repo-skill"
+        scripts = skill_dir / "scripts"
+        scripts.mkdir()
+        script = scripts / "x.py"
+        script.write_text("print('approved')\n")
+        _hermes_trust(project_env["repo"])
+
+        script.write_text("print('swapped')\n")
+        assert "repo-skill" not in _index_skill_names(monkeypatch)
+        assert str((skill_dir / "SKILL.md").resolve()) in su.project_skill_paths_blocked()
+
     def test_changed_skill_excluded_and_notice(self, project_env, monkeypatch):
         _hermes_trust(project_env["repo"])
         # Edit the approved skill's content after approval.
@@ -368,15 +426,15 @@ class TestHashGate:
 class TestRemovedSkillPrune:
     def test_removed_skill_pruned_on_next_trust(self, project_env):
         _hermes_trust(project_env["repo"])
-        assert "conv-skill" in pt.approved_fingerprints(project_env["repo"].resolve())
+        assert ".agents/skills/conv-skill" in pt.approved_fingerprints(project_env["repo"].resolve())
         # Delete the .agents skill entirely, then re-trust.
         import shutil
 
         shutil.rmtree(project_env["repo"] / ".agents" / "skills" / "conv-skill")
         _hermes_trust(project_env["repo"])
         fps = pt.approved_fingerprints(project_env["repo"].resolve())
-        assert "conv-skill" not in fps  # silently pruned
-        assert "repo-skill" in fps
+        assert ".agents/skills/conv-skill" not in fps  # silently pruned
+        assert ".hermes/skills/repo-skill" in fps
 
     def test_removed_skill_alone_is_not_a_change_notice(self, project_env):
         _hermes_trust(project_env["repo"])
@@ -420,7 +478,39 @@ class TestLegacyMigration:
         entry = pt.get_project_entry(project_env["repo"].resolve())
         assert entry is not None
         assert entry["status"] == "trusted"
-        assert set(entry["fingerprints"]) == {"repo-skill", "conv-skill"}
+        assert set(entry["fingerprints"]) == {
+            ".hermes/skills/repo-skill",
+            ".agents/skills/conv-skill",
+        }
+        assert "trusted_project_dirs" not in project_env["config"].read_text()
+
+    def test_corrupt_sidecar_never_reactivates_legacy_trust(self, project_env, capsys):
+        _trust(project_env["config"], project_env["repo"])
+        (project_env["home"] / "project-trust.json").write_text("{broken")
+        su._resolve_project_skill_snapshot_cached.cache_clear()
+
+        assert su.is_project_root_trusted(project_env["repo"].resolve()) is False
+        assert "corrupt" in capsys.readouterr().err
+        assert (project_env["home"] / "project-trust.json").read_text() == "{broken"
+
+    def test_concurrent_deny_wins_over_inflight_migration(
+        self, project_env, monkeypatch,
+    ):
+        _trust(project_env["config"], project_env["repo"])
+        real_fingerprint = pt.fingerprint_project_skills
+
+        def fingerprint_then_deny(skills_dirs):
+            fingerprints = real_fingerprint(skills_dirs)
+            pt.deny_project(project_env["repo"].resolve())
+            return fingerprints
+
+        monkeypatch.setattr(pt, "fingerprint_project_skills", fingerprint_then_deny)
+        migrated = pt.migrate_legacy_if_needed(
+            project_env["repo"].resolve(),
+            su._candidate_project_skills_dirs(project_env["repo"].resolve()),
+        )
+        assert migrated is False
+        assert pt.is_denied(project_env["repo"].resolve()) is True
 
     def test_migrated_project_is_hash_gated(self, project_env, monkeypatch):
         _trust(project_env["config"], project_env["repo"])
@@ -458,3 +548,46 @@ class TestAtomicSidecarWrite:
         # Malformed sidecar → empty skeleton, nothing trusted.
         assert pt.load_sidecar()["projects"] == {}
         assert su.is_project_root_trusted(project_env["repo"].resolve()) is False
+
+    def test_save_failure_propagates_before_cli_success(self, project_env, monkeypatch, capsys):
+        from hermes_cli import main as cli_main
+
+        def fail_replace(source, destination):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(pt, "atomic_replace", fail_replace)
+        args = SimpleNamespace(skills_action="trust", path=str(project_env["repo"]), deny=False)
+        with pytest.raises(OSError, match="disk full"):
+            cli_main._cmd_skills_trust(args)
+        assert "Trusted:" not in capsys.readouterr().out
+
+
+class TestAllSkillSurfacesUseApprovedSnapshot:
+    def test_blocked_skill_absent_everywhere(self, project_env, monkeypatch):
+        skill_dir = project_env["repo"] / ".hermes" / "skills" / "repo-skill"
+        script = skill_dir / "scripts" / "x.py"
+        script.parent.mkdir()
+        script.write_text("print('approved')\n")
+        _hermes_trust(project_env["repo"])
+        script.write_text("print('swapped')\n")
+        su._resolve_project_skill_snapshot_cached.cache_clear()
+
+        import agent.prompt_builder as pb
+        import agent.skill_commands as sc
+        import tools.credential_files as cf
+        import tools.skills_tool as st
+
+        pb._SKILLS_PROMPT_CACHE.clear()
+        prompt = pb.build_skills_system_prompt()
+        assert "repo-skill" not in prompt
+
+        commands = sc.scan_skill_commands()
+        assert "/repo-skill" not in commands
+
+        mount_hosts = {m["host_path"] for m in cf.get_skills_directory_mount()}
+        assert str(skill_dir) not in mount_hosts
+        uploaded_hosts = {m["host_path"] for m in cf.iter_skills_files()}
+        assert str(script) not in uploaded_hosts
+
+        payload = json.loads(st.skill_view("repo-skill"))
+        assert payload["success"] is False

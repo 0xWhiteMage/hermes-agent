@@ -429,9 +429,8 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, skill_matches_environment, _get_disabled_skill_names
         from agent.skill_utils import (
+            approved_project_skills,
             get_external_skills_dirs,
-            get_project_skills_dirs,
-            iter_project_skill_files,
             iter_skill_index_files,
         )
         from hermes_cli.commands import resolve_command
@@ -439,24 +438,32 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         seen_names: set = set()
 
         # Scan project dirs first (highest precedence), then local, then external.
-        # Project dirs iterate through the quarantine chokepoint.
-        project_dirs = list(get_project_skills_dirs())
-        dirs_to_scan = list(project_dirs)
+        # Project tier iterates through the approved snapshot (fingerprint gate
+        # + quarantine both applied at the chokepoint).
+        project_skills = approved_project_skills()
+        dirs_to_scan = [entry.skill_dir for entry in project_skills]
+        verified_project_bytes = {
+            str(entry.skill_md.resolve()): entry.skill_md_bytes
+            for entry in project_skills
+        }
         if SKILLS_DIR.exists():
             dirs_to_scan.append(SKILLS_DIR)
         dirs_to_scan.extend(get_external_skills_dirs())
 
         for scan_dir in dirs_to_scan:
-            _iter = (
-                iter_project_skill_files(scan_dir)
-                if scan_dir in project_dirs
-                else iter_skill_index_files(scan_dir, "SKILL.md")
-            )
+            # Project-tier dirs come from the approved snapshot (quarantine +
+            # fingerprint already applied); local/external dirs iterate plainly.
+            _iter = iter_skill_index_files(scan_dir, "SKILL.md")
             for skill_md in _iter:
                 if any(part in {'.git', '.github', '.hub', '.archive'} for part in skill_md.parts):
                     continue
                 try:
-                    content = skill_md.read_text(encoding='utf-8')
+                    verified = verified_project_bytes.get(str(skill_md.resolve()))
+                    content = (
+                        verified.decode('utf-8-sig', errors='replace')
+                        if verified is not None
+                        else skill_md.read_text(encoding='utf-8')
+                    )
                     frontmatter, body = _parse_frontmatter(content)
                     # Skip skills incompatible with the current OS platform
                     if not skill_matches_platform(frontmatter):

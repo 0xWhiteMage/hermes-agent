@@ -1687,14 +1687,20 @@ def _build_snapshot_entry(
 # Skills index
 # =========================================================================
 
-def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
+def _parse_skill_file(
+    skill_file: Path, *, verified_bytes: bytes | None = None,
+) -> tuple[bool, dict, str]:
     """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
 
     Returns (is_compatible, frontmatter, description). On any error, returns
     (True, {}, "") to err on the side of showing the skill.
     """
     try:
-        raw = skill_file.read_text(encoding="utf-8")
+        raw = (
+            verified_bytes.decode("utf-8-sig", errors="replace")
+            if verified_bytes is not None
+            else skill_file.read_text(encoding="utf-8")
+        )
         frontmatter, _ = parse_frontmatter(raw)
 
         if not skill_matches_platform(frontmatter):
@@ -1805,10 +1811,10 @@ def build_skills_system_prompt(
         # the git root) — highest-precedence tier, scanned before local.
         # Resolved once here; cwd and trust are stable for the session, so
         # the index (and the system prompt) stays byte-stable.
-        from agent.skill_utils import get_project_skills_dirs
-        project_dirs = get_project_skills_dirs()
+        from agent.skill_utils import approved_project_skills
+        project_skills = approved_project_skills()
 
-        if not skills_dir.exists() and not external_dirs and not project_dirs:
+        if not skills_dir.exists() and not external_dirs and not project_skills:
             return ""
 
         return _build_skills_system_prompt_inner(
@@ -1817,7 +1823,7 @@ def build_skills_system_prompt(
             available_tools,
             available_toolsets,
             compact_categories,
-            project_dirs=project_dirs,
+            project_skills=project_skills,
         )
     finally:
         if _home_token is not None:
@@ -1830,17 +1836,17 @@ def _build_skills_system_prompt_inner(
     available_tools: "set[str] | None",
     available_toolsets: "set[str] | None",
     compact_categories: "frozenset[str] | None",
-    project_dirs: "list[Path] | None" = None,
+    project_skills: "list | tuple | None" = None,
 ) -> str:
     # Include the resolved platform so per-platform disabled-skill lists
     # produce distinct cache entries (gateway serves multiple platforms).
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
-    project_dirs = project_dirs or []
+    project_skills = project_skills or []
     cache_key = (
         str(skills_dir),
         tuple(str(d) for d in external_dirs),
-        tuple(str(d) for d in project_dirs),
+        tuple((entry.identity, entry.digest) for entry in project_skills),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
@@ -1911,35 +1917,38 @@ def _build_skills_system_prompt_inner(
     # win inside their repo). Each entry is tagged so the model and the user
     # can see where it came from.
     project_names: set[str] = set()
-    if project_dirs:
-        from agent.skill_utils import iter_project_skill_files
-
-        for proj_dir in project_dirs:
-            if not proj_dir.exists():
-                continue
-            for skill_file in iter_project_skill_files(proj_dir):
-                try:
-                    is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
-                    if not is_compatible:
-                        continue
-                    entry = _build_snapshot_entry(skill_file, proj_dir, frontmatter, desc)
-                    fm_name = entry["frontmatter_name"]
-                    if fm_name in project_names:
-                        continue
-                    if fm_name in disabled or entry["skill_name"] in disabled:
-                        continue
-                    if not _skill_should_show(
-                        extract_skill_conditions(frontmatter),
-                        available_tools,
-                        available_toolsets,
-                    ):
-                        continue
-                    project_names.add(fm_name)
-                    skills_by_category.setdefault(entry["category"], []).append(
-                        (fm_name, f"[project] {entry['description']}".strip())
-                    )
-                except Exception as e:
-                    logger.debug("Error reading project skill %s: %s", skill_file, e)
+    # Project tier iterates through the approved snapshot (fingerprint gate +
+    # quarantine both applied at the skill_utils chokepoint). Verified bytes are
+    # reused so parse cannot be swapped between hash and read.
+    for project_skill in project_skills:
+        proj_dir = project_skill.source_root
+        if not proj_dir.exists():
+            continue
+        for skill_file in (project_skill.skill_md,):
+            try:
+                is_compatible, frontmatter, desc = _parse_skill_file(
+                    skill_file, verified_bytes=project_skill.skill_md_bytes,
+                )
+                if not is_compatible:
+                    continue
+                entry = _build_snapshot_entry(skill_file, proj_dir, frontmatter, desc)
+                fm_name = entry["frontmatter_name"]
+                if fm_name in project_names:
+                    continue
+                if fm_name in disabled or entry["skill_name"] in disabled:
+                    continue
+                if not _skill_should_show(
+                    extract_skill_conditions(frontmatter),
+                    available_tools,
+                    available_toolsets,
+                ):
+                    continue
+                project_names.add(fm_name)
+                skills_by_category.setdefault(entry["category"], []).append(
+                    (fm_name, f"[project] {entry['description']}".strip())
+                )
+            except Exception as e:
+                logger.debug("Error reading project skill %s: %s", skill_file, e)
 
     if project_names:
         # Drop profile-local entries shadowed by a project skill BEFORE the

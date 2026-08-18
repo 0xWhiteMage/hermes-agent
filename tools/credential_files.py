@@ -275,7 +275,7 @@ def get_skills_directory_mount(
 
     # Mount external skill dirs
     try:
-        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
+        from agent.skill_utils import approved_project_skills, get_external_skills_dirs
         for idx, ext_dir in enumerate(get_external_skills_dirs()):
             if ext_dir.is_dir():
                 host_path = _safe_skills_path(ext_dir)
@@ -285,7 +285,8 @@ def get_skills_directory_mount(
                 })
         # Trusted project-local skill dirs (repo checkouts). Separate
         # namespace so container paths stay stable if external_dirs change.
-        for idx, proj_dir in enumerate(get_project_skills_dirs()):
+        for idx, project_skill in enumerate(approved_project_skills()):
+            proj_dir = project_skill.skill_dir
             if proj_dir.is_dir():
                 host_path = _safe_skills_path(proj_dir)
                 mounts.append({
@@ -371,7 +372,7 @@ def iter_skills_files(
 
     # Include external skill dirs
     try:
-        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
+        from agent.skill_utils import approved_project_skills, get_external_skills_dirs
         for idx, ext_dir in enumerate(get_external_skills_dirs()):
             if not ext_dir.is_dir():
                 continue
@@ -384,7 +385,8 @@ def iter_skills_files(
                     "host_path": str(item),
                     "container_path": f"{container_root}/{rel}",
                 })
-        for idx, proj_dir in enumerate(get_project_skills_dirs()):
+        for idx, project_skill in enumerate(approved_project_skills()):
+            proj_dir = project_skill.skill_dir
             if not proj_dir.is_dir():
                 continue
             container_root = f"{container_base.rstrip('/')}/project_skills/{idx}"
@@ -588,5 +590,4 @@ def iter_cache_files(
 def clear_credential_files() -> None:
     """Reset the skill-scoped registry (e.g. on session reset)."""
     _get_registered().clear()
-
 
