@@ -12093,6 +12093,7 @@ def _cmd_skills_trust(args):
     from agent.skill_utils import (
         PROJECT_SKILLS_SUBDIRS,
         _candidate_project_skills_dirs,
+        _resolve_project_trust_entry,
         canonical_project_identity,
         find_project_root,
         iter_skill_index_files,
@@ -12134,7 +12135,10 @@ def _cmd_skills_trust(args):
         kept = [
             t
             for t in trusted
-            if str(canonical_project_identity(Path(t).expanduser())) != root_str
+            if (
+                (resolved := _resolve_project_trust_entry(t)) is None
+                or str(canonical_project_identity(resolved)) != root_str
+            )
         ]
         if len(kept) == len(trusted):
             print(f"{root} was not trusted.")
@@ -12146,11 +12150,25 @@ def _cmd_skills_trust(args):
         return
 
     # trust
-    if any(
-        str(canonical_project_identity(Path(t).expanduser())) == root_str
+    equivalent = [
+        t
         for t in trusted
-    ):
-        print(f"Already trusted: {root}")
+        if (
+            (resolved := _resolve_project_trust_entry(t)) is not None
+            and str(canonical_project_identity(resolved)) == root_str
+        )
+    ]
+    if equivalent:
+        canonical_trusted = [t for t in trusted if t not in equivalent]
+        canonical_trusted.append(root_str)
+        if canonical_trusted != trusted:
+            skills_cfg["trusted_project_dirs"] = canonical_trusted
+            save_config(config)
+            print(f"Trusted: {root}")
+            if identity != root.resolve():
+                print(f"(stored canonical repo identity: {identity})")
+        else:
+            print(f"Already trusted: {root}")
     else:
         trusted.append(root_str)
         skills_cfg["trusted_project_dirs"] = trusted

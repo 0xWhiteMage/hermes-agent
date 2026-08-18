@@ -6,7 +6,6 @@ tool registration or provider resolution.
 """
 
 import ast
-import functools
 import logging
 import os
 import re
@@ -698,101 +697,85 @@ def find_project_root(start: Optional[Path] = None) -> Optional[Path]:
     return None
 
 
-# Timeout for the one-shot ``git rev-parse`` probe that canonicalizes trust
+# Timeout for the one-shot ``git worktree list`` probe that canonicalizes trust
 # identity. Short by design: this runs at agent-build time on the session's
 # fixed cwd, and any git slowness must degrade to the plain-resolve fallback
 # rather than stall prompt construction.
 _GIT_IDENTITY_TIMEOUT_S = 2.0
 
 
-@functools.lru_cache(maxsize=256)
 def _canonical_project_identity_str(root_str: str) -> str:
     """Canonical trust identity for *root_str* (a resolved path string).
 
-    All git worktrees of one repository — plus the symlinked-root case — share
-    a single ``--git-common-dir`` (the main checkout's ``.git``), so we key the
-    trust principal off the *parent of the resolved common dir* (the main
-    checkout root). Trusting any worktree of a repo then covers every other
-    worktree of that same repo.
+    A path shares the first registered worktree's identity only when its
+    resolved root exactly matches a worktree reported by Git. This membership
+    check prevents a forged ``.git`` file from borrowing another repository's
+    trust. Git's repository-selection environment is stripped so process-level
+    variables cannot redirect the probe.
 
-    Falls back to ``Path(root).resolve()`` (as a string) whenever git can't
-    give us a better answer: git binary missing, not a repo, timeout, or a
-    layout the parent-of-common-dir heuristic can't reason about safely (bare
-    repos, submodules — see below).
+    Submodules retain their own identity because their own worktree listing is
+    independent of the superproject. Registered checkouts of separate-git-dir
+    repositories work for the same reason: identity comes from Git's listed
+    checkout paths, not metadata directory naming or layout. An initializer
+    checkout omitted from that list stays fail-closed as its own identity.
 
-    Submodule nuance: a submodule's common dir lives under the superproject's
-    ``.git/modules/<name>``, so parent-of-common-dir would resolve to the
-    superproject's ``.git`` rather than the submodule checkout — a wrong,
-    surprising identity. We detect that (``rev-parse
-    --show-superproject-working-tree`` is non-empty, or the common dir sits
-    under a ``.git/modules`` segment) and fall back to the resolved root so a
-    submodule keeps its own distinct identity.
-
-    Cached per process on the string path: cwd is fixed for the life of a
-    session and the git layout of a checkout doesn't change under us, matching
-    the existing cache-safety contract for project-skill discovery.
+    Results are intentionally not process-cached. Cache safety comes from
+    callers resolving identity once while building an agent/session, so a later
+    session observes worktree removal or path replacement correctly.
     """
     fallback = str(Path(root_str).resolve())
-
-    def _git(*extra_args: str) -> Optional[str]:
-        try:
-            out = subprocess.run(
-                ["git", "-C", root_str, "rev-parse", *extra_args],
-                capture_output=True,
-                text=True,
-                timeout=_GIT_IDENTITY_TIMEOUT_S,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return None
-        if out.returncode != 0:
-            return None
-        return out.stdout.strip()
-
-    common_dir = _git("--git-common-dir")
-    if not common_dir:
-        # git missing / not a repo / timeout — keep per-root identity.
-        return fallback
-
-    # Resolve the common dir relative to the root (git may return a relative
-    # path like ".git" or an absolute one).
-    common_path = Path(common_dir)
-    if not common_path.is_absolute():
-        common_path = Path(root_str) / common_path
+    git_env = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+    }
     try:
-        common_path = common_path.resolve()
-    except OSError:
+        result = subprocess.run(
+            ["git", "-C", fallback, "worktree", "list", "--porcelain", "-z"],
+            capture_output=True,
+            timeout=_GIT_IDENTITY_TIMEOUT_S,
+            env=git_env,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return fallback
+    if result.returncode != 0:
         return fallback
 
-    # Submodule: common dir under a superproject's ``.git/modules/...``. The
-    # parent-of-common-dir heuristic is meaningless here, so keep the
-    # submodule's own resolved root as its identity. Two independent signals;
-    # either is sufficient.
-    superproject = _git("--show-superproject-working-tree")
-    parts = common_path.parts
-    in_git_modules = ".git" in parts and "modules" in parts[parts.index(".git") + 1 :]
-    if superproject or in_git_modules:
-        return fallback
+    worktrees: List[str] = []
+    for field in result.stdout.split(b"\0"):
+        if not field.startswith(b"worktree "):
+            continue
+        try:
+            path = os.fsdecode(field.removeprefix(b"worktree "))
+            worktrees.append(str(Path(path).resolve()))
+        except OSError:
+            return fallback
 
-    # Bare repos have no working-tree parent to key off; fall back.
-    if common_path.name != ".git":
+    if not worktrees or fallback not in worktrees:
         return fallback
-
-    # Canonical identity = the main checkout root = parent of the common .git.
-    return str(common_path.parent)
+    return worktrees[0]
 
 
 def canonical_project_identity(root: Path) -> Path:
     """Canonical trust principal shared by all worktrees of *root*'s repo.
 
-    Thin ``Path`` wrapper over :func:`_canonical_project_identity_str` (the
-    ``lru_cache``'d worker keyed on a plain string). See that function for the
-    full contract and fallback rules.
+    Thin ``Path`` wrapper over :func:`_canonical_project_identity_str`. See
+    that function for the full contract and fallback rules.
     """
     try:
         root_str = str(Path(root).resolve())
     except OSError:
         root_str = str(root)
     return Path(_canonical_project_identity_str(root_str))
+
+
+def _resolve_project_trust_entry(entry: Any) -> Optional[Path]:
+    """Normalize one configured project-trust entry for reads and mutations."""
+    raw = str(entry).strip()
+    if not raw:
+        return None
+    try:
+        return Path(os.path.expanduser(os.path.expandvars(raw))).resolve()
+    except OSError:
+        return None
 
 
 def _project_trusted_dirs_from_config() -> Set[Path]:
@@ -810,13 +793,9 @@ def _project_trusted_dirs_from_config() -> Set[Path]:
         return set()
     result: Set[Path] = set()
     for entry in raw:
-        entry = str(entry).strip()
-        if not entry:
-            continue
-        try:
-            result.add(Path(os.path.expanduser(os.path.expandvars(entry))).resolve())
-        except OSError:
-            continue
+        resolved = _resolve_project_trust_entry(entry)
+        if resolved is not None:
+            result.add(resolved)
     return result
 
 
