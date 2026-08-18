@@ -1430,29 +1430,16 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False):
 
     uv_bin = ensure_uv()
 
-    pip_cmd = [_m().sys.executable, "-m", "pip"]
-    if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(_m().PROJECT_ROOT / "venv")}
-        _m()._install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
-    else:
-        # Use sys.executable to explicitly call the venv's pip module,
-        # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
-        # Some environments lose pip inside the venv; bootstrap it back with
-        # ensurepip before trying the editable install.
-        try:
-            subprocess.run(
-                pip_cmd + ["--version"],
-                cwd=_m().PROJECT_ROOT,
-                check=True,
-                capture_output=True,
-            )
-        except subprocess.CalledProcessError:
-            subprocess.run(
-                [_m().sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                cwd=_m().PROJECT_ROOT,
-                check=True,
-            )
-        _m()._install_python_dependencies_with_optional_fallback(pip_cmd)
+    if not uv_bin:
+        # There is no pip tier. pip resolves the same requirements again
+        # without uv policy (exclude-newer, the [tool.uv] overrides), so a
+        # pip install can pull a release the project quarantined.
+        raise RuntimeError(
+            "no managed uv found: cannot install Python dependencies. "
+            "Run: python -m installation.provisioner"
+        )
+    uv_env = {**os.environ, "VIRTUAL_ENV": str(_m().PROJECT_ROOT / "venv")}
+    _m()._install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
 
     install_prefix = [uv_bin, "pip"] if uv_bin else pip_cmd
     install_env = uv_env if uv_bin else None
@@ -5409,16 +5396,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         env=repair_env,
                     )
                 else:
-                    _m()._install_python_dependencies_with_optional_fallback(
-                        [sys.executable, "-m", "pip"], group="all"
-                    )
-                    _m()._refresh_active_lazy_features(
-                        [sys.executable, "-m", "pip"],
-                        features=active_lazy_features,
-                    )
-                    _m()._restore_active_tool_dependencies(
-                        active_tool_dependencies,
-                        [sys.executable, "-m", "pip"],
+                    print(
+                        "⚠ No managed uv: cannot repair dependencies. "
+                        "Run: python -m installation.provisioner"
                     )
                 _m()._clear_update_incomplete_marker()
                 healthy_after, detail_after = _venv_core_imports_healthy()
@@ -5651,37 +5631,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         uv_bin = ensure_uv()
 
-        pip_cmd = [sys.executable, "-m", "pip"]
         install_group = "all"
 
-        if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(_m().PROJECT_ROOT / "venv")}
-            _m()._install_python_dependencies_with_optional_fallback(
-                [uv_bin, "pip"], env=uv_env, group=install_group
+        if not uv_bin:
+            # There is no pip tier. See the ZIP path above.
+            raise RuntimeError(
+                "no managed uv found: cannot install Python dependencies. "
+                "Run: python -m installation.provisioner"
             )
-        else:
-            # Use sys.executable to explicitly call the venv's pip module,
-            # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
-            # Some environments lose pip inside the venv; bootstrap it back with
-            # ensurepip before trying the editable install.
-            pip_cmd = [sys.executable, "-m", "pip"]
-            try:
-                subprocess.run(
-                    pip_cmd + ["--version"],
-                    cwd=_m().PROJECT_ROOT,
-                    check=True,
-                    capture_output=True,
-                )
-            except subprocess.CalledProcessError:
-                subprocess.run(
-                    [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                    cwd=_m().PROJECT_ROOT,
-                    check=True,
-                )
-            _m()._install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
+        uv_env = {**os.environ, "VIRTUAL_ENV": str(_m().PROJECT_ROOT / "venv")}
+        _m()._install_python_dependencies_with_optional_fallback(
+            [uv_bin, "pip"], env=uv_env, group=install_group
+        )
 
-        install_prefix = [uv_bin, "pip"] if uv_bin else pip_cmd
-        lazy_env = uv_env if uv_bin else None
+        install_prefix = [uv_bin, "pip"]
+        lazy_env = uv_env
 
         # Core ``.[all]`` install finished. Clear the generic core breadcrumb
         # before the lazy-refresh phase — that phase uses its own marker so a
