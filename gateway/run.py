@@ -1960,7 +1960,7 @@ _ensure_ssl_certs()
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
-from hermes_constants import get_hermes_home, get_hermes_home_override
+from hermes_constants import get_hermes_home, get_hermes_home_override, get_process_hermes_home
 from utils import atomic_json_write, base_url_hostname, is_truthy_value
 _hermes_home = get_hermes_home()
 
@@ -15423,10 +15423,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return _handler
 
     def _make_default_profile_message_handler(self):
-        """Scope a multiplexed default-profile message from ingress onward."""
-        profile_home = Path(get_hermes_home())
+        """Scope a multiplexed default-profile message from ingress onward.
+
+        The home must be resolved per event via ``get_process_hermes_home()``,
+        which never follows the context-local override. This factory runs
+        during adapter setup — the same startup pass that configures secondary
+        profile adapters — so a construction-time ``get_hermes_home()`` capture
+        could bake whichever profile scope happened to be active at that
+        instant into every default-profile turn for the life of the process.
+        A poisoned capture made the default profile's bot answer with another
+        profile's identity (config, skills, SOUL, terminal.cwd) until the next
+        gateway restart, with startup ordering deciding whether it hit
+        (#89556, reported root cause).
+        """
 
         async def _handler(event):
+            profile_home = Path(get_process_hermes_home())
             with _profile_runtime_scope(profile_home):
                 return await self._handle_message(event)
 

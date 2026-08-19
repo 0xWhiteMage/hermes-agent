@@ -194,7 +194,9 @@ class TestPrimaryMessageRuntimeScope:
         (home / "config.yaml").write_text(
             "platform_toolsets:\n  discord:\n    - discord\n", encoding="utf-8"
         )
-        monkeypatch.setattr(run_mod, "get_hermes_home", lambda: home)
+        # The handler resolves per event from the PROCESS home (never the
+        # context-local override) since the #89556 poisoned-capture fix.
+        monkeypatch.setattr(run_mod, "get_process_hermes_home", lambda: home)
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "wrong-process-token")
         secret_scope.set_multiplex_active(True)
 
