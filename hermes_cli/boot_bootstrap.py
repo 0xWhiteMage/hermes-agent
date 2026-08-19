@@ -495,6 +495,17 @@ def run_boot_bootstrap(project_root: Path) -> dict:
 
     summary: dict = {"home": "skipped", "machine": "skipped"}
 
+    # The channel record is path-keyed and lives in config.yaml, so it
+    # outlives the artifact that wrote it. Reseed it whenever the installed
+    # artifact's flavor no longer matches the one the record was written
+    # against, so replacing a stable install with a nightly at the same
+    # path tracks nightly instead of the stale stable feed.
+    from hermes_cli.update_channel import seed_install_channel
+
+    seeded = seed_install_channel(Path(project_root))
+    if seeded:
+        summary["channel_seeded"] = seeded
+
     drift_message = _report_sealed_runtime_drift(Path(project_root))
     if drift_message:
         summary["sealed_runtime_drift"] = drift_message

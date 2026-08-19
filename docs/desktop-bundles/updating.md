@@ -67,10 +67,20 @@ same path, and the channel opt-in must survive that.
 | `nightly` | Normalizes to `main`, and the caller prints a note | The `nightly.yml` feed |
 
 An unconfigured install falls to its mechanism default: `main` for a
-source checkout, `stable` for a bundle. Nightly builds are release
-artifacts, so a git checkout asking for nightly tracks main instead.
-`hermes update --set-channel <x>` writes the record from inside the
-install, so a user never types a sha. `--install-id` prints it.
+source checkout. A bundle defaults to the feed that its own artifact
+publishes to, which the install stamp's `tag` names: `nightly` for a
+build from a nightly tag, and `stable` for every other bundle. Nightly
+builds are release artifacts, so a git checkout asking for nightly
+tracks main instead. `hermes update --set-channel <x>` writes the record
+from inside the install, so a user never types a sha. `--install-id`
+prints it.
+
+The record outlives the artifact that wrote it, because it is keyed by
+path and stored in `config.yaml`. Every boot reseeds it when the
+installed artifact's flavor no longer matches the `artifactChannel` the
+record was written against, so replacing a stable install with a nightly
+build at the same path tracks nightly. A `--set-channel` choice made on
+the same flavor of build is kept.
 
 Doctor sweeps the records for three staleness kinds: `missing` (nothing
 at the recorded path), `replaced` (the path exists but keys to a

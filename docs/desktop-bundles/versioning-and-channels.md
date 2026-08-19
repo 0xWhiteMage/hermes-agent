@@ -113,6 +113,7 @@ behavior. A fork must not point users at the upstream feed.
 | Setting | Where | Applies to | Values |
 |---|---|---|---|
 | `update.installs.<sha16>.channel` | `config.yaml`, per install | Any install whose mechanism is not `external` | `main`, `stable`, `nightly` |
+| `update.installs.<sha16>.artifactChannel` | `config.yaml`, per install | Installs seeded from an artifact | `stable`, `nightly` |
 | Updater channel | Product identity, build time | Which feed a desktop build PUBLISHES to | `latest`, `nightly`, `light`, `light-nightly` |
 | Steward versioning | Install stamp | `external` installs | None. The steward owns it |
 
@@ -120,14 +121,46 @@ The effective channel resolves in two steps:
 
 1. This install's own record, `update.installs.<sha16>.channel`, when it
    names a valid channel.
-2. Otherwise the mechanism default: `main` for a `self` source install,
-   `stable` for an `electron-updater` bundle.
+2. Otherwise the mechanism default: `main` for a `self` source install.
+   For an `electron-updater` bundle, the channel of the feed that the
+   artifact itself publishes to. A build from a nightly tag defaults to
+   `nightly`, and every other bundle defaults to `stable`.
+
+The install stamp's `tag` is the authority for that bundle default. It is
+the same fact that `apps/desktop/product-identity.cjs` keys the published
+feed name on, so the feed an artifact asks for and the feed it was
+published to always agree. A nightly bundle that defaulted to `stable`
+would ask for its `nightly.yml` feed file under the newest stable
+release, where that file does not exist, and the 404 leaves the install
+unable to update at all.
 
 A source install that asks for `nightly` tracks `main`, and the caller
 prints a note. Nightly builds are desktop release artifacts, and a git
 checkout tracks branches. The record is per install and never per home,
 because one `config.yaml` can serve a checkout, a Docker gateway, and
 the desktop app at once.
+
+## The channel record outlives the artifact
+
+The record is keyed by PATH and lives in `config.yaml`, so it survives an
+uninstall of the app that wrote it. Install a stable build, uninstall it,
+then install a nightly build to the same location, and the stale `stable`
+record would pin the new nightly build to the stable feed. Installing a
+build of a given flavor IS the choice of that flavor, so the artifact
+wins that argument.
+
+`artifactChannel` is what makes a deliberate choice separable from a
+record that the artifact outlived. It records which artifact default the
+stored channel was chosen against, and `seed_install_channel` compares it
+to the installed artifact on every boot:
+
+* The two match. The stored channel is a deliberate choice that the user
+  made on THIS flavor of build, so it stands.
+* They differ, or `artifactChannel` is absent. The artifact changed under
+  the record, so the record is reseeded to the new artifact's default.
+
+Seeding is idempotent, and it never writes for a `self` or `external`
+install. A source checkout's channel is not a property of an artifact.
 
 An `external` install never asks. Its steward owns versioning,
 `--set-channel` refuses with the steward's name, and `hermes update`
