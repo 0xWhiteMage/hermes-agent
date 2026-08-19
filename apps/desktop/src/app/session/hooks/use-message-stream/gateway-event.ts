@@ -37,7 +37,6 @@ import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
 import { applyGoalStatusText } from '@/store/goals'
-import { liveToolComplete, liveToolStart, liveTurnAppendText, liveTurnEnd, liveTurnStart } from '@/store/live-turn'
 import {
   notifyCronChanged,
   notifyPairingChanged,
@@ -47,6 +46,7 @@ import {
   type PetChangeMeta,
   setChangeEventsAvailable
 } from '@/store/live-sync'
+import { liveToolComplete, liveToolStart, liveTurnAppendText, liveTurnEnd, liveTurnStart } from '@/store/live-turn'
 import { setMcpSetupRequest } from '@/store/mcp-setup'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notify, notifyError } from '@/store/notifications'

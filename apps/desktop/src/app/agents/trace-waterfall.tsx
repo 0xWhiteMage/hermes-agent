@@ -98,6 +98,7 @@ export function TraceWaterfall({ trace, viewKey }: { trace: TraceDoc; viewKey: s
   // Attached ONCE on mount (not gated on measured size) so the gesture is live
   // immediately — gating on size.width was the regression that "lost" zoom when
   // the grid delayed the first measurement.
+  // eslint-disable-next-line no-restricted-syntax -- d3 zoom instance on the track, not an atom mirror
   useEffect(() => {
     const el = trackRef.current
 

@@ -136,15 +136,18 @@ export function useTraceView(): TraceView {
   }, [isLive])
 
   // Refresh the turn list on live edges so the nav reflects the in-flight /
-  // finished turn. Does NOT touch the displayed (live) trace.
+  // finished turn. Does NOT touch the displayed (live) trace. Compare during
+  // render (same as sessionRef) so isLive isn't mirrored from useEffect.
   const prevLive = useRef(isLive)
+  const liveFlipped = isLive !== prevLive.current
+  prevLive.current = isLive
   useEffect(() => {
-    if (isLive !== prevLive.current) {
-      void reloadTurns()
+    if (!liveFlipped) {
+      return
     }
 
-    prevLive.current = isLive
-  }, [isLive, reloadTurns])
+    void reloadTurns()
+  }, [liveFlipped, reloadTurns])
 
   // Fold: once a followed turn settles, pull its exact DB trace and rebase it
   // onto the frozen live start, then swap. rebaseTrace keeps it on the same
