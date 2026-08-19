@@ -115,6 +115,13 @@ jobs:
       HERMES_DESKTOP_VARIANT: ${{ matrix.variant }}
       HERMES_PAYLOAD_TAG: ${{ inputs.tag || github.ref_name }}
       HERMES_PAYLOAD_PYTHON: '3.11'
+      # Redirect the electron-builder and @electron/get caches into the
+      # workspace so one actions/cache step below can cover both on every
+      # OS. @electron/get historically honored electron_config_cache;
+      # newer versions read ELECTRON_CACHE — set both.
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      electron_config_cache: ${{ github.workspace }}/.cache/electron
     steps:
       # disable spotlight and XProtect. for speed and dmg detaching flakiness
       # both of thsese are documented as reasons for dmg detach failures
@@ -143,6 +150,26 @@ jobs:
           # at the tag. A depth-1 checkout at the tag is sufficient, but the
           # tag ref must exist locally.
           fetch-tags: true
+
+      # ── Toolchain cache key ────────────────────────────────────────────
+      # The electron and electron-builder pins from the lockfile, exposed
+      # as step outputs so the toolchain cache key below rotates on either
+      # bump. Runs on the runner's preinstalled node (setup-node has not
+      # run yet — only the checked-out lockfile matters). The guard fails
+      # the step loudly if either lookup goes missing rather than emitting
+      # a junk key.
+      - name: Resolve toolchain cache key
+        id: toolchain
+        shell: bash
+        run: |
+          node -e '
+            const l = require("./package-lock.json")
+            const el = l.packages["apps/desktop/node_modules/electron"].version
+            const eb = l.packages["node_modules/electron-builder"].version
+            if (!el || !eb) process.exit(1)
+            console.log(`electron=${el}`)
+            console.log(`builder=${eb}`)
+          ' >> "$GITHUB_OUTPUT"
 
       # ── Node ──────────────────────────────────────────────────────────
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -221,18 +248,48 @@ jobs:
             apps/desktop/build/agent-payload/.stage-cache-key
           key: agent-payload-${{ matrix.target.label }}-py${{ env.HERMES_PAYLOAD_PYTHON }}-${{ hashFiles('uv.lock') }}
 
-      # ── electron-builder winCodeSign cache ─────────────────────────────
-      # electron-builder downloads its winCodeSign tooling bundle (signtool
-      # wrappers, rcedit, etc.) from GitHub on first use of every run. The
-      # version is part of the directory name, so the key is static: a new
-      # electron-builder pin that bumps winCodeSign lands in a new path and
-      # simply misses this cache until the path below is updated.
-      - name: Cache electron-builder winCodeSign
+      # ── Windows sign cache ──────────────────────────────────────────────
+      # Content-addressed store of Azure-signed bytes keyed by the sha256
+      # of the UNSIGNED input. The signable payload set (uv, python,
+      # site-packages bin shims — 792 files/pass) only changes when the
+      # lock moves, so the key is exact on uv.lock, mirroring the payload
+      # cache's no-restore-keys stance. Per-build artifacts (Hermes.exe
+      # after the rcedit stamp, installers, MSIX) hash differently every
+      # night and are simply signed fresh — a handful of files, seconds.
+      # Threat model: writable only from main/tag runs, which already hold
+      # live signing credentials; poisoning adds no capability.
+      - name: Cache signed payload binaries
         if: startsWith(matrix.target.label, 'win32-')
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: C:\Users\runneradmin\AppData\Local\electron-builder\Cache\win-codesign@1.3.0
-          key: electron-builder-win-codesign-1.3.0
+          path: apps/desktop/build/sign-cache
+          key: sign-cache-${{ matrix.target.label }}-${{ matrix.variant }}-${{ hashFiles('uv.lock') }}
+
+      # ── Runtime pin archive cache ───────────────────────────────────────
+      # The downloaded uv/python/node archives named by the pin table.
+      # Keyed on the pin table itself: a pin bump rotates the key, and the
+      # archives are content-verified against the pins after restore.
+      - name: Cache runtime pin archives
+        if: matrix.variant == 'bundled'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: apps/desktop/build/pin-archives
+          key: pin-archives-${{ matrix.target.label }}-${{ hashFiles('installation/runtime-pins.json') }}
+
+      # ── electron + electron-builder toolchain cache ────────────────────
+      # One cache for electron-builder's whole cache dir (winCodeSign
+      # toolset, nsis, AppImage tooling, electron dist zips) plus
+      # @electron/get's cache from npm ci's electron postinstall. Key
+      # rotates automatically on an electron or electron-builder bump —
+      # retiring the old hardcoded winCodeSign path that silently missed
+      # after a toolset bump.
+      - name: Cache electron + electron-builder toolchain
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ github.workspace }}/.cache/electron-builder
+            ${{ github.workspace }}/.cache/electron
+          key: eb-${{ runner.os }}-${{ runner.arch }}-electron-${{ steps.toolchain.outputs.electron }}-builder-${{ steps.toolchain.outputs.builder }}
 
       # ── Azure OIDC login for Windows signing ───────────────────────────
       # No client secret exists anywhere. GitHub mints an OIDC token for
