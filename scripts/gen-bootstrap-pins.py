@@ -60,6 +60,14 @@ def _load_pin(tool: str, targets: tuple[str, ...]) -> dict:
     entry = data["tools"][tool]
     for target in targets:
         spec = entry["files"][target]  # KeyError on a missing target is the point
+        if "missing" in spec:
+            # The table says upstream ships nothing here, but this generator
+            # was told to emit that target. One of the two is wrong, and a
+            # KeyError further down would not say which.
+            raise ValueError(
+                f"{tool} pin for {target}: the table declares a gap "
+                f"({spec['missing']}), so there is nothing to generate"
+            )
         if not spec["url"].startswith("https://"):
             raise ValueError(f"{tool} pin for {target}: url must be https")
         if len(spec["sha256"]) != 64:
@@ -174,12 +182,6 @@ def main() -> int:
         # this repo, so you have git".)
         "setup-hermes.sh": _splice(
             REPO_ROOT / "setup-hermes.sh", _sh_fragment(uv), args.check
-        ),
-        # The dev-checkout wrapper stages the same pinned uv, so it holds
-        # the same fragment. (Its git needs are covered by "you cloned
-        # this repo, so you have git".)
-        "setup-hermes.sh": _splice(
-            REPO_ROOT / "setup-hermes.sh", _sh_fragment(uv, git), args.check
         ),
     }
     stale = [name for name, fresh in results.items() if not fresh]
