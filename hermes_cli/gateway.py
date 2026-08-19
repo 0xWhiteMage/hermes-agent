@@ -3234,24 +3234,26 @@ def _systemd_watchdog_service_fields(
 def _append_node_dir_for_service(
     path_entries: list[str], hermes_root: Path | None = None
 ) -> None:
-    """Add the Node directory a generated service unit should use to *path_entries*.
+    """Add the managed tool dirs a generated service unit needs to *path_entries*.
 
-    The Hermes-managed Node under ``$HERMES_HOME/node`` goes first when it
-    exists. A bare ``shutil.which("node")`` cannot be trusted on its own here:
-    a service unit is written once and then survives reboots, so resolving a
-    system Node that happens to be ahead on the installing shell's PATH bakes
-    the wrong interpreter in permanently — the exact failure the desktop
-    backend spawn was fixed for. Managed dirs are profile-scoped, so each
-    profile's unit still names its own Node.
+    The unit's PATH comes from the install's provisioned tool store
+    (``installation.env.managed_path_dirs``) and ONLY from it. Node is a
+    pinned prerequisite of every working install — the provisioner records
+    it in the facts file, so the store always answers. There is no ambient
+    ``shutil.which("node")`` rung: a service unit is written once and
+    survives reboots, so resolving through the installing shell's PATH
+    bakes a caller-specific interpreter in permanently (root's Node into a
+    user's unit, one profile's symlink target into every profile's unit).
+    An install whose facts lack node is unprovisioned; the unit degrades to
+    the machine's own PATH at runtime, and the fix is provisioning, not a
+    generator guess.
 
-    *hermes_root* is the Hermes home the unit will run against. System units
-    installed via sudo MUST pass the **target user's** home: probing the
-    default (the calling user's — root's — tree) would bake root's Node into
-    the target user's unit. The probe swallows OSError: an unreadable
-    candidate dir (hardened home) means "skip the rung", not "crash the
-    generator".
-
-    PATH lookup remains the fallback rung for installs with no managed Node.
+    *hermes_root* is the Hermes home the unit will run against. System
+    units installed via sudo MUST pass the **target user's** home: probing
+    the default (the calling user's — root's — tree) would bake root's
+    tools into the target user's unit. The probe swallows OSError: an
+    unreadable candidate dir (hardened home) means "skip the dir", not
+    "crash the generator".
     """
     from installation import env as runtime_env
 
@@ -3263,28 +3265,6 @@ def _append_node_dir_for_service(
             present = False
         if present and entry not in path_entries:
             path_entries.append(entry)
-
-    # Ambient PATH lookup is a fallback, not an additional rung. Once the
-    # target Hermes home provides managed Node, consulting the invoker's PATH
-    # makes a system unit differ between sudo/root and its service user.
-    if managed_node_present:
-        return
-
-    resolved_node = shutil.which("node")
-    if not resolved_node:
-        return
-
-    # Use the directory where ``node`` is *found on PATH*, NOT the symlink's
-    # resolved target. ``~/.local/bin/node`` is often a symlink into a
-    # specific profile's node install (e.g. profiles/jarvis/node/bin/node);
-    # calling .resolve() here would chase that symlink and bake one profile's
-    # node path into *every* profile's service unit. That cross-profile leak
-    # makes systemd_unit_is_current() perpetually false, so each gateway
-    # rewrites its unit + daemon-reload on every boot. Using the symlink's own
-    # parent keeps the generated unit profile-agnostic.
-    resolved_node_dir = str(Path(resolved_node).parent)
-    if resolved_node_dir not in path_entries:
-        path_entries.append(resolved_node_dir)
 
 
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:

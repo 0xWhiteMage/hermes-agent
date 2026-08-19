@@ -191,47 +191,24 @@ class TestGeneratedSystemdUnits:
 
 
 
-    def test_user_unit_does_not_leak_profile_node_symlink_target(self, tmp_path, monkeypatch):
-        # Regression for the multi-profile gateway restart-loop flap (#48700):
-        # ~/.local/bin/node is often a symlink into a *specific* profile's node
-        # install. The generated unit's PATH must contain the symlink's own
-        # directory (~/.local/bin), NOT the resolved profile target — otherwise
-        # one profile's node path leaks into every profile's unit, making
-        # systemd_unit_is_current() perpetually false and forcing a
-        # daemon-reload restart loop on every boot.
-        local_bin = tmp_path / ".local" / "bin"
-        profile_node_bin = tmp_path / ".hermes" / "profiles" / "jarvis" / "node" / "bin"
-        local_bin.mkdir(parents=True)
-        profile_node_bin.mkdir(parents=True)
-        real_node = profile_node_bin / "node"
-        real_node.write_text("#!/bin/sh\n")
-        link_node = local_bin / "node"
-        link_node.symlink_to(real_node)
-
-        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: str(link_node) if cmd == "node" else None)
+    def test_units_never_consult_ambient_path_for_node(self, tmp_path, monkeypatch):
+        # Successor to the #48700 regression (one profile's node symlink
+        # target leaking into every profile's unit). The store design removes
+        # the bug class at the root: a unit's PATH comes from its own home's
+        # facts file (installation.env.managed_path_dirs), and ambient PATH
+        # is never consulted, so there is no symlink to chase and nothing to
+        # leak. Assert exactly that for BOTH generators.
+        monkeypatch.setattr(
+            gateway_cli.shutil,
+            "which",
+            lambda cmd: pytest.fail("ambient PATH must never be consulted"),
+        )
 
         unit = gateway_cli.generate_systemd_unit(system=False)
-
-        assert str(local_bin) in unit
-        assert str(profile_node_bin) not in unit
-
-    def test_launchd_plist_does_not_leak_profile_node_symlink_target(self, tmp_path, monkeypatch):
-        # Same #48700 regression for the macOS twin generate_launchd_plist().
-        local_bin = tmp_path / ".local" / "bin"
-        profile_node_bin = tmp_path / ".hermes" / "profiles" / "jarvis" / "node" / "bin"
-        local_bin.mkdir(parents=True)
-        profile_node_bin.mkdir(parents=True)
-        real_node = profile_node_bin / "node"
-        real_node.write_text("#!/bin/sh\n")
-        link_node = local_bin / "node"
-        link_node.symlink_to(real_node)
-
-        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: str(link_node) if cmd == "node" else None)
-
         plist = gateway_cli.generate_launchd_plist()
 
-        assert str(local_bin) in plist
-        assert str(profile_node_bin) not in plist
+        assert "profiles/jarvis" not in unit
+        assert "profiles/jarvis" not in plist
 
     def test_launchd_plist_persists_configured_nofile_soft_limit(self, monkeypatch):
         """The generated plist must carry SoftResourceLimits/NumberOfFiles so a
@@ -841,50 +818,83 @@ class TestDetectVenvDir:
 class TestSystemUnitHermesHome:
     """HERMES_HOME in system units must reference the target user, not root."""
 
-    def test_empty_managed_node_dir_uses_only_ambient_fallback(
-        self, monkeypatch, tmp_path
-    ):
-        managed_bin = tmp_path / ".hermes" / "node" / "bin"
-        managed_bin.mkdir(parents=True)
-        monkeypatch.setattr(
-            gateway_cli.shutil, "which", lambda name: "/opt/external-node/bin/node"
-        )
-        entries: list[str] = []
+    def _provision_node(self, hermes_root, store_root, target="linux-x64"):
+        """Record a pinned node in *hermes_root*'s facts, bytes in *store_root*."""
+        from installation.registry import RuntimeFact, save_facts
 
-        gateway_cli._append_node_dir_for_service(entries, tmp_path / ".hermes")
-
-        assert entries == ["/opt/external-node/bin"]
-
-    def test_non_executable_managed_node_uses_only_ambient_fallback(
-        self, monkeypatch, tmp_path
-    ):
-        managed_bin = tmp_path / ".hermes" / "node" / "bin"
-        managed_bin.mkdir(parents=True)
-        node = managed_bin / "node"
+        entry = f"node-26.5.0-{target}"
+        node_bin = store_root / entry / "bin"
+        node_bin.mkdir(parents=True)
+        node = node_bin / "node"
         node.write_text("#!/bin/sh\n")
-        node.chmod(0o644)
+        node.chmod(0o755)
+        runtime_dir = hermes_root / ".hermes-runtime"
+        save_facts(
+            {"node": RuntimeFact(version="26.5.0", path=f"{entry}/bin/node")},
+            runtime_dir,
+            path_order=["node"],
+        )
+        return node_bin
+
+    def test_unprovisioned_home_contributes_no_entries(self, monkeypatch, tmp_path):
+        """No facts file means no managed dirs — and never an ambient guess.
+
+        Node is a pinned prerequisite of every working install, so an empty
+        answer here means "unprovisioned", not "fall back to the caller's
+        PATH". The unit degrades to the machine's own PATH at runtime.
+        """
         monkeypatch.setattr(
-            gateway_cli.shutil, "which", lambda name: "/opt/external-node/bin/node"
+            gateway_cli.shutil,
+            "which",
+            lambda name: pytest.fail("ambient PATH must never be consulted"),
         )
         entries: list[str] = []
 
         gateway_cli._append_node_dir_for_service(entries, tmp_path / ".hermes")
 
-        assert entries == ["/opt/external-node/bin"]
+        assert entries == []
+
+    def test_facts_with_missing_store_bytes_contribute_nothing(
+        self, monkeypatch, tmp_path
+    ):
+        """A recorded fact whose store entry vanished adds no dead PATH dir."""
+        from installation import env as runtime_env
+
+        hermes_root = tmp_path / ".hermes"
+        store_root = tmp_path / "store"
+        node_bin = self._provision_node(hermes_root, store_root)
+        monkeypatch.setattr(
+            runtime_env, "resolve_bases",
+            lambda runtime_dir=None, store_dir=None: (
+                hermes_root / ".hermes-runtime", store_root,
+            ),
+        )
+        import shutil as _shutil
+
+        _shutil.rmtree(node_bin.parent.parent)
+        monkeypatch.setattr(
+            gateway_cli.shutil,
+            "which",
+            lambda name: pytest.fail("ambient PATH must never be consulted"),
+        )
+        entries: list[str] = []
+
+        gateway_cli._append_node_dir_for_service(entries, hermes_root)
+
+        assert entries == []
 
     def test_managed_node_makes_system_unit_independent_of_callers_path(
         self, monkeypatch, tmp_path
     ):
-        """A target-managed Node must suppress caller-specific PATH fallbacks."""
+        """The unit PATH comes from the target's store; the caller's PATH is inert."""
+        from installation import env as runtime_env
+
         target_home = tmp_path / "home" / "alice"
         target_hermes = target_home / ".hermes"
         root_home = tmp_path / "root"
         root_hermes = root_home / ".hermes"
-        managed_bin = target_hermes / "node" / "bin"
-        managed_bin.mkdir(parents=True)
-        node = managed_bin / "node"
-        node.write_text("#!/bin/sh\n")
-        node.chmod(0o755)
+        store_root = tmp_path / "store"
+        managed_bin = self._provision_node(target_hermes, store_root)
         root_hermes.mkdir(parents=True)
 
         monkeypatch.setattr(Path, "home", staticmethod(lambda: root_home))
@@ -896,6 +906,12 @@ class TestSystemUnitHermesHome:
         )
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: root_hermes)
         monkeypatch.setattr(gateway_cli, "_build_service_path_dirs", lambda: [])
+        monkeypatch.setattr(
+            runtime_env, "resolve_bases",
+            lambda runtime_dir=None, store_dir=None: (
+                target_hermes / ".hermes-runtime", store_root,
+            ),
+        )
 
         monkeypatch.setattr(gateway_cli.shutil, "which", lambda name: "/root/bin/node")
         root_unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
@@ -906,26 +922,6 @@ class TestSystemUnitHermesHome:
         assert root_unit == user_unit
         assert str(managed_bin) in root_unit
         assert "/root/bin" not in root_unit
-
-    def test_node_path_lookup_remains_fallback_without_managed_node(
-        self, monkeypatch, tmp_path
-    ):
-        """External Node installs still work when the managed tree is absent."""
-        monkeypatch.setattr(
-            "hermes_constants.iter_hermes_node_dirs", lambda root=None: []
-        )
-        monkeypatch.setattr(
-            "hermes_constants.hermes_managed_node_tree_present",
-            lambda root=None: False,
-        )
-        monkeypatch.setattr(
-            gateway_cli.shutil, "which", lambda name: "/opt/external-node/bin/node"
-        )
-        entries: list[str] = []
-
-        gateway_cli._append_node_dir_for_service(entries, tmp_path / ".hermes")
-
-        assert entries == ["/opt/external-node/bin"]
 
     def test_system_unit_uses_target_user_home_not_calling_user(self, monkeypatch):
         # Simulate sudo: Path.home() returns /root, target user is alice
