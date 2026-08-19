@@ -541,6 +541,139 @@ jobs:
             gh release upload "$HERMES_PAYLOAD_TAG" "${files[@]}" --clobber
           fi
 
+  # ── Universal MSIX bundle ────────────────────────────────────────────
+  # electron-builder's MsixTarget CAN assemble a .msixbundle itself
+  # (finishBuild → createMsixBundle), but only from packages built in ONE
+  # invocation — and the x64/arm64 legs run on separate native runners
+  # (the arm64 payload needs its own MSVC/Rust sdist builds). So this job
+  # marries the two legs after the fact: download both per-arch .msix
+  # files, makeappx bundle them, sign the bundle envelope with the same
+  # Trusted Signing identity, and attach it to the release. Windows picks
+  # the right inner package at install time — one download link serves
+  # both architectures. The inner .msix files are already signed from
+  # their legs; only the bundle envelope needs a signature here.
+  msixbundle:
+    name: ${{ matrix.variant }} msixbundle
+    needs: build
+    runs-on: windows-2025
+    environment: release-signing
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [bundled, light]
+    env:
+      HERMES_PAYLOAD_TAG: ${{ inputs.tag || github.ref_name }}
+      # Tool pins (dependency pinning policy: CI-only tools pin exact).
+      # BuildTools ships makeappx + signtool; the Trusted.Signing.Client
+      # dlib must be >= 1.0.68 — older ones cannot sign MSIX at all.
+      SDK_BUILDTOOLS_VERSION: '10.0.26100.4948'
+      TRUSTED_SIGNING_VERSION: '1.0.95'
+    steps:
+      - name: Download win32 artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: hermes-${{ matrix.variant }}-win32-*-${{ env.HERMES_PAYLOAD_TAG }}
+          path: msix-in
+          merge-multiple: true
+
+      - name: Install makeappx + signtool + signing dlib
+        shell: bash
+        run: |
+          nuget install Microsoft.Windows.SDK.BuildTools \
+            -Version "$SDK_BUILDTOOLS_VERSION" -ExcludeVersion -OutputDirectory tools -NonInteractive
+          nuget install Microsoft.Trusted.Signing.Client \
+            -Version "$TRUSTED_SIGNING_VERSION" -ExcludeVersion -OutputDirectory tools -NonInteractive
+          bin="tools/Microsoft.Windows.SDK.BuildTools/bin/$SDK_BUILDTOOLS_VERSION/x64"
+          for exe in makeappx.exe signtool.exe; do
+            if [ ! -f "$bin/$exe" ]; then
+              echo "::error::$exe not found under $bin"; exit 1
+            fi
+          done
+          echo "KITS_BIN=$bin" >> "$GITHUB_ENV"
+          echo "ATS_DLIB=tools/Microsoft.Trusted.Signing.Client/bin/x64/Azure.CodeSigning.Dlib.dll" >> "$GITHUB_ENV"
+
+      - name: Bundle the per-arch packages
+        shell: bash
+        run: |
+          shopt -s nullglob
+          msix=(msix-in/*.msix)
+          if [ ${#msix[@]} -ne 2 ]; then
+            echo "::error::expected exactly 2 .msix packages (x64 + arm64), found ${#msix[@]}: ${msix[*]}"
+            exit 1
+          fi
+          # HermesBundled-0.28.0-win-x64.msix → HermesBundled-0.28.0-win.msixbundle
+          base="$(basename "${msix[0]}" .msix)"
+          name="${base%-*}"
+          # Bundle version: the numeric prefix of the app version, in the
+          # X.Y.Z.0 form the inner manifests carry (prerelease suffixes
+          # like -nightly.N are not representable in a bundle version).
+          version="$(printf '%s' "$name" | sed -E 's/^[A-Za-z]+-//; s/-win$//; s/-.*$//')"
+          mkdir staging
+          cp "${msix[@]}" staging/
+          "$KITS_BIN/makeappx.exe" bundle /o /bv "$version.0" /d staging /p "$name.msixbundle"
+          echo "BUNDLE_PATH=$name.msixbundle" >> "$GITHUB_ENV"
+
+      - name: Azure login (OIDC)
+        if: vars.AZURE_CLIENT_ID != ''
+        uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      # Single signing pass, minutes after job start — one fresh token is
+      # enough (no remint loop like the build legs, whose first signature
+      # comes 20+ minutes in).
+      - name: Sign the bundle
+        if: vars.AZURE_CLIENT_ID != ''
+        shell: bash
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SIGN_ENDPOINT: ${{ vars.AZURE_SIGN_ENDPOINT }}
+          AZURE_SIGN_ACCOUNT: ${{ vars.AZURE_SIGN_ACCOUNT }}
+          AZURE_SIGN_PROFILE: ${{ vars.AZURE_SIGN_PROFILE }}
+          AZURE_TOKEN_CREDENTIALS: prod
+        run: |
+          file="$RUNNER_TEMP/azure-federated-token"
+          curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" \
+            | jq -r .value > "$file"
+          export AZURE_FEDERATED_TOKEN_FILE="$file"
+          cat > sign-metadata.json <<EOF
+          {
+            "Endpoint": "$AZURE_SIGN_ENDPOINT",
+            "CodeSigningAccountName": "$AZURE_SIGN_ACCOUNT",
+            "CertificateProfileName": "$AZURE_SIGN_PROFILE"
+          }
+          EOF
+          "$KITS_BIN/signtool.exe" sign /fd SHA256 /td SHA256 \
+            /tr http://timestamp.acs.microsoft.com \
+            /dlib "$ATS_DLIB" /dmdf sign-metadata.json "$BUNDLE_PATH"
+          "$KITS_BIN/signtool.exe" verify /pa "$BUNDLE_PATH"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hermes-${{ matrix.variant }}-msixbundle-${{ env.HERMES_PAYLOAD_TAG }}
+          path: '*.msixbundle'
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload to GitHub release
+        if: github.event_name == 'push' || inputs.upload_release == true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$HERMES_PAYLOAD_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$HERMES_PAYLOAD_TAG" "$BUNDLE_PATH" --repo "$GITHUB_REPOSITORY" --clobber
+          fi
+
   # ── Builds table ─────────────────────────────────────────────────────
   # After EVERY matrix leg has uploaded, render the download tables into
   # the release body's <!-- HERMES_BUILDS_TABLE --> marker from the
