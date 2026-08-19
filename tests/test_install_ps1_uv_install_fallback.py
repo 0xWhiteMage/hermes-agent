@@ -1,30 +1,32 @@
-"""Regression: Install-Uv must surface installer errors and have fallbacks.
+"""Regression: Install-Uv stages the pinned uv and surfaces real errors.
 
-Issue #69216: Windows installs died with only the generic message
-``uv installed but not found at ...\\bin\\uv.exe``.  Two root causes:
+History of this contract:
 
-1. ``Install-Uv`` piped the astral installer's entire output straight into
-   ``Out-Null`` (``2>&1 | Out-Null``), so any real failure -- download error,
-   corporate proxy block, AV quarantine, permissions -- was swallowed and
-   the user only ever saw the generic post-condition failure (first
-   identified in #69366).
-2. There was exactly one install source, ``astral.sh``.  Corporate proxies
-   commonly block astral.sh while the byte-identical installer published at
-   GitHub releases downloads fine (diagnosed by @gakugaku on #69216).
+- Issue #69216: the old astral.sh-based Install-Uv swallowed installer
+  output (``2>&1 | Out-Null``) and had one install source, so users only
+  ever saw a generic post-condition failure. A three-rung fallback ladder
+  (astral.sh, GitHub installer mirror, PATH salvage) fixed that era's
+  design (3af56c220).
+- The managed-runtime restack (779686046, c9febdde5) replaced the ladder
+  entirely: Hermes owns its uv. Install-Uv now downloads the EXACT
+  artifact pinned in installation/runtime-pins.json (URL + sha256 via the
+  generated fragment), verifies the digest before extraction, and stages
+  the binary at $InstallDir\\.hermes-runtime\\uv\\uv.exe -- the same
+  location managed_uv.managed_uv_path() resolves. PATH probing and
+  non-pinned install sources are deliberately gone: a salvaged or
+  latest-channel uv is a binary nobody reviewed.
 
-The fix installs a three-rung ladder inside ``Install-Uv``:
+These tests pin the NEW design's safety and UX properties:
 
-- Rung 1: astral.sh installer, output captured via ``Tee-Object``.
-- Rung 2: GitHub releases installer mirror, same ``UV_INSTALL_DIR``.
-- Rung 3: salvage an existing ``uv.exe`` (``Get-Command uv`` or
-  ``%USERPROFILE%\\.local\\bin\\uv.exe``) by copying it into
-  ``$HermesHome\\bin\\uv.exe`` so the managed-first invariant holds.
-
-Only after all three rungs fail does it error out -- and then it prints the
-tail of the captured installer output so the real cause reaches the user.
+1. No PATH-probing salvage rung comes back (managed-only invariant).
+2. The download digest is checked BEFORE the archive is extracted.
+3. The failure path still reaches the user: the caught error is printed
+   (successor of the #69366 output-swallowing pin) and the manual-install
+   docs pointer survives.
+4. A staged binary whose version does not match the pin is replaced.
 
 install.ps1 only runs on Windows, so these tests lock the contract at the
-source-text level (same style as test_install_ps1_uv_powershell_host.py).
+source-text level (same style as the other tests/test_install_ps1_*.py).
 """
 
 import re
@@ -33,10 +35,6 @@ from pathlib import Path
 import pytest
 
 _INSTALL_PS1 = Path(__file__).resolve().parents[1] / "scripts" / "install.ps1"
-
-_GITHUB_INSTALLER_URL = (
-    "https://github.com/astral-sh/uv/releases/latest/download/uv-installer.ps1"
-)
 
 
 @pytest.fixture(scope="module")
@@ -53,78 +51,98 @@ def _install_uv_body(source: str) -> str:
     return source[start:end]
 
 
-def test_astral_installer_output_not_swallowed_by_out_null(source: str):
-    """Regression pin for the suppression bug (#69366 / #69216).
+def test_install_uv_is_pin_table_driven(source: str):
+    """The pinned artifact table is the only install source (779686046)."""
+    body = _install_uv_body(source)
+    assert "$script:UvPinFiles" in body, (
+        "Install-Uv must select its download from the generated pin table "
+        "($script:UvPinFiles), not resolve a version at run time"
+    )
+    assert "$script:UvPinVersion" in body, (
+        "Install-Uv must compare against the pinned version "
+        "($script:UvPinVersion) so a pin bump propagates"
+    )
 
-    The astral invocation must not discard the installer's merged output
-    stream; a failed download/AV block has to reach the user.
+
+def test_install_uv_has_no_path_salvage_rung(source: str):
+    """The managed-runtime restack removed PATH probing on purpose.
+
+    A uv salvaged from PATH or from %USERPROFILE%\\.local\\bin is an
+    unpinned, unverified binary. The managed-only invariant says Hermes
+    runs only the uv it staged and digest-checked itself.
     """
-    forbidden = 'irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null'
-    assert forbidden not in source, (
-        "Install-Uv pipes the astral uv installer's output straight to "
-        "Out-Null again -- failures become the generic 'uv installed but "
-        "not found' message. Capture the output (e.g. Tee-Object) instead."
-    )
-
-
-def test_astral_installer_output_is_captured(source: str):
     body = _install_uv_body(source)
-    astral_lines = [
-        ln
-        for ln in body.splitlines()
-        if "irm https://astral.sh/uv/install.ps1 | iex" in ln
-    ]
-    assert astral_lines, "astral uv installer invocation not found in Install-Uv"
-    for ln in astral_lines:
-        assert "Tee-Object" in ln, (
-            "astral uv installer output must be captured (Tee-Object) so the "
-            f"failure path can show it to the user, got: {ln.strip()!r}"
-        )
+    assert "Get-Command uv" not in body, (
+        "Install-Uv must not probe PATH for a system uv -- the managed "
+        "runtime design (779686046 / c9febdde5) forbids adopting an "
+        "unverified binary"
+    )
+    assert ".local\\bin\\uv.exe" not in body, (
+        "Install-Uv must not salvage the astral default install location "
+        "-- that binary is not the pinned artifact"
+    )
 
 
-def test_github_releases_fallback_installer_present(source: str):
-    """Rung 2: the GitHub releases mirror of the installer must be tried."""
+def test_uv_digest_is_checked_before_extraction(source: str):
+    """A mismatched archive must be rejected before it is unpacked."""
     body = _install_uv_body(source)
-    assert _GITHUB_INSTALLER_URL in body, (
-        "Install-Uv must fall back to the GitHub releases uv installer "
-        f"({_GITHUB_INSTALLER_URL}) when astral.sh is blocked "
-        "(corporate proxies, #69216)."
+    hash_pos = body.index("Get-FileHash")
+    extract_pos = body.index("Expand-Archive")
+    assert hash_pos < extract_pos, (
+        "the sha256 check must run BEFORE Expand-Archive -- an unverified "
+        "archive must never be unpacked"
     )
-    fallback_lines = [ln for ln in body.splitlines() if _GITHUB_INSTALLER_URL in ln and "irm " in ln]
-    for ln in fallback_lines:
-        stripped = ln.strip()
-        assert stripped.startswith("& $"), (
-            "GitHub fallback installer must be invoked via the resolved "
-            f"PowerShell host variable (`& $...`), got: {stripped!r}"
-        )
-        assert "Tee-Object" in ln, (
-            f"GitHub fallback installer output must be captured too: {stripped!r}"
-        )
+    assert "$pin.Sha256" in body, (
+        "the digest must be compared against the pin table's sha256"
+    )
 
 
-def test_existing_uv_salvage_rung_present(source: str):
-    """Rung 3: probe PATH and the astral default dir, copy into managed bin."""
+def test_uv_staged_at_managed_runtime_location(source: str):
+    """The staged binary must be where managed_uv_path() resolves."""
     body = _install_uv_body(source)
-    assert "Get-Command uv" in body, (
-        "Install-Uv must probe for an existing uv on PATH (Get-Command uv) "
-        "before failing."
-    )
-    assert '".local\\bin\\uv.exe"' in body and "$env:USERPROFILE" in body, (
-        "Install-Uv must probe the astral default install location "
-        "(%USERPROFILE%\\.local\\bin\\uv.exe)."
-    )
-    assert "Copy-Item" in body and "$managedUv" in body, (
-        "A salvaged uv.exe must be copied into the managed location "
-        "($HermesHome\\bin\\uv.exe) so managed-first resolution holds."
+    assert ".hermes-runtime\\uv" in body, (
+        "Install-Uv must stage uv under $InstallDir\\.hermes-runtime\\uv -- "
+        "the location managed_uv.managed_uv_path() reads -- so the binary "
+        "the installer stages is the one ensure_uv() finds (c9febdde5)"
     )
 
 
-def test_failure_path_keeps_manual_install_pointer_and_shows_output(source: str):
+def test_failure_path_shows_error_and_manual_install_pointer(source: str):
+    """Successor of the #69366 pin: real failures must reach the user.
+
+    The old bug piped installer output to Out-Null so download errors,
+    proxy blocks, and AV quarantines vanished. The new design has no
+    child installer process, so the equivalent contract is: the catch
+    block prints the caught error itself, and the manual-install docs
+    pointer survives.
+    """
     body = _install_uv_body(source)
     assert "https://docs.astral.sh/uv/getting-started/installation/" in body, (
         "the manual-install pointer must survive in the failure path"
     )
-    assert "$installerOutput" in body and "Select-Object -Last" in body, (
-        "the failure path must print the tail of the captured installer "
-        "output so the real error reaches the user"
+    assert re.search(r"catch\s*\{[^}]*\$_", body), (
+        "the catch block must include the caught error ($_) in its output "
+        "so the real cause (download error, proxy block, AV quarantine) "
+        "reaches the user instead of a generic message"
+    )
+    download_lines = [
+        ln for ln in body.splitlines() if "Invoke-WebRequest" in ln
+    ]
+    assert download_lines, "Install-Uv must download via Invoke-WebRequest"
+    for ln in download_lines:
+        assert "Out-Null" not in ln, (
+            "the uv download must not silence its errors with Out-Null: "
+            f"{ln.strip()!r}"
+        )
+
+
+def test_stale_managed_uv_is_replaced_on_pin_mismatch(source: str):
+    """A binary predating the pin is unverified and must be replaced."""
+    body = _install_uv_body(source)
+    keep_check = re.search(
+        r"-match\s+\[regex\]::Escape\(\$script:UvPinVersion\)", body
+    )
+    assert keep_check, (
+        "an existing managed uv must be kept only when its version matches "
+        "the pin -- otherwise it must be replaced"
     )
