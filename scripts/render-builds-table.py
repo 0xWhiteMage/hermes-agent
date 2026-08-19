@@ -34,7 +34,7 @@ END_MARKER = "<!-- /HERMES_BUILDS_TABLE -->"
 #   Hermes-0.28.0-mac-arm64.dmg        (bundled)
 #   HermesLight-0.28.0-win-x64.exe     (light)
 _ASSET_RE = re.compile(
-    r"^(?P<app>Hermes|HermesLight)-(?P<version>[^-]+(?:-nightly\.\d{8}(?:\d{6})?)?)"
+    r"^(?P<app>HermesBundled|HermesLight)-(?P<version>[^-]+(?:-nightly\.\d{8}(?:\d{6})?)?)"
     r"-(?P<os>mac|win|linux)-(?P<arch>x64|arm64)\.(?P<ext>dmg|exe|AppImage)$"
 )
 
@@ -47,7 +47,7 @@ _ROW_ORDER = [("mac", "arm64"), ("mac", "x64"), ("win", "x64"), ("win", "arm64")
 
 def parse_assets(names: list[str]) -> dict[str, dict[tuple[str, str], tuple[str, str]]]:
     """{app: {(os, arch): (asset_name, ext)}} for table-shaped assets only."""
-    out: dict[str, dict[tuple[str, str], tuple[str, str]]] = {"Hermes": {}, "HermesLight": {}}
+    out: dict[str, dict[tuple[str, str], tuple[str, str]]] = {"HermesBundled": {}, "HermesLight": {}}
     for name in names:
         m = _ASSET_RE.match(name)
         if m:
@@ -59,7 +59,7 @@ def render_tables(assets_by_app: dict, tag: str, repo: str) -> str:
     """The replacement block: marker + tables + end marker."""
     base = f"https://github.com/{repo}/releases/download/{tag}"
     sections = []
-    for app, title in (("Hermes", "Hermes Desktop"), ("HermesLight", "Hermes Light (remote-only client)")):
+    for app, title in (("HermesBundled", "Hermes Desktop"), ("HermesLight", "Hermes Light (remote-only client)")):
         rows = []
         for key in _ROW_ORDER:
             entry = assets_by_app.get(app, {}).get(key)
