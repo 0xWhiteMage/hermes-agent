@@ -8,9 +8,10 @@
  *   repo/                  plain source tree at the release tag (no .git),
  *                          plus the PREBUILT JS surfaces (ui-tui dist +
  *                          node_modules, web_dist) and the build stamp
- *   uv/                    static uv binary for this platform/arch
- *   python/                uv-managed CPython (python-build-standalone).
- *                          Its own site-packages carries hermes-bundle.pth
+ *   python/                uv-managed CPython (python-build-standalone) at
+ *                          the version pinned in installation/
+ *                          runtime-pins.json (tools.uv.python). Its own
+ *                          site-packages carries hermes-bundle.pth
  *                          with RELATIVE paths to repo/ and site-packages/,
  *                          so the interpreter resolves the runtime wherever
  *                          the app bundle sits — no venv, no PYTHONPATH.
@@ -18,7 +19,10 @@
  *                          at build time with `pip install --target` on the
  *                          payload interpreter. The backend runs directly
  *                          from here; nothing materializes at first launch.
- *   node/                  official node dist for this platform/arch
+ *   <tool>-<ver>-<target>/ managed runtime store entries (node, npm, uv,
+ *                          gh, ripgrep; git on Windows), staged by the
+ *                          Python provisioner from the pin table, plus the
+ *                          runtimes.json facts the desktop reads at launch.
  *
  * Gating: the script does nothing unless HERMES_DESKTOP_VARIANT=bundled.
  * That variable is an internal build-time env for CI wiring, not user
@@ -46,10 +50,12 @@ const REPO_ROOT = path.resolve(DESKTOP_ROOT, "..", "..")
 const OUT_DIR = path.join(DESKTOP_ROOT, "build", "agent-payload")
 
 /**
- * Map (process.platform, process.arch) to the uv, python-build-standalone,
- * and node target descriptors. There is one artifact per (os, arch) pair.
+ * Map (process.platform, process.arch) to the uv and python-build-standalone
+ * target descriptors. There is one artifact per (os, arch) pair.
  * Mac universal2 is deliberately NOT a target. We ship two artifacts
- * (plan §6).
+ * (plan §6). The managed runtimes (node, uv, git, gh, ripgrep) are not
+ * described here — their per-target URLs live in the pin table and the
+ * provisioner resolves them from the same platform-arch key.
  *
  * There are no cross-platform wheel tags here, on purpose. A CI runner per
  * (os, arch) pair assembles the payloads. electron-builder needs per-OS
@@ -61,20 +67,14 @@ export function resolveTargets(platform = process.platform, arch = process.arch)
   const table = {
     "linux-x64": {
       uvTarget: "x86_64-unknown-linux-gnu",
-      pythonPlatform: "x86_64-unknown-linux-gnu",
-      nodeDist: "linux-x64",
       uvPython: "linux-x86_64-gnu",
     },
     "linux-arm64": {
       uvTarget: "aarch64-unknown-linux-gnu",
-      pythonPlatform: "aarch64-unknown-linux-gnu",
-      nodeDist: "linux-arm64",
       uvPython: "linux-aarch64-gnu",
     },
     "darwin-x64": {
       uvTarget: "x86_64-apple-darwin",
-      pythonPlatform: "x86_64-apple-darwin",
-      nodeDist: "darwin-x64",
       uvPython: "macos-x86_64-none",
       // cryptography 49+ publishes macOS wheels for arm64 only (48.0.1
       // was the last universal2). The pin is a security floor, so the
@@ -85,20 +85,14 @@ export function resolveTargets(platform = process.platform, arch = process.arch)
     },
     "darwin-arm64": {
       uvTarget: "aarch64-apple-darwin",
-      pythonPlatform: "aarch64-apple-darwin",
-      nodeDist: "darwin-arm64",
       uvPython: "macos-aarch64-none",
     },
     "win32-x64": {
       uvTarget: "x86_64-pc-windows-msvc",
-      pythonPlatform: "x86_64-pc-windows-msvc",
-      nodeDist: "win-x64",
       uvPython: "windows-x86_64-none",
     },
     "win32-arm64": {
       uvTarget: "aarch64-pc-windows-msvc",
-      pythonPlatform: "aarch64-pc-windows-msvc",
-      nodeDist: "win-arm64",
       uvPython: "windows-aarch64-none",
       // Pinned packages with no published win_arm64 wheel. pip builds
       // these from sdist on the runner (needs MSVC arm64 + Rust).
@@ -157,9 +151,32 @@ export function pipTargetArgs({ sitePackagesDir, sourceBuild = [] }) {
  * architecture when the native build is unavailable — the arm64 Windows
  * test box got a silent x86_64 CPython that way. The full request either
  * installs the right build or fails loudly.
+ *
+ * The version is REQUIRED and comes from the pin table (payloadPythonVersion)
+ * — there is no env override and no default. A bare-minor request would let
+ * uv resolve a different patch on different days, which is exactly the drift
+ * the pin table exists to prevent.
  */
-export function pythonRequest(target, version = process.env.HERMES_PAYLOAD_PYTHON || "3.11") {
+export function pythonRequest(target, version) {
+  if (!version) {
+    throw new Error("pythonRequest: a pinned python version is required (installation/runtime-pins.json tools.uv.python)")
+  }
   return `cpython-${version}-${target.uvPython}`
+}
+
+/**
+ * The exact CPython version the payload standardizes on, read from the
+ * pin table's uv entry (same rider as installation/registry.py's
+ * pinned_python — uv is what installs it). The pin is load-bearing for a
+ * reproducible artifact, so its absence is a build error, never a
+ * fallback to a version literal.
+ */
+export function payloadPythonVersion(tools) {
+  const version = tools?.uv?.python
+  if (typeof version !== "string" || !version) {
+    throw new Error("runtime-pins.json: tools.uv.python is missing — the payload python version must be pinned")
+  }
+  return version
 }
 
 /**
@@ -289,7 +306,9 @@ export function stageCacheKey({ target, pythonVersion, requirementsText }) {
 
 // ─── impure staging steps (they shell out, have no unit tests, and run in CI) ──────
 function loadPins() {
-  const pins = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "runtime-pins.json"), "utf8"))
+  const pins = JSON.parse(
+    fs.readFileSync(path.join(REPO_ROOT, "installation", "runtime-pins.json"), "utf8")
+  )
 
   return pins.tools
 }
@@ -668,7 +687,7 @@ export function hostTarBin() {
     : "tar"
 }
 
-function stageUvAndPython(target, outDir, { reusePython = false } = {}) {
+function stageUvAndPython(target, outDir, pythonVersion, { reusePython = false } = {}) {
   const pythonDir = path.join(outDir, "python")
   // Wipe before staging (stageRepo does the same). A rerun after a failed
   // or wrong-arch attempt must not leave a stale interpreter beside the
@@ -694,7 +713,7 @@ function stageUvAndPython(target, outDir, { reusePython = false } = {}) {
   // on the Windows test box). On reuse the install is already on disk;
   // the probes below still run against it.
   if (!reusePython) {
-    run(buildUv, ["python", "install", "--no-bin", "--install-dir", pythonDir, pythonRequest(target)])
+    run(buildUv, ["python", "install", "--no-bin", "--install-dir", pythonDir, pythonRequest(target, pythonVersion)])
   }
 
   // uv leaves two things beside the versioned install that must not ship:
@@ -705,7 +724,7 @@ function stageUvAndPython(target, outDir, { reusePython = false } = {}) {
   // prefers the real patch-versioned directory, so nothing reads the alias.
   for (const entry of fs.readdirSync(pythonDir)) {
     const entryPath = path.join(pythonDir, entry)
-    const isRealInstall = pythonDirPattern(target).test(entry) && !fs.lstatSync(entryPath).isSymbolicLink()
+    const isRealInstall = pythonDirPattern(target, pythonVersion).test(entry) && !fs.lstatSync(entryPath).isSymbolicLink()
     if (!isRealInstall) {
       fs.rmSync(entryPath, { recursive: true, force: true })
     }
@@ -730,7 +749,7 @@ function stageUvAndPython(target, outDir, { reusePython = false } = {}) {
   // platform.machine() — the value the binary itself reports. The
   // install-directory pattern above already pins the requested build;
   // this is the runtime backstop.
-  const pythonBinary = findPythonBinary(pythonDir, target)
+  const pythonBinary = findPythonBinary(pythonDir, target, pythonVersion)
   const pythonMachine = probe(pythonBinary, ["-c", "import platform; print(platform.machine())"])
   if (!expect.pythonAny.some((word) => pythonMachine.includes(word))) {
     assertBanner("python", pythonMachine, expect.pythonAny.join("|"))
@@ -740,24 +759,26 @@ function stageUvAndPython(target, outDir, { reusePython = false } = {}) {
 
 /**
  * Match the directory `uv python install` creates for a request. The
- * request names a minor version (cpython-3.11-windows-aarch64-none), and
- * uv installs into a PATCH-versioned directory
- * (cpython-3.11.15-windows-aarch64-none) plus a minor-version alias that
- * is a junction on Windows. The matcher accepts both shapes and nothing
- * of any other version or triple.
+ * version comes from the pin table (an exact patch like 3.11.15), and
+ * uv installs into a directory of exactly that version
+ * (cpython-3.11.15-windows-aarch64-none). The trailing groups tolerate
+ * uv's own suffixes; nothing of any other version or triple matches.
  */
-export function pythonDirPattern(target, version = process.env.HERMES_PAYLOAD_PYTHON || "3.11") {
+export function pythonDirPattern(target, version) {
+  if (!version) {
+    throw new Error("pythonDirPattern: a pinned python version is required (installation/runtime-pins.json tools.uv.python)")
+  }
   const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
   return new RegExp(`^cpython-${escape(version)}(\\.\\d+)?(rc\\d+)?-${escape(target.uvPython)}$`)
 }
 
-function findPythonBinary(pythonDir, target) {
+function findPythonBinary(pythonDir, target, pythonVersion) {
   // Search only directories that match the REQUESTED build, so a stray
   // install of another architecture can never satisfy the probe. The
   // wipe above prevents strays; this is the backstop. The alias
   // entry is a junction/symlink — do not require isDirectory().
   const name = target.platform === "win32" ? "python.exe" : "python3"
-  const pattern = pythonDirPattern(target)
+  const pattern = pythonDirPattern(target, pythonVersion)
   const roots = fs
     .readdirSync(pythonDir, { withFileTypes: true })
     .filter((e) => (e.isDirectory() || e.isSymbolicLink()) && pattern.test(e.name))
@@ -1068,9 +1089,10 @@ function main() {
   // both paths, so a wrong or stale cache fails the same checks a bad
   // fresh staging would.
   run("uv", ["export", "--frozen", "--no-emit-project", "-o", "requirements-payload.txt"], { cwd: REPO_ROOT })
+  const pythonVersion = payloadPythonVersion(loadPins())
   const cacheKey = stageCacheKey({
     target,
-    pythonVersion: process.env.HERMES_PAYLOAD_PYTHON || "3.11",
+    pythonVersion,
     requirementsText: fs.readFileSync(path.join(REPO_ROOT, "requirements-payload.txt"), "utf8"),
   })
   const cacheKeyFile = path.join(OUT_DIR, ".stage-cache-key")
@@ -1093,7 +1115,7 @@ function main() {
   console.log(`[stage-agent-payloads] staging: repo (${target.key}, ${tag})`)
   const commit = stageRepo(tag, OUT_DIR)
   console.log(`[stage-agent-payloads] staging: uv + python (${target.key}, ${tag})`)
-  const payloadPython = stageUvAndPython(target, OUT_DIR, { reusePython: reuse })
+  const payloadPython = stageUvAndPython(target, OUT_DIR, pythonVersion, { reusePython: reuse })
   console.log(`[stage-agent-payloads] staging: site-packages (${target.key}, ${tag})`)
   stageSitePackages(target, OUT_DIR, payloadPython, { reuse })
   // The glue that makes the payload interpreter resolve repo/ and

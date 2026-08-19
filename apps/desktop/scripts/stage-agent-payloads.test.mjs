@@ -8,6 +8,7 @@ import {
   buildManifest,
   bundlePthLines,
   PAYLOAD_SCHEMA_VERSION,
+  payloadPythonVersion,
   pipTargetArgs,
   pythonDirPattern,
   pythonRequest,
@@ -31,8 +32,11 @@ test('resolveTargets covers every shipping (platform, arch) pair', () => {
     ['win32', 'arm64']
   ]) {
     const t = resolveTargets(platform, arch)
-    // Invariant: every target specifies all three toolchain descriptors.
-    assert.ok(t.uvTarget && t.pythonPlatform && t.nodeDist, `${platform}-${arch}`)
+    // Invariant: every target names its uv triple (the arch-banner
+    // expectation) and its uv python-build-standalone platform (the
+    // interpreter request). The managed runtimes' per-target artifacts
+    // live in the pin table, not here.
+    assert.ok(t.uvTarget && t.uvPython, `${platform}-${arch}`)
     assert.equal(t.platform, platform)
     assert.equal(t.arch, arch)
   }
@@ -44,9 +48,9 @@ test('resolveTargets rejects unknown pairs (no universal2, no ia32)', () => {
 })
 
 test('windows targets map to msvc toolchains, darwin to apple, linux to gnu', () => {
-  assert.match(resolveTargets('win32', 'x64').pythonPlatform, /windows-msvc$/)
-  assert.match(resolveTargets('darwin', 'arm64').pythonPlatform, /apple-darwin$/)
-  assert.match(resolveTargets('linux', 'x64').pythonPlatform, /linux-gnu$/)
+  assert.match(resolveTargets('win32', 'x64').uvTarget, /windows-msvc$/)
+  assert.match(resolveTargets('darwin', 'arm64').uvTarget, /apple-darwin$/)
+  assert.match(resolveTargets('linux', 'x64').uvTarget, /linux-gnu$/)
 })
 
 test('targets with no published cryptography wheel build it from sdist', () => {
@@ -211,6 +215,53 @@ test('python install requests name the full build, not just the version', () => 
   assert.equal(pythonRequest(resolveTargets('win32', 'arm64'), '3.11'), 'cpython-3.11-windows-aarch64-none')
   assert.equal(pythonRequest(resolveTargets('linux', 'x64'), '3.11'), 'cpython-3.11-linux-x86_64-gnu')
   assert.equal(pythonRequest(resolveTargets('darwin', 'arm64'), '3.12'), 'cpython-3.12-macos-aarch64-none')
+})
+
+test('the python version has no default: request and matcher demand the pin', () => {
+  // The version literal used to fall back to an env var and then "3.11".
+  // Every rung of that ladder could silently diverge from the pin table,
+  // so both consumers now refuse to run without an explicit version.
+  const target = resolveTargets('linux', 'x64')
+  assert.throws(() => pythonRequest(target), /runtime-pins\.json/)
+  assert.throws(() => pythonDirPattern(target), /runtime-pins\.json/)
+})
+
+test('payloadPythonVersion reads the uv rider pin and rejects its absence', () => {
+  // Same rider as installation/registry.py's pinned_python: the python
+  // version rides tools.uv.python (uv is what installs it).
+  assert.equal(payloadPythonVersion({ uv: { version: '0.12.3', python: '3.11.15' } }), '3.11.15')
+  assert.throws(() => payloadPythonVersion({ uv: { version: '0.12.3' } }), /tools\.uv\.python/)
+  assert.throws(() => payloadPythonVersion({}), /tools\.uv\.python/)
+  assert.throws(() => payloadPythonVersion(undefined), /tools\.uv\.python/)
+})
+
+test('the shipped pin table carries a python the staging accepts', () => {
+  // The invariant between the two files: whatever exact version the pin
+  // table names must produce a valid uv request and directory matcher for
+  // every shipping target. No version literal here — a pin bump must not
+  // touch this test.
+  const pins = JSON.parse(
+    fs.readFileSync(new URL('../../../installation/runtime-pins.json', import.meta.url), 'utf8')
+  )
+  const version = payloadPythonVersion(pins.tools)
+  assert.match(version, /^\d+\.\d+\.\d+$/, 'the pin must be an exact patch version')
+  for (const [platform, arch] of [
+    ['linux', 'x64'],
+    ['linux', 'arm64'],
+    ['darwin', 'x64'],
+    ['darwin', 'arm64'],
+    ['win32', 'x64'],
+    ['win32', 'arm64']
+  ]) {
+    const target = resolveTargets(platform, arch)
+    const request = pythonRequest(target, version)
+    assert.ok(request.startsWith(`cpython-${version}-`), request)
+    // The directory uv creates for the request must satisfy the matcher.
+    assert.ok(
+      pythonDirPattern(target, version).test(`cpython-${version}-${target.uvPython}`),
+      `${target.key}: matcher rejects the pinned install directory`
+    )
+  }
 })
 
 test('python dir matcher accepts patch-versioned installs and rejects foreign builds', () => {

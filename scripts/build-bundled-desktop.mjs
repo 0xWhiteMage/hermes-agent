@@ -14,9 +14,10 @@
 //   1. preflight: uv, git, npm exist; a release tag is resolvable
 //   2. npm ci at the repo root
 //   3. build ui-tui (with hermes-ink) and the dashboard SPA
-//   4. download the payload node dist (bundled only)
-//   5. npm run build in apps/desktop with the variant exported
-//   6. npm run builder -- <platform targets>
+//   4. npm run build in apps/desktop with the variant exported (the
+//      payload runtimes — node, uv, git, gh, ripgrep — are staged there
+//      by the provisioner from installation/runtime-pins.json)
+//   5. npm run builder -- <platform targets>
 //
 // Every step always runs. There is no opt-out: a skipped step is a
 // different artifact, and a different artifact is not a reproduction.
@@ -29,11 +30,9 @@
 
 import { execSync, spawnSync } from "node:child_process"
 import fs from "node:fs"
-import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
-import { hostTarBin } from "../apps/desktop/scripts/stage-agent-payloads.mjs"
 import { windowsFileVersion } from "../apps/desktop/scripts/windows-file-version.mjs"
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
@@ -90,13 +89,13 @@ for (const tool of ["uv", "git", "npm", "tar"]) {
 // Toolchain gates. The build's output depends on these tools, so a wrong
 // version makes a silently different artifact (the first Windows build
 // shipped a wrong-arch uv exactly this way). The rules come from ONE
-// source — package.json "engines" — and the embedded runtimes are pinned
-// to the EXACT host versions the gates approved:
-//   node — the payload node dist is downloaded at the host node version.
-//   uv   — the staged uv IS the host binary, copied (stageUvAndPython).
-//   npm  — ships inside the node dist; it cannot be chosen separately,
-//          so the host npm is gated by engines and the payload npm is
-//          whatever the pinned node dist bundles.
+// source — package.json "engines". The EMBEDDED runtimes are a separate
+// concern: they come from installation/runtime-pins.json via the
+// provisioner (stageManagedRuntimes), never from the host toolchain —
+// the gates below only approve the tools that BUILD the artifact (the
+// JS surfaces are built and npm-installed by the host node; the payload
+// interpreter is installed by the host uv). CI installs the pinned
+// versions as the host toolchain, so gate == pin there by construction.
 export function parseVersion(text) {
   const match = String(text).match(/(\d+)\.(\d+)\.(\d+)/)
   return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null
@@ -144,10 +143,6 @@ export function uvBannerProblem(banner) {
 
 const engines = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf8")).engines || {}
 
-// The approved host toolchain. Filled by the gates below; the payload
-// stages embed THESE versions, so gate == embed by construction.
-const HOST_TOOLCHAIN = { node: null, npm: null, uvBanner: null }
-
 for (const tool of ["node", "npm"]) {
   const text = tool === "node" ? process.version : capture("npm --version")
   const version = parseVersion(text)
@@ -158,7 +153,6 @@ for (const tool of ["node", "npm"]) {
   if (range && !satisfiesRange(version, range)) {
     fail(`${tool} ${version.join(".")} does not satisfy package.json engines ${JSON.stringify(range)} — the build would make a different artifact`)
   }
-  HOST_TOOLCHAIN[tool] = version
   console.log(`[build-bundled] ${tool} ${version.join(".")} (engines: ${range || "unconstrained"})`)
 }
 
@@ -168,8 +162,7 @@ for (const tool of ["node", "npm"]) {
   if (problem) {
     fail(`uv (${uvBanner}) would make a broken artifact: ${problem}`)
   }
-  HOST_TOOLCHAIN.uvBanner = uvBanner
-  console.log(`[build-bundled] ${uvBanner} (staged into the payload as-is)`)
+  console.log(`[build-bundled] ${uvBanner} (build-host uv; the payload uv comes from the pin table)`)
 }
 
 let tag = tagArg
@@ -253,47 +246,13 @@ run("npm", ["ci", "--no-audit", "--no-fund"], {
 run("npm", ["run", "build", "--workspace", "ui-tui"])
 run("npm", ["run", "build", "--workspace", "web"])
 
-// ── 4. payload node dist ────────────────────────────────────────────────────
-// Bundled only: light ships no runtime, so there is no payload node to
-// embed. Pinned to the EXACT host node version: the JS surfaces were
-// built and npm-installed by the host node, and the payload node runs
-// them at runtime. A different version is a different artifact. This
-// also means the host node must be an official nodejs.org release — a
-// patched build whose version does not exist upstream fails here, loudly.
-
-let nodeDir = null
-let work = null
-
-if (variant === "bundled") {
-  const distName = { linux: "linux", darwin: "darwin", win32: "win" }[process.platform]
-  const distArch = { x64: "x64", arm64: "arm64" }[process.arch]
-  const distExt = process.platform === "win32" ? "zip" : process.platform === "darwin" ? "tar.gz" : "tar.xz"
-
-  const version = `v${HOST_TOOLCHAIN.node.join(".")}`
-  const index = JSON.parse(
-    execSync(`curl -fsSL https://nodejs.org/dist/index.json`, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 })
-  )
-  if (!index.some((e) => e.version === version)) {
-    fail(`host node ${version} is not an official nodejs.org release — cannot embed the exact build toolchain`)
-  }
-
-  work = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-node-payload-"))
-  const archive = `node-${version}-${distName}-${distArch}.${distExt}`
-  const extractDir = path.join(work, "extract")
-  nodeDir = path.join(work, "node-payload")
-  fs.mkdirSync(extractDir, { recursive: true })
-
-  console.log(`[build-bundled] payload node: ${version}`)
-  run("curl", ["-fsSL", "-o", path.join(work, archive), `https://nodejs.org/dist/${version}/${archive}`])
-  run(hostTarBin(), ["-xf", path.join(work, archive), "-C", extractDir])
-  const [topDir] = fs.readdirSync(extractDir)
-  fs.renameSync(path.join(extractDir, topDir), nodeDir)
-
-  const nodeBinary = process.platform === "win32" ? path.join(nodeDir, "node.exe") : path.join(nodeDir, "bin", "node")
-  if (!fs.existsSync(nodeBinary)) {
-    fail(`extracted node dist has no runnable node at ${nodeBinary}`)
-  }
-}
+// The payload node is NOT downloaded here: it is a managed runtime from
+// installation/runtime-pins.json, staged by the provisioner inside
+// stage-agent-payloads.mjs (stageManagedRuntimes) with its pinned URL
+// and sha256. The engines gate above still approves the HOST node that
+// builds the JS surfaces; tests/test_engines_satisfiable.py holds the
+// pinned node/npm inside those same ranges, so the surfaces the host
+// builds are the surfaces the pinned runtime can run.
 
 // ── 5-6. desktop build + package ────────────────────────────────────────────
 
@@ -301,8 +260,6 @@ const env = {
   ...process.env,
   HERMES_DESKTOP_VARIANT: variant,
   HERMES_PAYLOAD_TAG: tag,
-  HERMES_PAYLOAD_PYTHON: process.env.HERMES_PAYLOAD_PYTHON || "3.11",
-  ...(nodeDir ? { HERMES_PAYLOAD_NODE_DIST: nodeDir } : {}),
 }
 
 const desktop = path.join(REPO_ROOT, "apps", "desktop")
@@ -334,7 +291,3 @@ for (const pass of passes) {
   )
 }
 console.log(`[build-bundled] artifacts: ${path.join(desktop, "release")}`)
-
-if (work) {
-  fs.rmSync(work, { recursive: true, force: true })
-}
