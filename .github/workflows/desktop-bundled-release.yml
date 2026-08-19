@@ -663,7 +663,17 @@ jobs:
             -Version "$SDK_BUILDTOOLS_VERSION" -ExcludeVersion -OutputDirectory tools -NonInteractive
           nuget install Microsoft.Trusted.Signing.Client \
             -Version "$TRUSTED_SIGNING_VERSION" -ExcludeVersion -OutputDirectory tools -NonInteractive
-          bin="tools/Microsoft.Windows.SDK.BuildTools/bin/$SDK_BUILDTOOLS_VERSION/x64"
+          # The bin folder inside the package carries the SDK build number
+          # (10.0.26100.0), not the four-part nuget package version, so a
+          # path built from the pin does not exist. Resolve the one
+          # installed folder instead.
+          shopt -s nullglob
+          bins=(tools/Microsoft.Windows.SDK.BuildTools/bin/*/x64)
+          if [ ${#bins[@]} -ne 1 ]; then
+            echo "::error::expected exactly 1 SDK bin dir, found ${#bins[@]}: ${bins[*]}"
+            exit 1
+          fi
+          bin="${bins[0]}"
           for exe in makeappx.exe signtool.exe; do
             if [ ! -f "$bin/$exe" ]; then
               echo "::error::$exe not found under $bin"; exit 1
