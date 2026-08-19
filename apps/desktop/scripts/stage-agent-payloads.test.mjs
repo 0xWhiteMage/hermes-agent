@@ -145,21 +145,39 @@ test('falls back to git describe only for exact release tags', () => {
 
 // ─── buildManifest ─────────────────────────────────────────────────
 
-test('the manifest is a complete-payload sentinel: schema, tag, commit', () => {
+test('the manifest is a complete-payload sentinel: schema, tag, commit, python', () => {
   const target = resolveTargets('linux', 'x64')
   const manifest = buildManifest({
     tag: 'v1.0.0',
     commit: 'a'.repeat(40),
-    target
+    target,
+    pythonRelPath: 'python/cpython-3.11.15-linux-x86_64-none/bin/python3'
   })
 
   assert.equal(manifest.schemaVersion, PAYLOAD_SCHEMA_VERSION)
   assert.equal(manifest.tag, 'v1.0.0')
   assert.equal(manifest.commit, 'a'.repeat(40))
   assert.equal(manifest.platform, 'linux')
+  // The shell spawns exactly this binary — recorded at stage time, where
+  // it was executed and arch-probed, instead of re-derived by a scan.
+  assert.equal(manifest.python, 'python/cpython-3.11.15-linux-x86_64-none/bin/python3')
   // No per-item status exists: completeness is a build invariant, not a
   // runtime question. The external stub is the only other manifest shape.
   assert.equal('items' in manifest, false)
+})
+
+test('buildManifest refuses a missing or absolute python path', () => {
+  const target = resolveTargets('linux', 'x64')
+
+  assert.throws(() => buildManifest({ tag: 'v1.0.0', commit: 'a'.repeat(40), target }))
+  assert.throws(() =>
+    buildManifest({
+      tag: 'v1.0.0',
+      commit: 'a'.repeat(40),
+      target,
+      pythonRelPath: '/abs/bin/python3'
+    })
+  )
 })
 
 // ─── arch guards ────────────────────────────────────────────────────

@@ -4993,7 +4993,7 @@ function createEmbeddedBackend(backendArgs) {
     return null
   }
 
-  const command = findEmbeddedPython(payload.dir)
+  const command = findEmbeddedPython(payload)
 
   if (!command) {
     rememberLog(`[embedded] payload at ${payload.dir} has no runnable CPython — the artifact is damaged`)
@@ -15751,7 +15751,7 @@ function uninstallRunner(mode) {
 
   if (kind === 'bundled') {
     const payload = embeddedPayload()
-    const py = payload ? findEmbeddedPython(payload.dir) : null
+    const py = payload ? findEmbeddedPython(payload) : null
 
     if (!py) {
       return null

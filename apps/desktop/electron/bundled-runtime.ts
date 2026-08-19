@@ -1,8 +1,8 @@
 // bundled-runtime.ts: pure helpers for the embedded desktop runtime.
 // An Embedded artifact carries the whole agent runtime in its resources
 // and ALWAYS spawns the backend from there — there is no decision contest
-// against checkouts. This module only answers: does a complete payload
-// exist (resolvePayload), where is its interpreter (findEmbeddedPython),
+// against checkouts. This module only answers: does a payload exist
+// (resolvePayload), where is its interpreter (findEmbeddedPython),
 // and what update channel applies (resolveChannel).
 //
 // Design: .hermes/plans/2026-08-07_183000-two-axis-install-model.md.
@@ -20,27 +20,36 @@ import path from 'node:path'
 export interface PayloadInfo {
   dir: string
   tag: string | null
+  /** Payload-relative path of the CPython binary staging probed and recorded. */
+  python: string
 }
 
 /**
  * Resolve the agent-payload directory that ships in the resources of the
  * packaged app. Returns null for external builds (a stub manifest with
- * external:true), for dev runs (no resourcesPath), for unreadable or
- * old-schema manifests, and for payloads with a missing item directory.
- * Item presence is a build-time invariant (staging fails the build on an
- * incomplete payload), so a missing directory here means a damaged or
- * truncated artifact — the caller reports it, it does not fall back.
+ * external:true), for dev runs (no resourcesPath), and for unreadable,
+ * old-schema, or malformed manifests.
+ *
+ * The manifest is the ONLY gate here. Payload completeness is a build
+ * invariant (staging fails the build on a missing item, and
+ * assertPayloadArch verifies every fact's bytes). A duplicate item-walk
+ * here was a second copy of the layout, and it broke exactly that way:
+ * the store-entry rename (`uv/` → `uv-<version>-<target>/`) landed and
+ * the walk rejected every correct payload as damaged. The backend's
+ * tools resolve through the payload's runtimes.json
+ * (buildDesktopBackendEnv) — the facts are the layout authority; nothing
+ * in the shell needs a copy.
+ *
+ * Schema 4 records the interpreter path (`python`, payload-relative,
+ * forward slashes): staging already ran that binary and probed its
+ * architecture, so the shell reads the recorded answer instead of
+ * re-deriving it with a directory scan. A schema-4 manifest without a
+ * usable python path is malformed — that build could not have passed
+ * staging — so it reads as no payload, and the caller reports damage.
  */
 export function resolvePayload(
   resourcesPath: string | null | undefined,
-  readFile: (p: string) => string = p => fs.readFileSync(p, 'utf8'),
-  dirExists: (p: string) => boolean = p => {
-    try {
-      return fs.statSync(p).isDirectory()
-    } catch {
-      return false
-    }
-  }
+  readFile: (p: string) => string = p => fs.readFileSync(p, 'utf8')
 ): PayloadInfo | null {
   if (!resourcesPath) {
     return null
@@ -64,67 +73,38 @@ export function resolvePayload(
     return null
   }
 
-  if (!embeddedRuntimeItems().every(item => dirExists(path.join(dir, item)))) {
+  if (typeof parsed.python !== 'string' || parsed.python === '' || path.isAbsolute(parsed.python)) {
     return null
   }
 
   return {
     dir,
-    tag: typeof parsed.tag === 'string' ? parsed.tag : null
+    tag: typeof parsed.tag === 'string' ? parsed.tag : null,
+    python: parsed.python
   }
 }
 
 // The manifest schema this build understands. Staging writes the same
 // number (stage-agent-payloads.mjs); the app and its payload travel in the
 // same artifact, so a mismatch means a damaged or foreign artifact.
-export const PAYLOAD_SCHEMA_VERSION = 3
-
-// The runtime items inside a complete embedded payload — all of them. uv
-// never installs the runtime (site-packages ships prebuilt), but runtime
-// lazy installs for plugins are a mandatory feature, and uv is what
-// installs them into the writable overlay. A payload without uv is an
-// incomplete artifact, not a degraded one. git is Windows-only: macOS has
-// /usr/bin/git (Xcode CLT) and Linux has system git, so the staging script
-// only downloads PortableGit for win32.
-export function embeddedRuntimeItems(platform: NodeJS.Platform = process.platform): readonly string[] {
-  const base = ['repo', 'uv', 'python', 'site-packages', 'node'] as const
-  return platform === 'win32' ? [...base, 'git'] : base
-}
+export const PAYLOAD_SCHEMA_VERSION = 4
 
 /**
- * Locate the payload CPython binary. The install directory is
- * patch-versioned (python/cpython-3.11.15-<triple>/...), so this scans
- * rather than hardcoding, and it verifies the binary exists.
+ * The absolute path of the payload CPython binary, or null when the
+ * recorded binary is not on disk. The manifest says where staging put it
+ * (and staging executed it there); this only verifies the bytes exist.
+ * The interpreter is the one payload byte the shell itself consumes, so
+ * a null here is what a damaged artifact looks like from the shell.
  */
 export function findEmbeddedPython(
-  payloadDir: string,
-  platform: NodeJS.Platform = process.platform,
-  fsImpl: Pick<typeof fs, 'readdirSync' | 'existsSync'> = fs
+  payload: Pick<PayloadInfo, 'dir' | 'python'>,
+  fsImpl: Pick<typeof fs, 'existsSync'> = fs
 ): string | null {
-  const pythonRoot = path.join(payloadDir, 'python')
+  // The manifest records forward slashes for cross-host byte-stability;
+  // resolve them through the host path module.
+  const candidate = path.join(payload.dir, ...payload.python.split('/'))
 
-  let entries: string[]
-
-  try {
-    entries = fsImpl.readdirSync(pythonRoot)
-  } catch {
-    return null
-  }
-
-  // Prefer the patch-versioned real directory over the minor alias so the
-  // resolved path is stable across launches (the alias is a symlink).
-  for (const entry of entries.filter((name) => name.startsWith('cpython-')).sort().reverse()) {
-    const candidate =
-      platform === 'win32'
-        ? path.join(pythonRoot, entry, 'python.exe')
-        : path.join(pythonRoot, entry, 'bin', 'python3')
-
-    if (fsImpl.existsSync(candidate)) {
-      return candidate
-    }
-  }
-
-  return null
+  return fsImpl.existsSync(candidate) ? candidate : null
 }
 
 // ─── update channel ─────────────────────────────────────────────────────────

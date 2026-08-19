@@ -4,7 +4,7 @@
  * .hermes/plans/2026-08-07_resources-resident-bundled-runtime.md.
  *
  * Output: apps/desktop/build/agent-payload/
- *   manifest.json          schemaVersion, tag, commit, platform, arch
+ *   manifest.json          schemaVersion, tag, commit, platform, arch, python
  *   repo/                  plain source tree at the release tag (no .git),
  *                          plus the PREBUILT JS surfaces (ui-tui dist +
  *                          node_modules, web_dist) and the build stamp
@@ -39,7 +39,7 @@ import path from "node:path"
 
 import { isMain } from "./utils.mjs"
 
-export const PAYLOAD_SCHEMA_VERSION = 3
+export const PAYLOAD_SCHEMA_VERSION = 4
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, "..")
 const REPO_ROOT = path.resolve(DESKTOP_ROOT, "..", "..")
@@ -240,14 +240,24 @@ export function resolveTag(argv, describeFn) {
  * main process treats its presence (schemaVersion match, external: absent)
  * as the payload-present sentinel. Completeness is a build-time invariant:
  * main() throws before this manifest is written when any stage fails.
+ *
+ * `python` is the payload-relative path of the CPython binary the shell
+ * spawns, recorded here because staging just probed it (stageUvAndPython
+ * runs the binary and checks platform.machine()). The shell reads the
+ * path instead of scanning the install directory — the scan was a second
+ * copy of layout knowledge staging already had.
  */
-export function buildManifest({ tag, commit, target }) {
+export function buildManifest({ tag, commit, target, pythonRelPath }) {
+  if (!pythonRelPath || path.isAbsolute(pythonRelPath)) {
+    throw new Error(`manifest python path must be payload-relative, got: ${pythonRelPath}`)
+  }
   return {
     schemaVersion: PAYLOAD_SCHEMA_VERSION,
     tag,
     commit,
     platform: target.platform,
     arch: target.arch,
+    python: pythonRelPath,
     builtAt: new Date().toISOString(),
   }
 }
@@ -1104,7 +1114,14 @@ function main() {
   console.log(`[stage-agent-payloads] sanitizing symlinks`)
   sanitizeSymlinks(OUT_DIR)
 
-  const manifest = buildManifest({ tag, commit, target })
+  const manifest = buildManifest({
+    tag,
+    commit,
+    target,
+    // Recorded with forward slashes so the manifest is byte-stable across
+    // build hosts; path.join on the consuming side normalizes.
+    pythonRelPath: path.relative(OUT_DIR, payloadPython).split(path.sep).join("/"),
+  })
   fs.writeFileSync(path.join(OUT_DIR, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n")
   // The key is written LAST: it asserts that the python/site-packages
   // trees on disk are complete for these inputs, which is only true once

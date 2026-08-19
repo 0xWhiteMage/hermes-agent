@@ -4,7 +4,6 @@ import { createHash } from 'node:crypto'
 import { test } from 'vitest'
 
 import {
-  embeddedRuntimeItems,
   findEmbeddedPython,
   installIdForRoot,
   latestReleaseFromLsRemote,
@@ -23,129 +22,79 @@ const readerFor = (manifest: unknown) => (p: string) => {
   return JSON.stringify(manifest)
 }
 
-const allDirsExist = () => true
-const noDirsExist = () => false
-
-const completeManifest = { schemaVersion: PAYLOAD_SCHEMA_VERSION, tag: 'v1.2.3', commit: 'a'.repeat(40) }
+const completeManifest = {
+  schemaVersion: PAYLOAD_SCHEMA_VERSION,
+  tag: 'v1.2.3',
+  commit: 'a'.repeat(40),
+  python: 'python/cpython-3.11.15-macos-aarch64-none/bin/python3'
+}
 
 test('resolvePayload returns null for dev runs, external stubs, and garbage', () => {
   assert.equal(resolvePayload(null), null)
   assert.equal(resolvePayload(undefined), null)
   assert.equal(
-    resolvePayload('/res', readerFor({ schemaVersion: PAYLOAD_SCHEMA_VERSION, external: true }), allDirsExist),
+    resolvePayload('/res', readerFor({ schemaVersion: PAYLOAD_SCHEMA_VERSION, external: true })),
     null
   )
   assert.equal(
-    resolvePayload(
-      '/res',
-      () => {
-        throw new Error('ENOENT')
-      },
-      allDirsExist
-    ),
+    resolvePayload('/res', () => {
+      throw new Error('ENOENT')
+    }),
     null
   )
-  assert.equal(resolvePayload('/res', readerFor('not-an-object'), allDirsExist), null)
+  assert.equal(resolvePayload('/res', readerFor('not-an-object')), null)
 })
 
 test('resolvePayload rejects old-schema manifests', () => {
-  // A schema-2 manifest comes from a pre-embedded artifact. The app and
-  // its payload travel together, so a mismatch means a foreign artifact.
+  // The app and its payload travel together, so a mismatch means a
+  // foreign artifact. Schema 3 is the pre-python-path shape: without the
+  // recorded interpreter the shell would be back to guessing the layout.
   assert.equal(
-    resolvePayload('/res', readerFor({ schemaVersion: 2, tag: 'v1.0.0', items: { repo: { status: 'staged' } } }), allDirsExist),
+    resolvePayload('/res', readerFor({ schemaVersion: 3, tag: 'v1.0.0', commit: 'a'.repeat(40) })),
     null
   )
 })
 
-test('resolvePayload rejects a payload with a missing item directory', () => {
-  // Completeness is a build invariant; a missing directory here means a
-  // damaged or truncated artifact.
-  assert.equal(resolvePayload('/res', readerFor(completeManifest), noDirsExist), null)
-
-  // One missing item is still a rejection regardless of how many
-  // items the platform requires.
-  const allButUv = (p: string) => !p.endsWith('/uv')
-
-  assert.equal(resolvePayload('/res', readerFor(completeManifest), allButUv), null)
+test('resolvePayload rejects a manifest whose python path is missing or absolute', () => {
+  // A schema-4 build cannot pass staging without probing the interpreter
+  // it records, so a missing/absolute path means a malformed or foreign
+  // manifest, not a degraded payload.
+  assert.equal(resolvePayload('/res', readerFor({ ...completeManifest, python: undefined })), null)
+  assert.equal(resolvePayload('/res', readerFor({ ...completeManifest, python: '' })), null)
+  assert.equal(resolvePayload('/res', readerFor({ ...completeManifest, python: '/abs/python3' })), null)
 })
 
-test('resolvePayload returns dir + tag for a complete payload', () => {
-  const p = resolvePayload('/res', readerFor(completeManifest), allDirsExist)
+test('resolvePayload gates on the manifest alone — store-entry tool names never break it', () => {
+  // The regression this replaces: a bare-name item walk (`uv/`, `node/`,
+  // `git/`) rejected every payload once tools staged as
+  // `<tool>-<version>-<target>/` store entries, so v0.28.0 bundles threw
+  // "damaged" on a complete artifact. Completeness is a build invariant;
+  // the shell's only integrity probe is findEmbeddedPython on the
+  // interpreter it spawns.
+  const p = resolvePayload('/res', readerFor(completeManifest))
 
   assert.ok(p)
   assert.match(p.dir, /agent-payload$/)
   assert.equal(p.tag, 'v1.2.3')
-})
-
-test('the required items include uv — plugin lazy installs are mandatory', () => {
-  // A payload without uv cannot lazy-install plugin deps into the
-  // writable overlay: incomplete artifact, not a degraded one.
-  assert.ok(embeddedRuntimeItems('darwin').includes('uv'))
-})
-
-test('every platform requires git and gh in the payload', () => {
-  assert.deepEqual([...embeddedRuntimeItems('darwin')].sort(), ['node', 'python', 'repo', 'site-packages', 'uv'])
-})
-
-test('the required items include git on Windows', () => {
-  assert.deepEqual([...embeddedRuntimeItems('win32')].sort(), ['git', 'node', 'python', 'repo', 'site-packages', 'uv'])
-})
-
-test('the required items exclude git on non-Windows', () => {
-  assert.ok(!embeddedRuntimeItems('darwin').includes('git'))
-  assert.ok(!embeddedRuntimeItems('linux').includes('git'))
+  assert.equal(p.python, completeManifest.python)
 })
 
 // ─── findEmbeddedPython ────────────────────────────────────────────
 
-test('findEmbeddedPython picks the patch-versioned dir and needs a real binary', () => {
-  const fsStub = (dirs: string[], files: string[]) => ({
-    readdirSync: (p: string) => {
-      if (!p.endsWith('python')) {
-        throw new Error('ENOENT')
-      }
+test('findEmbeddedPython joins the recorded path and verifies the binary exists', () => {
+  const payload = {
+    dir: '/res/agent-payload',
+    python: 'python/cpython-3.11.15-macos-aarch64-none/bin/python3'
+  }
+  const expected = '/res/agent-payload/python/cpython-3.11.15-macos-aarch64-none/bin/python3'
 
-      return dirs
-    },
-    existsSync: (p: string) => files.some(f => p === f)
-  })
-
-  // Patch-versioned real dir wins over the minor alias (reverse sort).
-  const python = findEmbeddedPython(
-    '/res/agent-payload',
-    'darwin',
-    fsStub(
-      ['cpython-3.11-macos-aarch64-none', 'cpython-3.11.15-macos-aarch64-none'],
-      ['/res/agent-payload/python/cpython-3.11.15-macos-aarch64-none/bin/python3']
-    ) as never
-  )
-
-  assert.match(String(python), /3\.11\.15.*bin\/python3$/)
-
-  // No python dir at all → null, not a throw.
   assert.equal(
-    findEmbeddedPython('/res/agent-payload', 'darwin', {
-      readdirSync: () => {
-        throw new Error('ENOENT')
-      },
-      existsSync: () => false
-    } as never),
-    null
+    findEmbeddedPython(payload, { existsSync: (p: string) => p === expected } as never),
+    expected
   )
 
-  // Windows binary lives at the install root, not bin/. The
-  // implementation joins with the HOST path module, so the test builds
-  // its expected path the same way to stay host-agnostic.
-  const winRoot = 'win-res/agent-payload'
-  const winExpected = ['win-res/agent-payload', 'python', 'cpython-3.11.15-windows-x86_64-none', 'python.exe'].join('/')
-
-  const winPython = findEmbeddedPython(
-    winRoot,
-    'win32',
-    fsStub(['cpython-3.11.15-windows-x86_64-none'], [winExpected]) as never
-  )
-
-  assert.match(String(winPython), /python\.exe$/)
+  // Recorded but not on disk = damaged artifact → null, not a throw.
+  assert.equal(findEmbeddedPython(payload, { existsSync: () => false } as never), null)
 })
 
 // ─── updateChannelFromConfig ───────────────────────────────────────
