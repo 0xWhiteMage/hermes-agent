@@ -274,8 +274,9 @@ class TestEveryPublicFunctionRunsBare:
             from installation.tree import (
                 runtime_tree, GitCheckout, Sealed, read_build_info,
                 steward_update_message, steward_uninstall_message,
-                install_method, resolve_update_channel,
+                install_method,
             )
+            from hermes_cli.update_channel import resolve_update_channel
             checkout = Path({str(tmp_path)!r}) / "checkout"
             (checkout / ".git").mkdir(parents=True)
             assert isinstance(runtime_tree(checkout), GitCheckout)
@@ -291,7 +292,7 @@ class TestEveryPublicFunctionRunsBare:
             steward_uninstall_message(tree.steward)
             read_build_info(sealed)
             install_method(checkout)
-            resolve_update_channel(checkout)
+            resolve_update_channel(None, checkout)
             print("ok")
             """
         )
