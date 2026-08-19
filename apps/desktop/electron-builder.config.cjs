@@ -284,12 +284,27 @@ function windowsSigning() {
   if (!process.env.AZURE_SIGN_ENDPOINT || !process.env.AZURE_CLIENT_ID) {
     return {}
   }
+  // type 'signtool' + a custom `sign` hook, not type 'azure': the hook
+  // (scripts/sign-cached.mjs) wraps the exact same WindowsSignAzureManager
+  // behind a content-addressed cache, so rebuilds of byte-identical inputs
+  // reuse yesterday's signature instead of a remote signing round-trip.
+  // electron-builder invokes the hook once per file per hash algorithm —
+  // the default algorithms are ['sha1', 'sha256'], which would mean TWO
+  // passes per file, and the second (nested) signature would rewrite the
+  // binary and miss the cache forever. Azure Trusted Signing only ever
+  // produced sha256, so pin signingHashAlgorithms to that single pass.
+  // publisherName stays here because electron-updater's
+  // verifyUpdateCodeSignature reads it from app-update.yml; the Azure
+  // endpoint/account/profile no longer ride through this config at all —
+  // they travel via the AZURE_SIGN_* environment variables straight into
+  // the hook (azureConfigFromEnv in sign-cached.mjs). With no certificate
+  // configured, signtoolBaseSignManager.handleNullCscInfo(customSign)
+  // returns !customSign, so the custom hook proceeds unhindered.
   return {
     sign: {
-      type: 'azure',
-      endpoint: process.env.AZURE_SIGN_ENDPOINT,
-      codeSigningAccountName: process.env.AZURE_SIGN_ACCOUNT,
-      certificateProfileName: process.env.AZURE_SIGN_PROFILE,
+      type: 'signtool',
+      sign: './scripts/sign-cached.mjs',
+      signingHashAlgorithms: ['sha256'],
       publisherName: process.env.AZURE_SIGN_PUBLISHER
     }
   }
