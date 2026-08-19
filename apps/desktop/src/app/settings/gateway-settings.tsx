@@ -5,7 +5,6 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import type { DesktopBackendAvailability, DesktopConnectionConfig } from '@/global'
 import { useI18n } from '@/i18n'
 import { AlertCircle, FileText, Globe } from '@/lib/icons'
-import { cn } from '@/lib/utils'
 import { notify, notifyError, readableError } from '@/store/notifications'
 
 import {
@@ -18,34 +17,23 @@ import {
 } from '../connection'
 
 import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton } from './primitives'
+import { ConnectionsRegistrySection } from './connections-registry'
 
-// Settings → Gateway: the post-bootstrap host for the connection modes in
-// app/connection. This file owns what is genuinely Settings' own — profile
-// scope, the env-override banner, save-for-restart alongside apply, toast
+// Settings → Gateways: the post-bootstrap host for the connection modes in
+// app/connection. This file owns what is genuinely Settings' own — the
+// env-override banner, save-for-restart alongside apply, toast
 // presentation, and the diagnostics row — while every mode's card and form
 // comes from the shared registry that first-run setup also renders.
+//
+// The page is machine-level gateway management: it decides which backends
+// this desktop can connect to, and profiles are discovered FROM the
+// connected gateways. It is deliberately not profile-scoped, so every
+// module call passes a null scope.
 //
 // `embedded` trims the page chrome for reuse inside the boot-failure recovery
 // card: the outer title/intro, the "Save for next restart" action, and the
 // Diagnostics row are redundant there (the card owns its header and a single
 // reconnect action), so only the connection controls render.
-
-function ScopeChip({ active, label, onSelect }: { active: boolean; label: string; onSelect: () => void }) {
-  return (
-    <button
-      className={cn(
-        'rounded-full border px-3 py-1 text-[length:var(--conversation-caption-font-size)] transition',
-        active
-          ? 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary) text-(--ui-text-primary)'
-          : 'border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover)'
-      )}
-      onClick={onSelect}
-      type="button"
-    >
-      {label}
-    </button>
-  )
-}
 
 export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {}) {
   const { t } = useI18n()
@@ -56,10 +44,8 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   const [saving, setSaving] = useState(false)
   const [config, setConfig] = useState<DesktopConnectionConfig | null>(null)
   const [mode, setMode] = useState<ConnectionMode>('local')
-  const [scope, setScope] = useState<null | string>(null)
   const [modeAvailabilities, setModeAvailabilities] = useState<DesktopBackendAvailability[]>([])
   const [plainTextConfirm, setPlainTextConfirm] = useState<null | { apply: boolean }>(null)
-  const profiles = useStore($profiles)
   const saveSeq = useRef(0)
 
   const { draftFor, updateDraft } = useConnectionDrafts(config)
@@ -88,10 +74,6 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   }, [])
 
   useEffect(() => {
-    void refreshActiveProfile()
-  }, [])
-
-  useEffect(() => {
     let cancelled = false
     const desktop = window.hermesDesktop
 
@@ -104,7 +86,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     setLoading(true)
 
     desktop
-      .getConnectionConfig(scope)
+      .getConnectionConfig(null)
       .then(loaded => {
         if (cancelled) {
           return
@@ -126,17 +108,13 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- load once on mount; copy is stable
   }, [])
 
-  // The 'default' profile uses the global ("All profiles") connection, so the
-  // per-profile scopes are the named, non-default profiles.
-  const namedProfiles = useMemo(() => profiles.filter(profile => profile.name !== 'default'), [profiles])
-
   // A pending Save/Apply would write a NEW token to disk in plain text when
   // the connection uses token auth, the user typed a token, and this machine
   // has no OS keyring (safeStorage unavailable). Get an explicit opt-in first.
   // The mode module owns the payload shape, so ask it for the draft token
   // rather than reading a mode-specific field here.
   const wouldPersistPlainTextToken = (): boolean => {
-    const payload = moduleFor(mode).toPayload(draftFor(mode), scope) as {
+    const payload = moduleFor(mode).toPayload(draftFor(mode), null) as {
       remoteAuthMode?: string
       remoteToken?: string
     }
@@ -151,7 +129,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   const commitConfig = async (apply: boolean, allowPlainTextToken = false): Promise<void> => {
     const seq = ++saveSeq.current
     const payload = {
-      ...moduleFor(mode).toPayload(draftFor(mode), scope),
+      ...moduleFor(mode).toPayload(draftFor(mode), null),
       ...(allowPlainTextToken ? { allowPlainTextToken: true } : {})
     }
     setSaving(true)
@@ -210,7 +188,6 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     beforeOAuthLogin: async (trimmedUrl: string) => {
       const saved = await window.hermesDesktop.saveConnectionConfig({
         mode,
-        profile: scope ?? undefined,
         remoteAuthMode: 'oauth',
         remoteUrl: trimmedUrl
       })
@@ -230,7 +207,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     onError: (message: string) => notify({ kind: 'warning', title: g.incompleteTitle, message }),
     onSuccess: (message: string) => notify({ kind: 'success', title: g.reachableTitle, message }),
     savedConfig: config,
-    scope
+    scope: null
   }
 
   if (loading) {
@@ -265,28 +242,6 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         </div>
       )}
 
-      {namedProfiles.length > 0 ? (
-        <div className="mb-5 grid gap-2">
-          <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
-            {g.appliesTo}
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            <ScopeChip active={scope === null} label={g.allProfiles} onSelect={() => setScope(null)} />
-            {namedProfiles.map(profile => (
-              <ScopeChip
-                active={scope === profile.name}
-                key={profile.name}
-                label={profile.name}
-                onSelect={() => setScope(profile.name)}
-              />
-            ))}
-          </div>
-          <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            {scope === null ? g.defaultConnection : g.profileConnection(scope)}
-          </p>
-        </div>
-      ) : null}
-
       {config?.envOverride ? (
         <div className="mb-5 flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-[length:var(--conversation-caption-font-size)] text-destructive">
           <AlertCircle className="mt-0.5 size-4 shrink-0" />
@@ -303,7 +258,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         </div>
         <ConnectionModeCards
           availabilityFor={availabilityFor}
-          context={{ copy, kind: 'settings', scope }}
+          context={{ copy, kind: 'settings', scope: null }}
           envOverride={Boolean(config?.envOverride)}
           onSelect={setMode}
           selected={mode}

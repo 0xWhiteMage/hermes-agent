@@ -32,13 +32,10 @@ export const localMode: ConnectionModeModule<'local', LocalDraft> = {
     profile: scope ?? undefined
   }),
 
-  card: ({ copy, scope }: ConnectionCardContext): ConnectionModeCard => ({
+  card: ({ copy }: ConnectionCardContext): ConnectionModeCard => ({
     icon: Monitor,
-    // Inside a profile scope, "local" means "drop this profile's override and
-    // fall back to the default connection" — a different promise, so it gets
-    // different copy.
-    title: scope === null ? copy.localTitle : copy.inheritTitle,
-    description: scope === null ? copy.localDesc : copy.inheritDesc
+    title: copy.localTitle,
+    description: copy.localDesc
   }),
 
   ConfigPanel: LocalPanel

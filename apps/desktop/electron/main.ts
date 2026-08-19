@@ -336,11 +336,14 @@ import {
   collectRelaunchArgs,
   collectRelaunchEnv,
   decideRelaunchOutcome,
-  observeUpdaterHandoff,
   resolveUnpackedRelease,
   sandboxFallbackFromEnv,
   sandboxPreflight
 } from './update-relaunch'
+import { observeUpdaterHandoff } from './updater-process'
+import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
+import { snapHudBounds } from './hud-snap'
+import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import { classifyUpdateRoot, unmanagedCheckoutMessage } from './update-root-policy'
 import type { UpdateRootKind } from './update-root-policy'
@@ -8691,8 +8694,8 @@ async function cloudAgentSilentSignIn(dashboardUrl) {
   return { baseUrl, connected: await hasOauthSessionCookie(baseUrl) }
 }
 
-function encryptDesktopSecret(value) {
-  return encryptDesktopSecretStrict(value, safeStorage)
+function encryptDesktopSecret(value: string, options: { allowPlainText?: boolean } = {}) {
+  return encryptDesktopSecretStrict(value, safeStorage, options)
 }
 
 function decryptDesktopSecret(secret) {
@@ -12105,6 +12108,45 @@ function restoreMainWindowFromHud() {
   }
 }
 
+const HUD_SNAP_ANCHOR_Y = 48
+
+function applyHudSnapToPointer() {
+  if (!hudWindow || hudWindow.isDestroyed()) {
+    return
+  }
+
+  const cursor = screen.getCursorScreenPoint()
+  const bounds = hudWindow.getBounds()
+  const display = screen.getDisplayNearestPoint(cursor)
+  const workArea = display?.workArea ?? bounds
+  const anchor = { x: Math.round(bounds.width / 2), y: HUD_SNAP_ANCHOR_Y }
+
+  const origin = snapHudBounds(
+    cursor,
+    anchor,
+    { width: bounds.width, height: bounds.height },
+    hudWindow.webContents.getZoomFactor(),
+    workArea
+  )
+
+  // setBounds — NOT setPosition alone: on Windows, a transparent frameless
+  // window silently grows ~1px per setPosition call (see move-by handler).
+  hudWindow.setBounds({
+    x: origin.x,
+    y: origin.y,
+    width: bounds.width,
+    height: bounds.height
+  })
+}
+
+const hudSnapShortcut = createHudSnapShortcut(globalShortcut, applyHudSnapToPointer)
+
+function registerHudSnapShortcut() {
+  if (!hudSnapShortcut.register()) {
+    rememberLog('[hud] snap shortcut unavailable — CommandOrControl+Shift+G may be owned by another app')
+  }
+}
+
 function openHudWindow(sessionId, profile) {
   const profileKey = typeof profile === 'string' && profile.trim() ? profile.trim() : null
 
@@ -15254,6 +15296,24 @@ ipcMain.handle('hermes:plugin:probe', async (_event, payload) => {
 
   return probePluginRepo(resolveGitBinary(), identifier)
 })
+
+async function localPluginsRoot(dirName: string): Promise<string> {
+  // Profile-aware: a named Desktop profile gets its own plugin root under
+  // profiles/<name>/, matching the profile-scoped hermes_home the backend
+  // reported before this resolver existed. 'default'/unset pins the global root.
+  const profile = readActiveDesktopProfile()
+  const base = profile && profile !== 'default' ? path.join(HERMES_HOME, 'profiles', profile) : HERMES_HOME
+  const dir = path.join(base, dirName)
+
+  try {
+    await fs.promises.mkdir(dir, { recursive: true })
+  } catch {
+    // Best-effort create; return the path regardless so the reveal action can
+    // still surface a real openPath error and the scanner can retry later.
+  }
+
+  return dir
+}
 
 ipcMain.handle('hermes:plugin:installDesktop', async (_event, payload) => {
   const identifier = String(payload?.identifier || payload?.repo || '').trim()

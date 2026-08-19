@@ -244,21 +244,6 @@ export function SshPanel({ draft, onDraftChange, surface }: ConnectionConfigPane
         title={copy.sshHermesPathTitle}
       />
 
-      {scope !== null ? (
-        <ListRow
-          action={
-            <Input
-              className={cn('h-8 font-mono', CONTROL_TEXT)}
-              onChange={event => onDraftChange({ remoteProfile: event.target.value })}
-              placeholder={scope}
-              value={draft.remoteProfile}
-            />
-          }
-          description={copy.sshRemoteProfileDesc}
-          title={copy.sshRemoteProfileTitle}
-        />
-      ) : null}
-
       <ConnectionActions
         applyLabel={kind === 'first-run' ? copy.remoteApplyAction : undefined}
         canApply={hasHost}
