@@ -316,6 +316,24 @@ function stageManagedRuntimes(target, outDir, pythonExe) {
     targetKey,
   ], { cwd: REPO_ROOT })
 
+  // The sweep skips optional tools (provisioned on demand, per the pin
+  // table). git is optional since the one-locator refactor: macOS and
+  // Linux use the machine's git behind the flag floor, so their payloads
+  // do not carry one. On Windows the managed PortableGit IS the contract
+  // (git bash), so the payload must ask for it by name.
+  if (target.platform === "win32") {
+    run(pythonExe, [
+      "-m",
+      "installation.provisioner",
+      "--runtime-dir",
+      outDir,
+      "--target",
+      targetKey,
+      "--only",
+      "git",
+    ], { cwd: REPO_ROOT })
+  }
+
   assertPayloadArch(target, outDir)
 }
 
@@ -334,7 +352,16 @@ function stageManagedRuntimes(target, outDir, pythonExe) {
  * fine anyway.
  */
 export function assertPayloadArch(target, outDir) {
-  const required = ["node", "uv", "git", "gh", "ripgrep"]
+  // git is platform-conditional: the Windows payload carries the managed
+  // PortableGit (git bash is the contract), while macOS and Linux use the
+  // machine's git behind the flag floor and ship none (one-locator
+  // refactor). The pin table's `optional` flag says who installs it; the
+  // per-target file map says who CAN.
+  const required = ["node", "uv", "gh", "ripgrep"]
+
+  if (target.platform === "win32") {
+    required.push("git")
+  }
 
   let facts
   try {
@@ -347,6 +374,14 @@ export function assertPayloadArch(target, outDir) {
     const fact = facts.tools?.[tool]
     if (!fact || !fact.path) {
       throw new Error(`${tool}: no fact in the staged payload's runtimes.json`)
+    }
+  }
+
+  // Audit every fact the payload records, required or not: a sealed
+  // artifact must carry its own bytes for anything its facts name.
+  for (const [tool, fact] of Object.entries(facts.tools ?? {})) {
+    if (!fact?.path) {
+      continue
     }
     if (path.isAbsolute(fact.path)) {
       // A "system" fact records a machine binary outside the payload —
