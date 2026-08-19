@@ -22,6 +22,7 @@ from concurrent.futures import Future, TimeoutError
 from typing import Any, Callable, Mapping, Optional
 
 from agent.interrupt_compat import request_hard_interrupt
+from hermes_constants import VALID_REASONING_EFFORTS
 
 PUBLIC_CONTRACT_VERSION = 1
 _MAX_GOAL_CHARS = 16_000
@@ -29,6 +30,11 @@ _MAX_CONTEXT_CHARS = 32_000
 _MAX_METADATA_BYTES = 8_192
 _MAX_RESULT_CHARS = 32_000
 _TERMINAL_RETENTION_SECONDS = 3_600
+
+# Effort levels a caller may pin on a child. "none" disables thinking for the
+# child outright (parse_reasoning_effort maps it to {"enabled": False}); the
+# rest are the same ladder the main agent accepts.
+_VALID_CHILD_EFFORTS = frozenset(VALID_REASONING_EFFORTS) | {"none"}
 
 
 class SubagentLifecycleError(ValueError):
@@ -373,7 +379,7 @@ class SubagentLifecycleService:
             or (handle.model is not None and not isinstance(handle.model, str))
             or (
                 handle.reasoning_effort is not None
-                and handle.reasoning_effort not in {"low", "medium", "high"}
+                and handle.reasoning_effort not in _VALID_CHILD_EFFORTS
             )
             or not isinstance(handle.role, str)
             or type(handle.depth) is not int
@@ -400,7 +406,7 @@ class SubagentLifecycleService:
         if not isinstance(config, Mapping) or not config.get("enabled"):
             return None
         effort = config.get("effort")
-        return str(effort) if effort in {"low", "medium", "high"} else None
+        return str(effort) if effort in _VALID_CHILD_EFFORTS else None
 
     @staticmethod
     def _cleanup_locked() -> None:
@@ -519,13 +525,14 @@ class SubagentLifecycleService:
             )
         if request.role not in {"leaf", "orchestrator"}:
             raise SubagentLifecycleError("role must be 'leaf' or 'orchestrator'.")
-        if request.reasoning_effort is not None and request.reasoning_effort not in {
-            "low",
-            "medium",
-            "high",
-        }:
+        if (
+            request.reasoning_effort is not None
+            and request.reasoning_effort not in _VALID_CHILD_EFFORTS
+        ):
             raise SubagentLifecycleError(
-                "reasoning_effort must be 'low', 'medium', or 'high'."
+                "reasoning_effort must be one of: "
+                + ", ".join(sorted(_VALID_CHILD_EFFORTS))
+                + "."
             )
         if request.timeout_seconds is not None:
             raise SubagentLifecycleError(
