@@ -2227,7 +2227,12 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         result = nodejs.run_npm(
             npm_install_cmd[1:],
             cwd=npm_cwd,
-            env={"CI": "1"},
+            # The full lifecycle env, not a bare {"CI": "1"}: run_npm treats
+            # a given mapping as the ENTIRE child env (plus managed dirs), so
+            # a minimal dict would drop HOME/PATH. _npm_lifecycle_env also
+            # scrubs ESBUILD_BINARY_PATH — an inherited override makes the
+            # pinned esbuild's postinstall abort (#87405).
+            env=_npm_lifecycle_env(),
         )
         if result.returncode != 0:
             combined = f"{result.stdout or ''}\n{result.stderr or ''}".strip()
@@ -2276,6 +2281,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=_npm_lifecycle_env(),
     )
     if result.returncode != 0:
         combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
@@ -5980,6 +5986,10 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             _say("Install Node.js, then run:  cd web && npm install && npm run build")
         return not fatal
     build_env = runtime_env.with_managed_runtimes()
+    # esbuild treats this as an executable override; an inherited one makes
+    # the pinned esbuild's postinstall abort (#87405). Scrub it from the
+    # whole build environment — install and vite build alike.
+    build_env.pop("ESBUILD_BINARY_PATH", None)
     _say("→ Building web UI...")
 
     def _relay(result: "subprocess.CompletedProcess") -> None:
@@ -8333,21 +8343,16 @@ def _recover_core_update_marker_locked() -> None:
 
         ensure_uv()
 
-        uv_bin = ensure_uv()
-        if not uv_bin:
-            # There is no pip tier: pip resolves without uv policy
-            # (exclude-newer, the [tool.uv] overrides), so it can install a
-            # release the project quarantined. An unprovisioned tree is a
-            # provisioning fault.
-            raise RuntimeError(
-                "no managed uv found. Run: python -m installation.provisioner"
-            )
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-        _install_python_dependencies_with_optional_fallback(
-            [uv_bin, "pip"],
-            env=uv_env,
-            group="all",
-        )
+        # Delegate the install itself to the shared executor so both this
+        # late path and the pre-import early pass run exactly the same
+        # reinstall (uv-only: run_core_install raises when no managed uv is
+        # found, with the provisioning command in the message). Called
+        # inside the same stdout→stderr redirect already established by
+        # _recover_from_interrupted_install, so run_core_install's own
+        # redirect nests harmlessly.
+        from hermes_cli import _install_repair as _ir
+
+        _ir.run_core_install(PROJECT_ROOT)
 
         _clear_update_incomplete_marker()
         print("✓ Dependency installation recovered — your install is healthy again.")

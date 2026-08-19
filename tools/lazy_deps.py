@@ -1143,6 +1143,12 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
                 "that installed Hermes."
             )
 
+    # The explicit user opt-out outranks the sealed-image diagnosis: an
+    # operator who set security.allow_lazy_installs=false asked for a
+    # quiet "skipped", not a container-bug report.
+    if not _allow_lazy_installs():
+        raise FeatureUnavailable(feature, missing, _CONFIG_DISABLED_REASON)
+
     # A sealed image contains each extra that a container can run, so a
     # LAZY_DEPS feature must never install here, even when a durable target
     # exists. That target is for install_specs, whose packages come from a
@@ -1150,9 +1156,6 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
     sealed = _sealed_venv_reason()
     if sealed is not None:
         raise FeatureUnavailable(feature, missing, sealed, actionable=False)
-
-    if not _allow_lazy_installs():
-        raise FeatureUnavailable(feature, missing, _CONFIG_DISABLED_REASON)
 
     # Only show the interactive confirmation when we own a TTY and
     # prompt_toolkit isn't running.  A bare input() deadlocks when a

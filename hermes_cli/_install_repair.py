@@ -89,15 +89,22 @@ def _resolve_install_target(root: Path) -> tuple[list[str], dict | None]:
     when invoked from the base interpreter (the early-recovery case).
     Termux strips leaked interpreter-path env vars so uv resolves the venv
     correctly.
+
+    There is no pip tier: pip resolves without uv policy (exclude-newer,
+    the [tool.uv] overrides), so it can install a release the project
+    quarantined. An unprovisioned tree is a provisioning fault, and the
+    fix is provisioning — not a downgraded installer.
     """
     uv_bin = _er._find_uv_binary()
-    if uv_bin:
-        env = {**os.environ, "VIRTUAL_ENV": str(root / "venv")}
-        if _is_termux_env(env):
-            env.pop("PYTHONPATH", None)
-            env.pop("PYTHONHOME", None)
-        return [uv_bin, "pip"], env
-    return [sys.executable, "-m", "pip"], None
+    if not uv_bin:
+        raise RuntimeError(
+            "no managed uv found. Run: python -m installation.provisioner"
+        )
+    env = {**os.environ, "VIRTUAL_ENV": str(root / "venv")}
+    if _is_termux_env(env):
+        env.pop("PYTHONPATH", None)
+        env.pop("PYTHONHOME", None)
+    return [uv_bin, "pip"], env
 
 
 def _venv_scripts_dir(root: Path) -> Path | None:
@@ -232,6 +239,11 @@ def run_core_install(root: Path) -> None:
     - route ALL install output to stderr (acp/JSON-RPC safety)
     - Termux strips leaked PYTHONPATH/PYTHONHOME from the uv env
 
+    Installs run through the managed uv only (no pip tier, no ensurepip
+    bootstrap): pip resolves without uv policy, so it can install a release
+    the project quarantined. When no uv is found the resolve raises with
+    the provisioning command.
+
     Raises ``subprocess.CalledProcessError`` when even the base install fails;
     callers own marker lifecycle (clear on success, keep on failure).
     """
@@ -239,15 +251,6 @@ def run_core_install(root: Path) -> None:
     group = "termux-all" if _is_termux_env(env) else "all"
 
     with _stdout_to_stderr():
-        try:
-            subprocess.run(
-                [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                cwd=root,
-                capture_output=True,
-            )
-        except Exception:
-            pass
-
         try:
             _run_install_cmd(
                 prefix + ["install", "-e", f".[{group}]"], env=env, root=root

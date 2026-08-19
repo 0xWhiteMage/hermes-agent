@@ -71,18 +71,28 @@ def _git_aware_side_effect(commit_count="1"):
     read_git_head shells out now (no more packed-refs parsing), so the
     identity the records carry comes from THIS answer — which is what
     lets the test assert records match it exactly.
+
+    HEAD MOVES across the fake pull: cmd_update compares pre-pull and
+    post-pull SHAs and refuses as a no-op when they match (#79678), so a
+    static answer would trip that guard instead of exercising the
+    records. The pre-pull probe sees the old SHA; every probe after the
+    merge/pull call sees FAKE_SHA, the identity the records must carry.
     """
+    state = {"pulled": False}
+    old_sha = "0" * 40
 
     def side_effect(cmd, **kwargs):
         joined = " ".join(str(c) for c in cmd)
+        if ("merge" in joined and "--ff-only" in joined) or " pull" in f" {joined}":
+            state["pulled"] = True
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if "rev-parse" in joined and "--abbrev-ref" in joined:
             return subprocess.CompletedProcess(cmd, 0, stdout="main\n", stderr="")
         if "rev-parse" in joined and "--verify" in joined:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if "rev-parse" in joined and "HEAD" in joined:
-            return subprocess.CompletedProcess(
-                cmd, 0, stdout=f"{FAKE_SHA}\n", stderr=""
-            )
+            sha = FAKE_SHA if state["pulled"] else old_sha
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{sha}\n", stderr="")
         if "rev-list" in joined:
             return subprocess.CompletedProcess(
                 cmd, 0, stdout=f"{commit_count}\n", stderr=""

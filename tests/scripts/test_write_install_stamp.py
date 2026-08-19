@@ -24,7 +24,7 @@ def test_explicit_bootstrap_variant_matches_the_default(monkeypatch):
     monkeypatch.setenv("HERMES_DESKTOP_VARIANT", "bootstrap")
     monkeypatch.setenv("HERMES_PAYLOAD_TAG", "v9.9.9")
 
-    stamp = build_stamp(commit="a" * 40)
+    stamp = build_stamp(commit="a" * 40, update_mechanism="self")
 
     assert stamp["payload"] == "bootstrap"
     assert stamp["tag"] is None
@@ -44,7 +44,7 @@ def test_light_variant_records_payload_and_tag(monkeypatch):
     monkeypatch.setenv("HERMES_DESKTOP_VARIANT", "light")
     monkeypatch.setenv("HERMES_PAYLOAD_TAG", "v0.18.0")
 
-    stamp = build_stamp(commit="b" * 40)
+    stamp = build_stamp(commit="b" * 40, update_mechanism="self")
 
     assert stamp["payload"] == "light"
     assert stamp["tag"] == "v0.18.0"
@@ -64,7 +64,7 @@ def test_unknown_variant_stops_the_build(monkeypatch):
     monkeypatch.setenv("HERMES_PAYLOAD_TAG", "v0.18.0")
 
     with pytest.raises(SystemExit, match="unknown HERMES_DESKTOP_VARIANT"):
-        build_stamp(commit="b" * 40)
+        build_stamp(commit="b" * 40, update_mechanism="self")
 
 
 def test_desktop_app_is_a_valid_distribution():

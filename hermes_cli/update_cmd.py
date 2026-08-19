@@ -2792,11 +2792,11 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     method = detect_install_method(_m().PROJECT_ROOT)
 
     # Sealed trees refuse the check with the same steward table the apply
-    # path uses (hermes_cli.runtime_tree) — one refusal, not per-branch
+    # path uses (installation.tree) — one refusal, not per-branch
     # prose. A misleading "Not a git repository"/"reinstall via curl" here
     # would point users at the wrong remediation.
     if method in ("docker", "nix", "desktop-app"):
-        from hermes_cli.runtime_tree import steward_update_message
+        from installation.tree import steward_update_message
 
         print(steward_update_message(method))
         sys.exit(1)

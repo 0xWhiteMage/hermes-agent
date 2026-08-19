@@ -206,6 +206,12 @@ def npm_install(
     # unicode-animations' postinstall animates to /dev/tty, bypassing
     # --silent and capture_output. It no-ops when CI is set.
     run_env = {**os.environ, **(env or {}), "CI": "1"}
+    # esbuild treats this as an executable override. If a shell points it
+    # at a different release, the pinned package's postinstall rejects
+    # that binary and the whole install aborts (#87405). Every caller is
+    # a frontend build against the pinned toolchain, so the override is
+    # never right here.
+    run_env.pop("ESBUILD_BINARY_PATH", None)
     npm = npm_path()
 
     if (project_dir / "package-lock.json").exists():

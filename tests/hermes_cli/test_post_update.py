@@ -231,6 +231,10 @@ def test_main_update_phase_delegates_with_parsed_flags(monkeypatch):
         "gateway_mode": True,
         "assume_yes": True,
         "pre_update_snapshot_id": "snap-123",
+        # Threaded through as an explicit parameter (the moved phase body
+        # lost the enclosing scope that main's inline block read it from);
+        # absent from the argv here, so it maps through as None.
+        "pre_update_version": None,
         "windows_gateway_resume": None,
     }
 
