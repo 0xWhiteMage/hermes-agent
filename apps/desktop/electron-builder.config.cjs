@@ -101,6 +101,13 @@ module.exports = {
       CFBundleDisplayName: displayName,
       CFBundleExecutable: displayName,
       CFBundleName: displayName,
+      // Refuse Rosetta translation: without this, the x64 build launches
+      // silently emulated on Apple silicon and stays emulated through every
+      // update (electron-updater keys the feed on process.arch). With it,
+      // LaunchServices blocks the launch and tells the user to get the
+      // arm64 build. The arm64 build never runs on Intel, so the key is
+      // safe to set unconditionally.
+      LSRequiresNativeExecution: true,
       NSAudioCaptureUsageDescription: `${displayName} uses audio capture for voice conversations.`,
       NSCameraUsageDescription: `${displayName} uses the camera when a plugin or feature you enable requests it.`,
       NSMicrophoneUsageDescription: `${displayName} uses the microphone for voice input and voice conversations.`
@@ -191,7 +198,12 @@ module.exports = {
     installerHeaderIcon: 'assets/icon.ico',
     shortcutName: displayName,
     uninstallDisplayName: displayName,
-    warningsAsErrors: false
+    warningsAsErrors: false,
+    // customInit arch guard: a wrong-arch NSIS installer must refuse to run
+    // instead of installing an emulated app (x64-on-arm64) or an empty dir
+    // (arm64-on-x64 — the stock identify_package macro matches nothing and
+    // "succeeds"). The path resolves relative to the project dir.
+    include: 'electron/nsis-arch-guard.nsh'
   }
 }
 
