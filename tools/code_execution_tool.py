@@ -1380,11 +1380,15 @@ def execute_code(
         # sandbox_tools is already the correct set (intersection with session
         # tools, or SANDBOX_ALLOWED_TOOLS as fallback — see lines above).
         tools_src = generate_hermes_tools_module(list(sandbox_tools))
-        with open(os.path.join(tmpdir, "hermes_tools.py"), "w", encoding="utf-8-sig") as f:
+        # windows-footgun: ok — this IS a write with plain utf-8 (never a
+        # BOM: the child imports this file and a BOM would leak into user
+        # code); the checker misreads the mode because the nested
+        # os.path.join() hides the "w" from its line-based mode extractor.
+        with open(os.path.join(tmpdir, "hermes_tools.py"), "w", encoding="utf-8") as f:  # windows-footgun: ok
             f.write(tools_src)
 
         # Write the user's script
-        with open(os.path.join(tmpdir, "script.py"), "w", encoding="utf-8-sig") as f:
+        with open(os.path.join(tmpdir, "script.py"), "w", encoding="utf-8") as f:  # windows-footgun: ok
             f.write(code)
 
         # --- Start RPC server ---
