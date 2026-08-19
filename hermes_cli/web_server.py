@@ -146,7 +146,7 @@ def _process_start_marker(pid: int) -> str:
     """
     if sys.platform == "linux":
         try:
-            stat_line = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+            stat_line = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8-sig")
         except FileNotFoundError as exc:
             raise ProcessLookupError(pid) from exc
 
@@ -3356,7 +3356,7 @@ def _read_or_create_install_id() -> Optional[str]:
     root = get_default_hermes_root()
     path = root / _INSTALL_ID_FILENAME
     try:
-        existing = path.read_text(encoding="utf-8").strip().lower()
+        existing = path.read_text(encoding="utf-8-sig").strip().lower()
         if _INSTALL_ID_RE.match(existing):
             return existing
     except FileNotFoundError:
@@ -13084,7 +13084,7 @@ def _gateway_intentionally_stopped(profile: Optional[str]) -> bool:
         state_file = home / "gateway_state.json"
         if not state_file.exists():
             return False
-        data = _json.loads(state_file.read_text(encoding="utf-8"))
+        data = _json.loads(state_file.read_text(encoding="utf-8-sig"))
         if not isinstance(data, dict):
             return False
         return data.get("desired_state") == "stopped"

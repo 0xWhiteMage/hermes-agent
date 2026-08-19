@@ -252,7 +252,7 @@ def _load_ledger(store: Path, dir_hash: str) -> Dict[str, Dict]:
     this" apart from "the user hand-edited this afterwards".
     """
     try:
-        raw = _ledger_path(store, dir_hash).read_text(encoding="utf-8")
+        raw = _ledger_path(store, dir_hash).read_text(encoding="utf-8-sig")
         data = json.loads(raw)
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
