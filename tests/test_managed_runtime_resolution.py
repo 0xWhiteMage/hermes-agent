@@ -68,10 +68,6 @@ _ALLOWED: dict[tuple[str, str], str] = {
         "can only run what is on that subshell's PATH, which local.py populates "
         "with the managed dirs — so PATH is the correct question to ask here."
     ),
-    ("hermes_cli/gateway.py", "node"): (
-        "Fallback rung of _append_node_dir_for_service(), after the managed "
-        "dirs from managed_path_dirs() are already appended."
-    ),
     ("installation/git.py", "git"): (
         "probe_system_git() IS the sanctioned system-git probe, and the only "
         "one: git_path() calls it after the managed git, and it rejects the "
