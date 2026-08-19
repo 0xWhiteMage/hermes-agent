@@ -644,8 +644,11 @@ class TestBrowserUseCliInstalledForAllNonCamofoxBackends:
         """Camofox is Firefox-based with no CDP surface; the CDP-only
         browser-use harness cannot drive it, so its setup must not pull
         the CLI in."""
+        from installation.nodejs import NotProvisioned
+
         with patch("hermes_cli.tools_config._ensure_browser_use_cli") as ensure, patch(
-            "hermes_constants.find_node_executable", return_value=None
+            "installation.nodejs.npm_path",
+            side_effect=NotProvisioned("npm is not provisioned"),
         ), patch("subprocess.run"):
             _run_post_setup("camofox")
         ensure.assert_not_called()

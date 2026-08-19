@@ -221,8 +221,8 @@ class TestScratchCleanupIsNotAFailure:
         real_stage = rp._stage
         locked: list[Path] = []
 
-        def stage_then_lock(tool, pin, dest, tmp, tgt, rt):
-            real_stage(tool, pin, dest, tmp, tgt, rt)
+        def stage_then_lock(tool, pin, dest, tmp, tgt, rt, archive_dir=None):
+            real_stage(tool, pin, dest, tmp, tgt, rt, archive_dir=archive_dir)
             (tmp / "held-open.exe").write_bytes(b"still open elsewhere")
             tmp.chmod(0o500)
             locked.append(tmp)
@@ -440,8 +440,8 @@ class TestTheStoreIsShared:
 
         real_stage = rp._stage
 
-        def stage_then_race(tool, pin, dest, tmp, tgt, ctx):
-            real_stage(tool, pin, dest, tmp, tgt, ctx)
+        def stage_then_race(tool, pin, dest, tmp, tgt, ctx, archive_dir=None):
+            real_stage(tool, pin, dest, tmp, tgt, ctx, archive_dir=archive_dir)
             # The "other process" publishes a complete entry — marker and
             # all — while we still hold a staged tree.
             (entry / "bin").mkdir(parents=True)

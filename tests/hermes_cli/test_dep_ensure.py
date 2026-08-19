@@ -89,15 +89,41 @@ def test_find_agent_browser_lazy_install_cycle_terminates(monkeypatch):
 
 
 @pytest.mark.windows_only
+def test_ensure_dependency_provisions_pinned_node_without_powershell(tmp_path):
+    """node is a PINNED dep now: ensure_dependency drives the provisioner,
+    which stages the managed node.exe in the tool store — the install.ps1
+    shell-out no longer exists for it, so no PowerShell process is spawned.
+
+    ``windows_only``: the assertion is about the Windows arm of the ensure
+    path, where the shell-out used to be the mechanism."""
+    from hermes_cli.dep_ensure import ensure_dependency
+
+    class _Result:
+        ok = True
+        detail = None
+
+    checks = iter([False, True])  # missing before provisioning, present after
+    with patch("hermes_cli.dep_ensure._DEP_CHECKS", {"node": lambda: next(checks)}), \
+         patch("installation.provisioner.provision_tool", return_value=_Result()) as prov, \
+         patch("subprocess.run") as mock_run, \
+         patch("sys.stdin") as mock_stdin:
+        mock_stdin.isatty.return_value = False
+        assert ensure_dependency("node", interactive=False) is True
+    prov.assert_called_once_with("node")
+    mock_run.assert_not_called()
+
+
+@pytest.mark.windows_only
 def test_ensure_dependency_uses_powershell_on_windows(tmp_path):
-    """``windows_only``: the assertion is that we shell out to a real
+    """Deps WITHOUT a pin (ffmpeg) still shell out to install.ps1.
+    ``windows_only``: the assertion is that we shell out to a real
     PowerShell. Faking ``_IS_WINDOWS`` on Linux also required faking
     ``shutil.which`` into inventing a powershell.exe that isn't there."""
     from hermes_cli.dep_ensure import ensure_dependency
     scripts_dir = tmp_path / "scripts"
     scripts_dir.mkdir(parents=True)
     (scripts_dir / "install.ps1").write_text("# fake")
-    with patch("hermes_cli.dep_ensure._DEP_CHECKS", {"node": lambda: False}), \
+    with patch("hermes_cli.dep_ensure._DEP_CHECKS", {"ffmpeg": lambda: False}), \
          patch("hermes_cli.dep_ensure._find_install_script", return_value=(scripts_dir / "install.ps1", "powershell")), \
          patch("hermes_cli.dep_ensure.shutil") as mock_shutil, \
          patch("hermes_constants.get_hermes_home", return_value=tmp_path / "fakehome"), \
@@ -106,10 +132,10 @@ def test_ensure_dependency_uses_powershell_on_windows(tmp_path):
         mock_shutil.which.side_effect = lambda name: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" if name == "powershell" else None
         mock_stdin.isatty.return_value = False
         mock_run.return_value = type("R", (), {"returncode": 0})()
-        ensure_dependency("node", interactive=False)
+        ensure_dependency("ffmpeg", interactive=False)
         cmd = mock_run.call_args[0][0]
         assert "powershell" in cmd[0].lower()
         assert "-Ensure" in cmd
-        assert cmd[cmd.index("-Ensure") + 1] == "node"
+        assert cmd[cmd.index("-Ensure") + 1] == "ffmpeg"
         assert "-HermesHome" in cmd
         assert str(tmp_path / "fakehome") in cmd
