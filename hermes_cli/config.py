@@ -2243,10 +2243,9 @@ def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> Non
 
         hint_path = display_hermes_home()
         lines.insert(0, "\033[33m⚠ Deprecated .env settings detected:\033[0m")
-        lines.append(
-            "  \033[2mMove to config.yaml instead:  "
-            "terminal:\\n    cwd: /your/project/path\033[0m"
-        )
+        lines.append("  \033[2mMove to config.yaml instead:\033[0m")
+        lines.append("  \033[2m  terminal:\033[0m")
+        lines.append("  \033[2m    cwd: /your/project/path\033[0m")
         lines.append(
             f"  \033[2mThen remove the old entries from {hint_path}/.env\033[0m"
         )
