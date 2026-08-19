@@ -17,8 +17,13 @@ const require = createRequire(import.meta.url)
 const desktopDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const desktopPkg = require(path.join(desktopDir, 'package.json'))
 
-const { getPublishConfigs } = require('app-builder-lib/out/publish/PublishManager.js')
-const { getRepositoryInfo } = require('app-builder-lib/out/util/repositoryInfo.js')
+// Resolve through the package entry, not a bare subpath: electron-builder 27
+// moved out/ to dist/ and added an exports map that hides both, so a bare
+// `app-builder-lib/out/...` require breaks on 27 and a bare `dist/...` one
+// breaks on 26. Absolute file paths bypass the exports map on every version.
+const libDir = path.dirname(require.resolve('app-builder-lib'))
+const { getPublishConfigs } = require(path.join(libDir, 'publish', 'PublishManager.js'))
+const { getRepositoryInfo } = require(path.join(libDir, 'util', 'repositoryInfo.js'))
 
 /**
  * The slice of PlatformPackager that getPublishConfigs actually reads. The
@@ -35,9 +40,17 @@ function fakePackager(metadata) {
     options: {}
   }
   return {
+    // electron-builder 26 reads platformSpecificBuildOptions; 27 renamed the
+    // getter to platformOptions. Carry both so the fake matches either.
     platformSpecificBuildOptions: {},
+    platformOptions: {},
     config: {},
     info,
+    // 26 resolved the repository through info.repositoryInfo; 27's
+    // getResolvedPublishConfig reads it from the packager itself.
+    get repositoryInfo() {
+      return info.repositoryInfo
+    },
     platform: { name: 'linux' },
     appInfo: info.appInfo,
     expandMacro: value => value
