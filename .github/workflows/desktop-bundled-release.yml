@@ -180,11 +180,6 @@ jobs:
             $env:RUNNER_TEMP,
             (npm config get cache)
           )
-          try {
-            Set-MpPreference -DisableRealtimeMonitoring $true
-          } catch {
-            Write-Host "Could not disable windows defender"
-          }
           foreach ($p in $paths) {
             try {
               Add-MpPreference -ExclusionPath $p
@@ -192,6 +187,12 @@ jobs:
             } catch {
               Write-Host "Defender exclusion not applied for $p ($($_.Exception.Message)) - continuing"
             }
+          }
+          try {
+            Write-Host "Windows defender disabled."
+            Set-MpPreference -DisableRealtimeMonitoring $true
+          } catch {
+            Write-Host "Could not disable windows defender"
           }
 
       - name: Validate tag shape
