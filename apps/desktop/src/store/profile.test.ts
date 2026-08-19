@@ -168,6 +168,66 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
   })
 })
 
+describe('declined activation retry (#89622)', () => {
+  it('retries once with a fresh prepare when the first activation declines, then publishes', async () => {
+    // The field failure: the live-work pruner disposed the switch target's
+    // entry mid-dial, so the first activation thunk declined. The switch must
+    // not resolve as a silent no-op — one fresh prepare (new entry, new
+    // epoch) lands the switch.
+    getConnection.mockResolvedValue(remoteConn())
+    prepareGatewayForProfile.mockResolvedValueOnce(() => false)
+
+    await ensureGatewayProfile('vps-remote')
+
+    expect(prepareGatewayForProfile).toHaveBeenCalledTimes(2)
+    expect(activateGateway).toHaveBeenCalledTimes(1)
+    expect($activeGatewayProfile.get()).toBe('vps-remote')
+    expect($connection.get()?.mode).toBe('remote')
+  })
+
+  it('publishes nothing and warns when the activation declines twice', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    getConnection.mockResolvedValue(remoteConn())
+    prepareGatewayForProfile.mockResolvedValueOnce(() => false)
+    prepareGatewayForProfile.mockResolvedValueOnce(() => false)
+
+    await ensureGatewayProfile('vps-remote')
+
+    expect(prepareGatewayForProfile).toHaveBeenCalledTimes(2)
+    expect($activeGatewayProfile.get()).toBe('default')
+    expect($connection.get()?.mode).toBe('local')
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('declined twice'))
+
+    warn.mockRestore()
+  })
+
+  it('a declined-then-retried switch leaves the mutex clear — the next switch works', async () => {
+    getConnection.mockResolvedValue(remoteConn())
+    prepareGatewayForProfile.mockResolvedValueOnce(() => false)
+    prepareGatewayForProfile.mockResolvedValueOnce(() => false)
+
+    await ensureGatewayProfile('vps-remote')
+    expect($activeGatewayProfile.get()).toBe('default')
+
+    // Second click after the failure must go through cleanly.
+    await ensureGatewayProfile('vps-remote')
+
+    expect($activeGatewayProfile.get()).toBe('vps-remote')
+  })
+
+  it('logs the reason when the descriptor lookup rejects instead of swallowing it', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    getConnection.mockRejectedValue(new Error('backend unreachable'))
+
+    await ensureGatewayProfile('vps-remote')
+
+    expect($activeGatewayProfile.get()).toBe('default')
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('gateway switch to "vps-remote" failed'), expect.any(Error))
+
+    warn.mockRestore()
+  })
+})
+
 describe('profile-scoped cache invalidation', () => {
   it('drops the memory graph cache when the active gateway profile changes', () => {
     $activeGatewayProfile.set('coder')

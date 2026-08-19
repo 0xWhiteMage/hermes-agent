@@ -59,7 +59,23 @@ interface Secondary {
   // While true the entry auto-reconnects on drop; pruning flips it off so a
   // deliberate close doesn't trigger the backoff loop.
   wantOpen: boolean
+  /**
+   * Epoch-ms deadline while an activation (prepareGatewayFor*) is mid-dial.
+   * The live-work pruner must not dispose an entry the user is actively
+   * switching to: the target of a switch is by definition not yet the active
+   * key, has no live sessions and holds no request lease, so during a cold
+   * spawn (~3s) every recompute tick saw it as idle garbage, disposed it
+   * mid-dial, and the activation thunk then declined — a dead profile click
+   * with no error (#89622). Cleared when the activation thunk settles;
+   * bounded so an orphaned lease (caller dropped the thunk) self-heals.
+   */
+  activationLeaseUntil: number
 }
+
+// How long a mid-dial activation holds its prune lease: covers a cold pool
+// backend spawn + socket connect with margin, while still letting a leaked
+// lease expire quickly enough for the reaper to reclaim the entry.
+const ACTIVATION_LEASE_MS = 30_000
 
 // ── HMR-stable module state ─────────────────────────────────────────────────
 // All mutable singletons (live sockets, active-profile routing, the event
@@ -432,7 +448,8 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     reconnectAttempt: 0,
     reconnecting: false,
     retained: false,
-    wantOpen: true
+    wantOpen: true,
+    activationLeaseUntil: 0
   }
 
   // Events keep carrying the bare profile — session routing is profile-keyed
@@ -704,6 +721,11 @@ export async function prepareGatewayForAgent(connectionId: null | string, profil
 
   entry.retained = true
   entry.wantOpen = true
+  // Lease the entry against the live-work pruner for the whole dial: the
+  // switch target is not yet active and has no live sessions, so a prune
+  // recompute firing mid-spawn would otherwise dispose it and this
+  // activation would decline (#89622).
+  entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
 
   if (!isOpen(entry.gateway)) {
     clearTimer(entry)
@@ -720,6 +742,9 @@ export async function prepareGatewayForAgent(connectionId: null | string, profil
   const prepared = entry
 
   return () => {
+    // The activation is settling either way — release the prune lease.
+    prepared.activationLeaseUntil = 0
+
     // A source edit/remove may dispose this entry while its dial is still in
     // flight. Only the still-registered, still-owned activation may publish.
     const activated =
@@ -774,6 +799,9 @@ export async function prepareGatewayForProfile(profile: string): Promise<() => b
 
   entry.retained = true
   entry.wantOpen = true
+  // Lease the entry against the live-work pruner for the whole dial — the
+  // profile-door twin of the agent path's lease above (#89622).
+  entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
 
   if (!isOpen(entry.gateway)) {
     clearTimer(entry)
@@ -800,6 +828,9 @@ export async function prepareGatewayForProfile(profile: string): Promise<() => b
   // epoch superseded by a newer switch while this one was dialing) must leave
   // every companion store alone.
   return () => {
+    // The activation is settling either way — release the prune lease.
+    prepared.activationLeaseUntil = 0
+
     const activated = prepared.wantOpen && g.secondaries.get(key) === prepared && applyActive(key, activationEpoch)
 
     if (activated && prepared.connection) {
@@ -913,12 +944,20 @@ function restoreActiveToPrimaryIfEvicted(): void {
 // bare profile name kept gateway B's 'default' socket alive off gateway A's
 // 'default' activity (and vice versa) — cross-connection attribution.
 export function pruneSecondaryGateways(keep: Set<string>): void {
+  const now = Date.now()
+
   for (const [key, entry] of [...g.secondaries]) {
     if (
       key === g.activeKey ||
       keep.has(key) ||
       (!entry.connectionId && keep.has(entry.profile)) ||
-      entry.activeRequests > 0
+      entry.activeRequests > 0 ||
+      // Mid-dial activation target (prepareGatewayFor*): the profile being
+      // switched TO is not yet active and has no live work, so without this
+      // lease any recompute during its cold spawn disposed the entry and the
+      // switch silently declined (#89622). Number guard: dev-HMR entries
+      // predate the field. Bounded: an orphaned lease expires on its own.
+      (Number.isFinite(entry.activationLeaseUntil) && entry.activationLeaseUntil > now)
     ) {
       continue
     }

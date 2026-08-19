@@ -326,45 +326,66 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
 
   $gatewaySwapTarget.set(target)
   gatewaySwitch = (async () => {
-    // Resolve the target's connection descriptor and open (or reuse) its
-    // socket BEFORE anything is published — without closing the profile you
-    // came from. The gateway used to be activated (and the profile atom set)
-    // while the descriptor fetch was still in flight, so during that window
-    // $gateway already targeted the new backend while $connection still
-    // described the previous one — and any request or plugin mode-listener
-    // firing then announced the WRONG mode to the new backend.
-    const [connection, activate] = await Promise.all([
-      resolveConnectionForProfile(target),
-      prepareGatewayForProfile(target)
-    ])
+    // Two attempts: a declined activation while we HOLD the switch mutex can
+    // only come from a registry-internal event (an eviction fallback or a
+    // teardown superseding our epoch mid-dial) — never from a newer user
+    // switch, which would be queued behind this promise. Those are transient,
+    // and before the fail-closed hardening the unconditional publish papered
+    // over them — so one fresh prepare (new entry, new epoch) restores the
+    // old reliability without publishing a torn tuple. A second decline is
+    // reported instead of silently swallowed (#89622).
+    for (let attempt = 0; attempt < 2; attempt++) {
+      // Resolve the target's connection descriptor and open (or reuse) its
+      // socket BEFORE anything is published — without closing the profile you
+      // came from. The gateway used to be activated (and the profile atom set)
+      // while the descriptor fetch was still in flight, so during that window
+      // $gateway already targeted the new backend while $connection still
+      // described the previous one — and any request or plugin mode-listener
+      // firing then announced the WRONG mode to the new backend.
+      const [connection, activate] = await Promise.all([
+        resolveConnectionForProfile(target),
+        prepareGatewayForProfile(target)
+      ])
 
-    // ONE publication. batch() defers Nanostores' notifications to the end of
-    // the callback, so the active gateway, $activeGatewayProfile and
-    // $connection become visible together. Without it these are sequential
-    // .set() calls that each drain their listeners synchronously, and a
-    // $gateway listener runs while the other two still name the old backend.
-    batch(() => {
-      // A rejected activation publishes NOTHING, exactly like the agent path.
-      // applyActive() returns false when its captured epoch was superseded --
-      // a newer switch (or a teardown) landed while this one was awaiting its
-      // route or socket. Publishing the companions anyway would leave the
-      // CURRENT gateway paired with the stale profile pointer and descriptor,
-      // and batch() cannot rescue that: it would make the mismatched tuple
-      // atomically observable rather than prevent it.
-      if (!activate()) {
+      let published = false
+
+      // ONE publication. batch() defers Nanostores' notifications to the end of
+      // the callback, so the active gateway, $activeGatewayProfile and
+      // $connection become visible together. Without it these are sequential
+      // .set() calls that each drain their listeners synchronously, and a
+      // $gateway listener runs while the other two still name the old backend.
+      batch(() => {
+        // A rejected activation publishes NOTHING, exactly like the agent path.
+        // applyActive() returns false when its captured epoch was superseded --
+        // a newer switch (or a teardown) landed while this one was awaiting its
+        // route or socket. Publishing the companions anyway would leave the
+        // CURRENT gateway paired with the stale profile pointer and descriptor,
+        // and batch() cannot rescue that: it would make the mismatched tuple
+        // atomically observable rather than prevent it.
+        if (!activate()) {
+          return
+        }
+
+        published = true
+        $activeGatewayProfile.set(target)
+
+        if (connection) {
+          setConnection(connection)
+        }
+      })
+
+      if (published) {
         return
       }
+    }
 
-      $activeGatewayProfile.set(target)
-
-      if (connection) {
-        setConnection(connection)
-      }
-    })
-  })().catch(() => {
+    console.warn(`[profile] gateway switch to "${target}" was declined twice; staying on the current profile`)
+  })().catch(err => {
     // Descriptor lookup failed: the switch fails as a unit. Nothing was
     // published, so every atom still consistently describes the previous
-    // profile; the user can retry the switch.
+    // profile; the user can retry the switch. Log the reason — an empty
+    // catch here made a failing switch indistinguishable from a working one.
+    console.warn(`[profile] gateway switch to "${target}" failed`, err)
   })
 
   try {
@@ -430,40 +451,56 @@ export async function ensureGatewayAgent(connectionId: null | string, profile: s
 
   $gatewaySwapTarget.set(target)
   gatewaySwitch = (async () => {
-    // Dial the agent's socket and resolve its descriptor without publishing
-    // either, exactly like the profile path above. Activating first and then
-    // awaiting the descriptor left $gateway on the new backend while
-    // $connection still described the old one, so anything requesting during
-    // that window announced the WRONG mode to the new backend.
-    const [descriptor, activate] = await Promise.all([
-      resolveConnectionForActiveAgent(connection, target),
-      prepareGatewayForAgent(connection, target)
-    ])
+    // Same two-attempt shape as the profile door above: a decline while we
+    // hold the mutex is registry-internal and transient; retry once with a
+    // fresh entry + epoch, and report a second decline instead of silence.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      // Dial the agent's socket and resolve its descriptor without publishing
+      // either, exactly like the profile path above. Activating first and then
+      // awaiting the descriptor left $gateway on the new backend while
+      // $connection still described the old one, so anything requesting during
+      // that window announced the WRONG mode to the new backend.
+      const [descriptor, activate] = await Promise.all([
+        resolveConnectionForActiveAgent(connection, target),
+        prepareGatewayForAgent(connection, target)
+      ])
 
-    // ONE publication. batch() defers Nanostores' notifications to the end of
-    // the callback, so a $gateway listener cannot run while the profile
-    // pointer and the connection descriptor still name the previous backend.
-    // Without it these are three sequential .set() calls, each draining its
-    // listeners synchronously, and the first listener observes exactly the
-    // mismatch this seam exists to prevent.
-    batch(() => {
-      // A disposed target (source edited/removed mid-dial) publishes nothing
-      // at all, rather than moving the profile pointer to a backend that no
-      // longer has a socket.
-      if (!activate()) {
+      let published = false
+
+      // ONE publication. batch() defers Nanostores' notifications to the end of
+      // the callback, so a $gateway listener cannot run while the profile
+      // pointer and the connection descriptor still name the previous backend.
+      // Without it these are three sequential .set() calls, each draining its
+      // listeners synchronously, and the first listener observes exactly the
+      // mismatch this seam exists to prevent.
+      batch(() => {
+        // A disposed target (source edited/removed mid-dial) publishes nothing
+        // at all, rather than moving the profile pointer to a backend that no
+        // longer has a socket.
+        if (!activate()) {
+          return
+        }
+
+        published = true
+        $activeGatewayProfile.set(target)
+
+        // Remote-aware paths (image.attach_bytes vs image.attach, /api/fs/*,
+        // /api/media) follow $connection. Null here is only the no-bridge case,
+        // so keeping the previous descriptor is correct; a failed lookup
+        // rejected above and never reached this frame.
+        if (descriptor) {
+          setConnection(descriptor)
+        }
+      })
+
+      if (published) {
         return
       }
+    }
 
-      $activeGatewayProfile.set(target)
-
-      // Remote-aware paths (image.attach_bytes vs image.attach, /api/fs/*,
-      // /api/media) follow $connection. Null here is only the no-bridge case,
-      // so keeping the previous descriptor is correct; a failed lookup
-      // rejected above and never reached this frame.
-      if (descriptor) {
-        setConnection(descriptor)
-      }
-    })
+    console.warn(
+      `[profile] agent gateway switch to "${connection}:${target}" was declined twice; staying on the current profile`
+    )
   })()
 
   try {

@@ -152,7 +152,9 @@ describe('ensureGatewayAgent → $connection / $activeGatewayProfile sync', () =
 
   it('does not republish a registry identity invalidated during activation', async () => {
     // The thunk reports false: the entry was disposed (source edited/removed)
-    // between dial and publish. Nothing may publish, $gateway included.
+    // between dial and publish. Nothing may publish, $gateway included. Two
+    // declines: the switch retries a transient decline once (#89622).
+    prepareGatewayForAgent.mockResolvedValueOnce(() => false)
     prepareGatewayForAgent.mockResolvedValueOnce(() => false)
 
     await ensureGatewayAgent('removed-source', 'research')
@@ -166,8 +168,9 @@ describe('ensureGatewayAgent → $connection / $activeGatewayProfile sync', () =
     // live entry) would put an await between the identity check and the
     // publication and reopen the gap. The cost is one redundant read-only
     // lookup in the rare disposed-entry case; the invariant that matters -
-    // nothing is PUBLISHED - is asserted above.
-    expect(getConnectionFor).toHaveBeenCalledTimes(1)
+    // nothing is PUBLISHED - is asserted above. Two lookups here: one per
+    // decline-then-retry attempt.
+    expect(getConnectionFor).toHaveBeenCalledTimes(2)
   })
 
   it('never shows a $gateway listener the new backend beside stale companions', async () => {
@@ -268,6 +271,10 @@ describe('ensureGatewayProfile publishes under the same activation guard', () =>
     // descriptor. Atomicity cannot make a rejected activation correct, so the
     // caller has to decline to publish at all.
     getConnection.mockResolvedValue(localConn({ profile: 'worker' }))
+    // Both attempts decline: the switch retries a transient decline once
+    // (#89622), so pinning the publish-nothing contract requires exhausting
+    // the retry too.
+    prepareGatewayForProfile.mockResolvedValueOnce(() => false)
     prepareGatewayForProfile.mockResolvedValueOnce(() => false)
 
     const seen: unknown[] = []
