@@ -1,8 +1,8 @@
 """render-builds-table.py: tables from REAL asset names, spliced idempotently.
 
 The contract: table rows exist only for assets that are actually on the
-release (missing artifact = missing row, never a dead link), msix / zip /
-feed manifests stay out, and re-rendering replaces the previous block
+release (missing artifact = missing row, never a dead link), msixbundle /
+zip / feed manifests stay out, and re-rendering replaces the previous block
 instead of stacking a second one.
 """
 
@@ -17,38 +17,38 @@ _SPEC.loader.exec_module(rbt)
 
 
 ASSETS = [
-    "Hermes-0.28.0-mac-arm64.dmg",
-    "Hermes-0.28.0-mac-arm64.zip",          # updater delta target — no row
-    "Hermes-0.28.0-win-x64.exe",
-    "Hermes-0.28.0-win-arm64.exe",
-    "Hermes-0.28.0-win-x64.msix",           # store channel — no row
-    "Hermes-0.28.0-linux-x64.AppImage",
+    "HermesBundled-0.28.0-mac-arm64.dmg",
+    "HermesBundled-0.28.0-mac-arm64.zip",          # updater delta target — no row
+    "HermesBundled-0.28.0-win-x64.exe",
+    "HermesBundled-0.28.0-win-arm64.exe",
+    "HermesBundled-0.28.0-win.msixbundle",         # store/sideload channel — no row
+    "HermesBundled-0.28.0-linux-x64.AppImage",
     "HermesLight-0.28.0-win-x64.exe",
-    "latest.yml",                            # feed manifest — no row
+    "latest.yml",                                   # feed manifest — no row
     "light.yml",
-    "Hermes-0.28.0-win-x64.exe.blockmap",   # no row
+    "HermesBundled-0.28.0-win-x64.exe.blockmap",   # no row
 ]
 
 
 class TestParseAssets:
     def test_only_table_shaped_assets_parse(self):
         parsed = rbt.parse_assets(ASSETS)
-        assert ("mac", "arm64") in parsed["Hermes"]
-        assert ("win", "x64") in parsed["Hermes"]
-        assert ("win", "arm64") in parsed["Hermes"]
-        assert ("linux", "x64") in parsed["Hermes"]
-        assert len(parsed["Hermes"]) == 4          # zip/msix/blockmap/yml excluded
+        assert ("mac", "arm64") in parsed["HermesBundled"]
+        assert ("win", "x64") in parsed["HermesBundled"]
+        assert ("win", "arm64") in parsed["HermesBundled"]
+        assert ("linux", "x64") in parsed["HermesBundled"]
+        assert len(parsed["HermesBundled"]) == 4   # zip/msixbundle/blockmap/yml excluded
         assert parsed["HermesLight"] == {("win", "x64"): ("HermesLight-0.28.0-win-x64.exe", "exe")}
 
     def test_nightly_versions_parse(self):
-        parsed = rbt.parse_assets(["Hermes-0.28.0-nightly.20260818-win-x64.exe"])
-        assert ("win", "x64") in parsed["Hermes"]
+        parsed = rbt.parse_assets(["HermesBundled-0.28.0-nightly.20260818-win-x64.exe"])
+        assert ("win", "x64") in parsed["HermesBundled"]
 
 
 class TestRenderAndSplice:
     def test_rows_only_for_present_assets(self):
         block = rbt.render_tables(rbt.parse_assets(ASSETS), "v0.28.0", "NousResearch/hermes-agent")
-        assert "Hermes-0.28.0-mac-arm64.dmg" in block
+        assert "HermesBundled-0.28.0-mac-arm64.dmg" in block
         assert "msix" not in block
         assert ".zip" not in block
         # A leg that never uploaded leaves no row at all.
