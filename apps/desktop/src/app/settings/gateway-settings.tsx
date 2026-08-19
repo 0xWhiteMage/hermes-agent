@@ -16,8 +16,8 @@ import {
   useConnectionDrafts
 } from '../connection'
 
-import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton } from './primitives'
 import { ConnectionsRegistrySection } from './connections-registry'
+import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton } from './primitives'
 
 // Settings → Gateways: the post-bootstrap host for the connection modes in
 // app/connection. This file owns what is genuinely Settings' own — the

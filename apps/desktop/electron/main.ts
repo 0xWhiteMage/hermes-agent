@@ -214,6 +214,8 @@ import {
   writeSecretFileAtomic
 } from './hardening'
 import { cursorPointInWindow } from './hud-cursor'
+import { snapHudBounds } from './hud-snap'
+import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { imageContextMenuItems } from './image-context-menu'
 import { INSTALL_STAMP, installShape } from './install-stamp'
@@ -340,13 +342,10 @@ import {
   sandboxFallbackFromEnv,
   sandboxPreflight
 } from './update-relaunch'
-import { observeUpdaterHandoff } from './updater-process'
-import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
-import { snapHudBounds } from './hud-snap'
-import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import { classifyUpdateRoot, unmanagedCheckoutMessage } from './update-root-policy'
 import type { UpdateRootKind } from './update-root-policy'
+import { observeUpdaterHandoff } from './updater-process'
 import {
   resolveStagedUpdaterBinary,
   resolveUpdateScriptHandoff,
@@ -363,6 +362,7 @@ import {
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { readWindowBelow } from './window-below'
+import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
 import {
   bindGeometryPersistence,
@@ -8713,7 +8713,7 @@ function decryptDesktopSecret(secret) {
     return ''
   }
 
-  if (secret.encoding === 'safeStorage') {
+  if (secret.encoding === SAFE_STORAGE_ENCODING) {
     try {
       return safeStorage.decryptString(Buffer.from(value, 'base64'))
     } catch {
