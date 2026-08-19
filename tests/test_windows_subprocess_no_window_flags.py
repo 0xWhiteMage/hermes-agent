@@ -383,11 +383,10 @@ def test_lazy_deps_uv_install_hides_console_window(monkeypatch):
     monkeypatch.delenv(lazy_deps._LAZY_TARGET_ENV, raising=False)
     monkeypatch.setattr(lazy_deps, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
     monkeypatch.setattr(lazy_deps.subprocess, "run", fake_run)
-    monkeypatch.setattr(lazy_deps.shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
-    # resolve_uv() is the first rung and finds a real managed uv wherever the
-    # runtime dir is populated (the Nix dev shell points at a built one), so
-    # the PATH stub below would never be reached.
-    monkeypatch.setattr("hermes_cli.managed_uv.resolve_uv", lambda: None)
+    # The ladder (installation.pip_ladder) spawns the managed uv only — the
+    # PATH tier is gone on purpose (a PATH uv is unverified bytes). Hand the
+    # wrapper a resolved managed uv so the spawn under test happens.
+    monkeypatch.setattr("hermes_cli.managed_uv.resolve_uv", lambda: "/usr/bin/uv")
 
     res = lazy_deps._venv_pip_install(("left-pad",))
 
