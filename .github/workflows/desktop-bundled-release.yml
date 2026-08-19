@@ -134,6 +134,25 @@ jobs:
           echo killing...; sudo pkill -9 XProtect >/dev/null || true;
           echo waiting...; while pgrep XProtect; do sleep 3; done;
 
+      # Exclude the workspace from Defender's real-time scanning. npm ci
+      # writes ~1300 packages of small files; on the windows-11-arm runner
+      # image that step measured 11-14 MINUTES against 33-60s on x64 for
+      # the same lockfile with a warm npm http cache — a file-write-path
+      # slowdown, which is Defender's signature. The x64 images ship with
+      # runner exclusions this image appears to lack. Best-effort (try /
+      # catch): a hardened future image that denies the call should not
+      # fail the build, just run slow like today.
+      - name: Exclude workspace from Defender scanning
+        if: startsWith(matrix.target.label, 'win32-')
+        shell: powershell
+        run: |
+          try {
+            Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE"
+            Write-Host "Defender exclusion added for $env:GITHUB_WORKSPACE"
+          } catch {
+            Write-Host "Defender exclusion not applied ($($_.Exception.Message)) - continuing"
+          }
+
       - name: Validate tag shape
         shell: bash
         run: |
@@ -258,8 +277,13 @@ jobs:
       # night and are simply signed fresh — a handful of files, seconds.
       # Threat model: writable only from main/tag runs, which already hold
       # live signing credentials; poisoning adds no capability.
+      # Bundled only: a light build signs 5-9 per-build files that never
+      # hash the same twice, so a restored cache cannot hit — the restore
+      # and save steps are pure overhead (measured ~30s on the arm64
+      # runner). The pass1→pass2 in-job dedupe reads the local dir and
+      # works on light legs without any cache step.
       - name: Cache signed payload binaries
-        if: startsWith(matrix.target.label, 'win32-')
+        if: matrix.variant == 'bundled' && startsWith(matrix.target.label, 'win32-')
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: apps/desktop/build/sign-cache
