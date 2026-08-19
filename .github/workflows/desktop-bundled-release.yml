@@ -323,16 +323,24 @@ jobs:
             apps/desktop/build/agent-payload/python
             apps/desktop/build/agent-payload/site-packages
             apps/desktop/build/agent-payload/.stage-cache-key
-          key: agent-payload-${{ matrix.target.label }}-py${{ steps.pins.outputs.python }}-${{ hashFiles('uv.lock') }}
+          key: agent-payload-${{ matrix.target.label }}-py${{ steps.pins.outputs.python }}-${{ hashFiles('uv.lock', 'apps/desktop/scripts/stage-agent-payloads.mjs') }}
 
       # ── Windows sign cache ──────────────────────────────────────────────
       # Content-addressed store of Azure-signed bytes keyed by the sha256
       # of the UNSIGNED input. The signable payload set (uv, python,
-      # site-packages bin shims — 792 files/pass) only changes when the
-      # lock moves, so the key is exact on uv.lock, mirroring the payload
-      # cache's no-restore-keys stance. Per-build artifacts (Hermes.exe
-      # after the rcedit stamp, installers, MSIX) hash differently every
-      # night and are simply signed fresh — a handful of files, seconds.
+      # site-packages bin shims — 792 files/pass) changes when the lock
+      # moves OR when the pin table bumps uv or python — the binaries come
+      # from the pins, so the key hashes both. A key missing the pins met
+      # the immutability trap: a python bump left the key unchanged, the
+      # exact hit blocked the save, and every python binary re-signed
+      # every night until the lock happened to move.
+      # restore-keys IS correct here, unlike the payload cache above: the
+      # store is content-addressed, so entries in a stale restore still
+      # hit for every binary the bump did not change, and the save lands
+      # under the new exact key. Without it, a lock bump re-signs all 792.
+      # Per-build artifacts (Hermes.exe after the rcedit stamp, installers,
+      # MSIX) hash differently every night and are simply signed fresh — a
+      # handful of files, seconds.
       # Threat model: writable only from main/tag runs, which already hold
       # live signing credentials; poisoning adds no capability.
       # Bundled only: a light build signs 5-9 per-build files that never
@@ -345,7 +353,9 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: apps/desktop/build/sign-cache
-          key: sign-cache-${{ matrix.target.label }}-${{ matrix.variant }}-${{ hashFiles('uv.lock') }}
+          key: sign-cache-${{ matrix.target.label }}-${{ matrix.variant }}-${{ hashFiles('uv.lock', 'installation/runtime-pins.json') }}
+          restore-keys: |
+            sign-cache-${{ matrix.target.label }}-${{ matrix.variant }}-
 
       # ── Runtime pin archive cache ───────────────────────────────────────
       # The downloaded uv/python/node archives named by the pin table.
