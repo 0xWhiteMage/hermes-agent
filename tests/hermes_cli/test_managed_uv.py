@@ -249,10 +249,11 @@ class TestEnsureUvWindowsSafe:
         proved the branch existed, not that the field crash was fixed on the
         host that reported it."""
         import subprocess
-        # On Windows the managed binary is uv.exe.
-        _make_executable(tmp_path / "bin" / "uv.exe")
-        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
-             patch("hermes_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")):
+        # The managed uv lives in the install-scoped runtime dir now
+        # (<install>/.hermes-runtime/uv/uv.exe); the autouse fixture points
+        # the install root at tmp_path, so stage it there.
+        _make_executable(tmp_path / ".hermes-runtime" / "uv" / "uv.exe")
+        with patch("hermes_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")):
             from hermes_cli.managed_uv import _UvResult, ensure_uv
             uv_bin = ensure_uv()
             assert type(uv_bin) is str and not isinstance(uv_bin, _UvResult)

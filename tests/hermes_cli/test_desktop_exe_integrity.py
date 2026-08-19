@@ -299,7 +299,7 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
 
     with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main._resolve_node_runtime_npm", return_value="npm.cmd"), \
-         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
+         patch("installation.nodejs.npm_install", return_value=install_ok), \
          patch("hermes_cli.main._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main._stop_desktop_processes_locking_build", return_value=[]), \
          patch("hermes_cli.main._purge_electron_build_cache", return_value=[]), \

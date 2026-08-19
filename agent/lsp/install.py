@@ -250,12 +250,14 @@ def _install_npm(
     peer deps that npm doesn't auto-pull (typescript-language-server
     needs ``typescript`` next to it; intelephense ships standalone).
     """
-    # Managed npm first: $HERMES_HOME/node is not on an arbitrary process's
-    # PATH, so a bare which() misses the Node that Hermes installed and
-    # reports "npm not on PATH" on a machine that has a perfectly good one.
-    npm = str(nodejs.npm_path())
-    if npm is None:
-        logger.info("[install] cannot install %s: no usable npm found", pkg)
+    # Managed npm only: the pinned toolchain is the single Node authority.
+    # NotProvisioned means the runtime dir is damaged; this installer is
+    # best-effort, so it degrades to "not installed" instead of raising
+    # through the LSP startup path.
+    try:
+        npm = str(nodejs.npm_path())
+    except nodejs.NotProvisioned as exc:
+        logger.info("[install] cannot install %s: %s", pkg, exc)
         return None
     staging = hermes_lsp_bin_dir().parent  # <HERMES_HOME>/lsp/
     install_targets = [pkg] + list(extra_pkgs or [])

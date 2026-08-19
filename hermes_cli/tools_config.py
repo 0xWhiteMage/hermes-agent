@@ -1864,7 +1864,12 @@ def _run_post_setup(post_setup_key: str):
 
     elif post_setup_key == "camofox":
         camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
-        _npm_bin = str(nodejs.npm_path())
+        # A damaged runtime dir must degrade to the Docker hint below, not
+        # crash setup; there is no PATH fallback for the managed toolchain.
+        try:
+            _npm_bin = str(nodejs.npm_path())
+        except nodejs.NotProvisioned:
+            _npm_bin = None
         if camofox_dir.exists():
             _print_success("    Camofox already installed, nothing to do")
         elif _npm_bin:
