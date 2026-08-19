@@ -17,10 +17,20 @@ name: Desktop Bundled Release
 # HERMES_DESKTOP_VARIANT=bundled. This workflow is the only place that
 # sets it.
 #
-# Triggers:
-#   * A push of a final release tag (vX.Y.Z). This is the normal release path.
-#   * workflow_dispatch with an explicit tag, for re-runs and dry runs. The
-#     release upload is opt-in.
+# Triggers: workflow_dispatch only, always with an explicit tag.
+#
+# scripts/release.py is the one entry point for a release of either kind.
+# It creates the tag and the draft release, then dispatches this workflow
+# against that tag. One mechanism serves all three paths — a stable
+# release, the scheduled nightly, and a nightly cut by hand — because
+# workflow_dispatch is one of the two events GITHUB_TOKEN is allowed to
+# raise. A tag push is not: the scheduled nightly pushes its tag as
+# github-actions[bot], and a bot-pushed tag starts no workflow run, so a
+# push trigger could never serve the nightly path.
+#
+# Dispatching also removes the ordering hazard the push trigger carried.
+# The build now starts after its release exists, rather than racing the
+# `gh release create` that follows the tag push.
 #
 # Each runner installs site-packages, uv, python, and node natively. This is why the
 # workflow is a matrix: electron-builder needs per-OS runners for signing.
@@ -32,27 +42,10 @@ name: Desktop Bundled Release
 # signed artifacts.
 
 on:
-  push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to bundle (vX.Y.Z). Must exist on the repo.'
-        required: true
-        type: string
-      upload_release:
-        description: 'Attach artifacts to the GitHub release for the tag'
-        required: false
-        type: boolean
-        default: false
-  # The nightly-release workflow calls this with its dated prerelease tag
-  # (vX.Y.0-nightly.YYYYMMDD — a shape the push filter above can never
-  # match, so a nightly tag push cannot double-trigger this workflow).
-  workflow_call:
-    inputs:
-      tag:
-        description: 'Release tag to bundle. Must exist on the repo.'
+        description: 'Release tag to bundle (vX.Y.Z or vX.Y.0-nightly.YYYYMMDDHHMMSS). Must exist on the repo.'
         required: true
         type: string
       upload_release:
@@ -66,7 +59,7 @@ permissions:
   id-token: write # for the OIDC federated login to Azure (Windows signing)
 
 concurrency:
-  group: desktop-bundled-release-${{ inputs.tag || github.ref }}
+  group: desktop-bundled-release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
@@ -546,7 +539,7 @@ jobs:
       # ── Attach to the GitHub release (tag pushes, opt-in dispatch, and
       # the nightly caller which passes upload_release: true) ─────────────
       - name: Upload to GitHub release
-        if: github.event_name == 'push' || inputs.upload_release == true
+        if: inputs.upload_release == true
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -699,7 +692,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload to GitHub release
-        if: github.event_name == 'push' || inputs.upload_release == true
+        if: inputs.upload_release == true
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -725,7 +718,7 @@ jobs:
   builds-table:
     name: Render the release builds table
     needs: build
-    if: github.event_name == 'push' || inputs.upload_release == true
+    if: inputs.upload_release == true
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -744,3 +737,38 @@ jobs:
           fi
           python3 scripts/render-builds-table.py \
             --tag "$HERMES_PAYLOAD_TAG" --repo "$GITHUB_REPOSITORY"
+
+  # ── Publish the nightly ──────────────────────────────────────────────
+  # Both release kinds are created as drafts, because a published release
+  # with no installers on it is one users can reach and cannot use. They
+  # differ in who lifts the draft:
+  #
+  #   nightly — nobody is watching at 0300, so a green matrix publishes it
+  #             here. A failed or cancelled run leaves an inspectable
+  #             draft instead of a broken published nightly.
+  #   stable  — a human publishes, after checking the artifacts. Cutting a
+  #             stable release is a deliberate act and stays one.
+  #
+  # The tag shape is the whole condition: release.py builds nightly tags
+  # as vX.Y.0-nightly.<YYYYMMDDHHMMSS>, a shape no stable tag can take.
+  # Keying on it means a nightly cut by hand publishes exactly like the
+  # scheduled one, with no second code path.
+  publish-nightly:
+    name: Publish the nightly release
+    needs: [build, msixbundle, builds-table]
+    if: |
+      always()
+      && inputs.upload_release == true
+      && contains(inputs.tag, '-nightly.')
+      && needs.build.result == 'success'
+      && needs.msixbundle.result == 'success'
+      && needs.builds-table.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+          echo "Published $TAG"

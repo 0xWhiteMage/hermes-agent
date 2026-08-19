@@ -2143,11 +2143,52 @@ def list_remotes() -> list[str]:
     return [name for name in result.stdout.split() if name]
 
 
+def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
+    """Start the desktop bundled build for ``tag``. Returns True on success.
+
+    This is how EVERY release of either kind gets its installers. The
+    workflow takes workflow_dispatch only, because that is one of the two
+    events GITHUB_TOKEN is allowed to raise: the scheduled nightly pushes
+    its tag as github-actions[bot], and a bot-pushed tag starts no
+    workflow run at all. A tag-push trigger would therefore work for a
+    hand-cut stable release and silently do nothing for the nightly.
+
+    Called after the draft release exists, so the build's upload step
+    always finds it. --ref pins the workflow FILE version to the tag being
+    built, so an old tag rebuilds with the workflow it shipped with.
+    """
+    cmd = [
+        "gh", "workflow", "run", "desktop-bundled-release.yml",
+        "--ref", tag,
+        "-f", f"tag={tag}",
+        "-f", "upload_release=true",
+    ]
+    if gh_repo:
+        cmd += ["--repo", gh_repo]
+
+    if not shutil.which("gh"):
+        print("  ✗ Cannot start the desktop build: `gh` CLI not found.")
+        print(f"    Start it manually: {' '.join(cmd)}")
+        return False
+
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", cwd=str(REPO_ROOT),
+    )
+    if result.returncode != 0:
+        print(f"  ✗ Could not start the desktop build: {result.stderr.strip()}")
+        print(f"    Start it manually: {' '.join(cmd)}")
+        return False
+
+    print(f"  ✓ Desktop build started for {tag}")
+    return True
+
+
 def resolve_push_remote(requested: str | None) -> str:
     """Pick the remote that receives the release push (and the GitHub
-    release). One configured remote: use it. More than one: the tag push
-    is what fires the release workflow on whichever repo it lands on, so
-    an implicit default is a foot-gun — require an explicit --remote.
+    release). One configured remote: use it. More than one: the release
+    lands on whichever repo the tag is pushed to, so an implicit default
+    is a foot-gun — require an explicit --remote.
     """
     remotes = list_remotes()
     if not remotes:
@@ -2703,10 +2744,13 @@ def cmd_nightly(args) -> None:
         sys.exit(1)
     changelog_file.unlink(missing_ok=True)
     print(f"✓ Nightly prerelease drafted: {result.stdout.strip()}")
-    print("    The Desktop Bundled Release workflow attaches installers to the draft.")
-    print(f"    Publish after that matrix is green: gh release edit {tag_name} --draft=false")
-    # Hand the tag to the calling workflow (the desktop build job keys on
-    # it). Emitting here keeps ALL the tag math inside release.py.
+    # The build attaches the installers to the draft and, for a nightly
+    # tag, publishes it when the whole matrix is green.
+    dispatch_desktop_build(tag_name, gh_repo)
+    # Record the tag for any workflow step that wants it. release.py
+    # starts the build itself, so nothing consumes this today; it stays
+    # because a step output is the cheap, conventional handle for "which
+    # tag did this run cut".
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output:
         with open(github_output, "a", encoding="utf-8") as f:
@@ -2884,13 +2928,11 @@ def main():
             return
         print(f"  ✓ Created tag {tag_name}")
 
-        # Push the tag WITH the branch, before the draft exists. gh
-        # auto-creates a missing tag "from the latest state of the default
-        # branch", so creating the release first risks pinning it to the
-        # wrong commit. The build cannot lose this race: the tag push only
-        # starts the workflow, which spends minutes provisioning runners
-        # and building before it reaches its upload step, while the draft
-        # lands a second later.
+        # Push the tag WITH the branch. gh auto-creates a missing tag
+        # "from the latest state of the default branch", so the tag must
+        # exist on the remote before the release is created (--verify-tag
+        # below turns a failed push into a hard error rather than a
+        # release pinned to the wrong commit).
         push_result = git_result("push", push_remote, "HEAD", "--tags")
         if push_result.returncode == 0:
             print(f"  ✓ Pushed to {push_remote}")
@@ -2899,10 +2941,11 @@ def main():
             print("    Continue manually after fixing access:")
             print(f"    git push {push_remote} HEAD --tags")
 
-        # Create the GitHub release as a DRAFT. The tag push above triggers
-        # the desktop-bundled-release workflow, which attaches the installers
-        # and electron-updater feed files to this draft. Publishing now would
-        # expose an artifact-less release; publish after that matrix is green.
+        # Create the GitHub release as a DRAFT, then start the desktop
+        # build against it. The build attaches the installers and the
+        # electron-updater feed files to this draft. Publishing now would
+        # expose an artifact-less release; a stable release is published
+        # by hand once that matrix is green.
         changelog_file = REPO_ROOT / ".release_notes.md"
         changelog_file.write_text(changelog, encoding="utf-8")
 
@@ -2934,6 +2977,7 @@ def main():
         if result and result.returncode == 0:
             changelog_file.unlink(missing_ok=True)
             print(f"  ✓ GitHub draft release created: {result.stdout.strip()}")
+            dispatch_desktop_build(tag_name, gh_repo)
             print(f"\n  🎉 Release v{new_version} ({tag_name}) drafted!")
             print("     The Desktop Bundled Release workflow attaches installers to the draft.")
             print("     Publish once it is green:")

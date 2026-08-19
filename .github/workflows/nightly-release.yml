@@ -10,12 +10,15 @@ name: Nightly Release
 # nightlies per day; the scheduled run publishes at most one because
 # release.py skips when HEAD has no new commits since the last nightly.
 #
-# ALL tag math lives in scripts/release.py --nightly; this workflow only
-# provides credentials and sequencing. The script is the skip gate too:
-# no new commits since the last nightly → it prints "nothing to do",
-# emits no tag output, and the build job is skipped. No human publishes
-# anything: the release is created as a PRERELEASE immediately and the
-# bundled-desktop matrix attaches installers to it by tag.
+# ALL of it lives in scripts/release.py --nightly: the tag math, the
+# skip gate, the draft release, and the dispatch of the desktop build.
+# This workflow only supplies a schedule and credentials, which is why
+# `release.py --nightly --publish` by hand does exactly what the cron
+# does — same tag, same draft, same build, same auto-publish.
+#
+# The desktop build attaches the installers to the draft and publishes
+# it when the whole matrix is green. A failed matrix leaves a draft:
+# inspectable, re-runnable, and unreachable by users.
 #
 # schedule: is the ONE sanctioned time trigger in this repo (nightly
 # exemption). Everything else stays event-driven.
@@ -27,7 +30,7 @@ on:
 
 permissions:
   contents: write # tag push + release create/delete for prune
-  id-token: write # the desktop build job needs id-token for Azure signing
+  actions: write # release.py dispatches the desktop build
 
 concurrency:
   group: nightly-release
@@ -35,10 +38,8 @@ concurrency:
 
 jobs:
   tag:
-    name: Tag + publish the nightly prerelease
+    name: Tag, draft, and start the nightly build
     runs-on: ubuntu-24.04
-    outputs:
-      tag: ${{ steps.nightly.outputs.tag }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -47,8 +48,7 @@ jobs:
           # the tag math reads the full tag list
           fetch-tags: true
 
-      - name: Tag and publish
-        id: nightly
+      - name: Tag and draft
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -56,45 +56,14 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           python3 scripts/release.py --nightly --publish --remote origin
 
-  build:
-    name: Build installers for the nightly
-    needs: tag
-    # No tag output means release.py decided there is nothing to do.
-    if: needs.tag.outputs.tag != ''
-    uses: ./.github/workflows/desktop-bundled-release.yml
-    with:
-      tag: ${{ needs.tag.outputs.tag }}
-      upload_release: true
-    secrets: inherit
-
-  publish:
-    name: Publish the nightly once its installers are attached
-    runs-on: ubuntu-24.04
-    needs: [tag, build]
-    # Only when the whole matrix is green. release.py drafts the nightly,
-    # the build attaches the installers to that draft by tag, and this
-    # step is what makes it visible. A failed or cancelled matrix leaves
-    # the draft in place: inspectable, re-runnable, and unreachable by
-    # users — instead of a published nightly with no installers on it.
-    if: needs.tag.outputs.tag != '' && needs.build.result == 'success'
-    permissions:
-      contents: write
-    steps:
-      - name: Publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.tag.outputs.tag }}
-        run: |
-          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
-          echo "Published $TAG"
-
   prune:
     name: Prune nightlies older than 14 days
     runs-on: ubuntu-24.04
-    needs: build
-    # Prune even when the build had nothing to do today (skipped), but
-    # never while a build is mid-flight for the release being pruned.
-    if: always() && needs.build.result != 'cancelled'
+    needs: tag
+    # Prune even when there was nothing to tag today. The desktop build
+    # runs in its own workflow run now, so this no longer waits on it —
+    # the window is 14 days, far wider than any build.
+    if: always() && needs.tag.result != 'cancelled'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:

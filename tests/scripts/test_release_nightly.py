@@ -134,3 +134,72 @@ class TestNightlyIsDrafted:
         branch tip, which would release a different commit than the one
         the nightly math tagged."""
         assert "--verify-tag" in self._create_argv(monkeypatch, tmp_path)
+
+
+class TestNightlyStartsItsOwnBuild:
+    """release.py dispatches the desktop build for the tag it just cut.
+
+    workflow_dispatch is one of only two events GITHUB_TOKEN may raise, so
+    it is the only trigger that serves the scheduled nightly: that run
+    pushes its tag as github-actions[bot], and a bot-pushed tag starts no
+    workflow run. Dispatching from release.py gives the scheduled nightly,
+    a hand-cut nightly, and a stable release one identical mechanism.
+    """
+
+    def _calls(self, monkeypatch, tmp_path):
+        import subprocess
+        from types import SimpleNamespace
+
+        captured: list[list[str]] = []
+
+        def fake_run(cmd, *a, **kw):
+            captured.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, stdout="url", stderr="")
+
+        monkeypatch.setattr(release, "get_last_tag", lambda: "v0.27.0")
+        monkeypatch.setattr(release, "get_last_nightly_tag", lambda: None)
+        monkeypatch.setattr(release, "get_commits", lambda **kw: [{"hash": "a" * 40, "subject": "feat: x", "author": "e"}])
+        monkeypatch.setattr(release, "generate_changelog", lambda *a, **kw: "notes")
+        monkeypatch.setattr(release, "resolve_push_remote", lambda r: "origin")
+        monkeypatch.setattr(release, "remote_github_repo", lambda r: "o/r")
+        monkeypatch.setattr(
+            release, "git_result",
+            lambda *a, **kw: subprocess.CompletedProcess(a, 1 if "rev-parse" in a else 0, "", ""),
+        )
+        monkeypatch.setattr(release, "git", lambda *a, **kw: "")
+        monkeypatch.setattr(release, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(release.shutil, "which", lambda x: "/usr/bin/gh")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+
+        release.cmd_nightly(SimpleNamespace(date="20260818103000", publish=True, remote="origin"))
+        return captured
+
+    def test_dispatches_the_build_for_the_tag_it_cut(self, monkeypatch, tmp_path):
+        calls = self._calls(monkeypatch, tmp_path)
+        dispatch = next(c for c in calls if c[:3] == ["gh", "workflow", "run"])
+        tag = "v0.28.0-nightly.20260818103000"
+
+        assert "desktop-bundled-release.yml" in dispatch
+        # The tag travels three ways: as the input the build reads, and as
+        # the ref that pins which version of the workflow file runs.
+        assert f"tag={tag}" in dispatch
+        assert "--ref" in dispatch and dispatch[dispatch.index("--ref") + 1] == tag
+        # Without this the build produces artifacts and attaches nothing.
+        assert "upload_release=true" in dispatch
+
+    def test_the_draft_exists_before_the_build_starts(self, monkeypatch, tmp_path):
+        """Ordering is the whole point of dispatching rather than relying
+        on the tag push: the build's upload step fails on a missing
+        release, so the draft has to be there first."""
+        calls = self._calls(monkeypatch, tmp_path)
+        create = next(i for i, c in enumerate(calls) if c[:3] == ["gh", "release", "create"])
+        dispatch = next(i for i, c in enumerate(calls) if c[:3] == ["gh", "workflow", "run"])
+        assert create < dispatch
+
+    def test_a_failed_dispatch_does_not_sink_the_release(self, monkeypatch, tmp_path):
+        """The tag and draft are already pushed by then. Report the manual
+        command and leave them; raising would strand a half-made release."""
+        assert release.dispatch_desktop_build.__doc__
+        monkeypatch.setattr(release.shutil, "which", lambda x: None)
+        assert release.dispatch_desktop_build("v0.28.0-nightly.20260818103000", "o/r") is False

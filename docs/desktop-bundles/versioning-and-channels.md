@@ -28,11 +28,12 @@ The script does the following:
    owns the canonical value.
 4. Generates a changelog from the commits since the last tag.
 5. Creates the tag and drafts a GitHub release.
+6. Dispatches the desktop-bundled release workflow against that tag.
 
-The draft release is the handoff point. The desktop-bundled release
-workflow watches for `vX.Y.Z` tag pushes, builds the installers, and
-attaches them to the draft. Publishing is a separate,
-deliberate step: `gh release edit vX.Y.Z --draft=false`.
+The draft release is the handoff point. The build attaches the
+installers to it. A nightly publishes itself once the whole matrix is
+green, because nobody is watching at 0300. A stable release stays a
+draft until you publish it: `gh release edit vX.Y.Z --draft=false`.
 
 The SemVer matcher caps the major at three digits. That is what keeps
 a four-digit-year CalVer tag from sorting above every SemVer release

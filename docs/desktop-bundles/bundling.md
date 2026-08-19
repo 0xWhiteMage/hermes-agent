@@ -194,12 +194,21 @@ local builds work unsigned.
 ## The release workflow
 
 `.github/workflows/desktop-bundled-release.yml` builds all targets on a
-per-OS runner matrix. Two triggers exist:
+per-OS runner matrix. It has one trigger: `workflow_dispatch` with an
+explicit tag.
 
-- A push of a final release tag (`vX.Y.Z`). This is the normal release
-  path.
-- `workflow_dispatch` with an explicit tag, for re-runs and dry runs.
-  The release upload is opt-in there.
+`scripts/release.py` is the single entry point. It creates the tag and
+the draft release, then dispatches this workflow against that tag. One
+mechanism covers all three paths — a stable release, the scheduled
+nightly, and a nightly cut by hand.
+
+A tag push cannot serve that role. `workflow_dispatch` is one of only
+two events `GITHUB_TOKEN` is permitted to raise, and the scheduled
+nightly pushes its tag as `github-actions[bot]`. A bot-pushed tag starts
+no workflow run, so a push trigger would work for a hand-cut stable
+release and do nothing at all for the nightly. Dispatching also removes
+an ordering hazard: the build starts after its release exists, instead
+of racing the `gh release create` that follows the tag push.
 
 The matrix is variant times target: every target builds both the
 bundled installer and the light client. The signing secrets live in the
