@@ -104,14 +104,40 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _fetch_verified(pin: PinnedFile, into: Path) -> Path:
+def _fetch_verified(
+    pin: PinnedFile, into: Path, archive_dir: Path | None = None
+) -> Path:
     """Download a pinned artifact and prove it is the pinned bytes.
 
     The digest check happens BEFORE anything is unpacked or executed: a
     mismatched archive is deleted, never extracted. This is the only
     thing standing between a compromised CDN and a user's machine.
+
+    *archive_dir* is a TRANSPORT shortcut, never a trust shortcut: a
+    build cache of verified downloads keyed ``<sha256>-<filename>``. A
+    hit is re-hashed exactly like a download before it is used, and a
+    fresh verified download is written through so the next build skips
+    the network. Only the desktop payload staging passes it — a normal
+    install (and `hermes update`) never grows an archive dir.
     """
     archive = into / pin.filename
+
+    if archive_dir is not None:
+        candidate = archive_dir / f"{pin.sha256}-{pin.filename}"
+        if candidate.is_file():
+            if _sha256(candidate) == pin.sha256:
+                archive.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(candidate, archive)
+                return archive
+            # The name promises bytes the file does not hold (truncated
+            # write, bit rot, tampering). A cache entry is junk the
+            # moment it fails its own name — delete it and download.
+            logger.warning(
+                "archive cache entry %s fails its own digest; discarding",
+                candidate.name,
+            )
+            candidate.unlink(missing_ok=True)
+
     _download(pin.url, archive)
 
     actual = _sha256(archive)
@@ -121,7 +147,43 @@ def _fetch_verified(pin: PinnedFile, into: Path) -> Path:
             f"sha256 mismatch for {pin.filename}: "
             f"pinned {pin.sha256}, downloaded {actual}"
         )
+
+    if archive_dir is not None:
+        # Write-through, atomically: a concurrent reader of the cache
+        # must never see a partial entry, so land it with one rename.
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        tmp_entry = archive_dir / f".tmp-{uuid.uuid4().hex}"
+        shutil.copyfile(archive, tmp_entry)
+        os.replace(tmp_entry, archive_dir / f"{pin.sha256}-{pin.filename}")
+
     return archive
+
+
+def prune_archive_cache(archive_dir: Path, pins: dict[str, dict]) -> None:
+    """Drop archive-cache entries no pin references any more.
+
+    Membership is by DIGEST across the whole table, not by target or
+    tool: camoufox aliases win32-arm64 to the x64 artifact, so one
+    digest legitimately serves two targets. An entry survives iff the
+    ``<sha256>`` prefix of its name appears anywhere in the pin table —
+    everything else (old pins, orphaned tmp files) is dead weight the
+    cache would otherwise carry forever.
+    """
+    if not archive_dir.is_dir():
+        return
+    live = {
+        spec["sha256"]
+        for entry in pins.values()
+        for spec in entry.get("files", {}).values()
+        if isinstance(spec, dict) and "sha256" in spec
+    }
+    for item in archive_dir.iterdir():
+        if not item.is_file():
+            continue
+        digest = item.name.split("-", 1)[0]
+        if digest not in live:
+            logger.debug("pruning archive cache entry %s", item.name)
+            item.unlink(missing_ok=True)
 
 
 def _extract(archive: Path, dest: Path) -> None:
@@ -340,7 +402,9 @@ def _fact_path_dirs(
     return [f"{entry}/{d}" for d in dirs]
 
 
-def _stage_playwright_browser(pin: PinnedFile, dest: Path, tmp: Path) -> None:
+def _stage_playwright_browser(
+    pin: PinnedFile, dest: Path, tmp: Path, archive_dir: Path | None = None
+) -> None:
     """A playwright browser: fetch, verify, extract — and DO NOT flatten.
 
     Playwright resolves the executable through the archive's own top
@@ -350,12 +414,14 @@ def _stage_playwright_browser(pin: PinnedFile, dest: Path, tmp: Path) -> None:
     (registry.js ``browserDirectoryToMarkerFilePath``): without it the
     registry treats the directory as a partial download and re-fetches.
     """
-    archive = _fetch_verified(pin, tmp)
+    archive = _fetch_verified(pin, tmp, archive_dir=archive_dir)
     _extract(archive, dest)
     (dest / "INSTALLATION_COMPLETE").write_text("", encoding="utf-8")
 
 
-def _stage_archive(pin: PinnedFile, dest: Path, tmp: Path) -> None:
+def _stage_archive(
+    pin: PinnedFile, dest: Path, tmp: Path, archive_dir: Path | None = None
+) -> None:
     """The common case: fetch, verify, extract, un-nest.
 
     Flattening is decided by what the archive actually CONTAINS, not by a
@@ -365,19 +431,21 @@ def _stage_archive(pin: PinnedFile, dest: Path, tmp: Path) -> None:
     ``_flatten_single_dir`` no-ops unless there is exactly one top-level
     directory, so applying it unconditionally is safe.
     """
-    archive = _fetch_verified(pin, tmp)
+    archive = _fetch_verified(pin, tmp, archive_dir=archive_dir)
     _extract(archive, dest)
     _flatten_single_dir(dest)
 
 
-def _stage_portable_git(pin: PinnedFile, dest: Path, tmp: Path) -> None:
+def _stage_portable_git(
+    pin: PinnedFile, dest: Path, tmp: Path, archive_dir: Path | None = None
+) -> None:
     """PortableGit is a self-extracting 7z, not an archive we can read.
 
     It is the one asset that must be EXECUTED to unpack, so the digest
     check matters more here than anywhere else — ``_fetch_verified`` has
     already proven the bytes before this runs it.
     """
-    sfx = _fetch_verified(pin, tmp)
+    sfx = _fetch_verified(pin, tmp, archive_dir=archive_dir)
     shutil.rmtree(dest, ignore_errors=True)
     dest.mkdir(parents=True, exist_ok=True)
     sfx.chmod(0o755)
@@ -389,7 +457,12 @@ def _stage_portable_git(pin: PinnedFile, dest: Path, tmp: Path) -> None:
 
 
 def _stage_npm(
-    pin: PinnedFile, dest: Path, tmp: Path, ctx: "_StageContext", target: str
+    pin: PinnedFile,
+    dest: Path,
+    tmp: Path,
+    ctx: "_StageContext",
+    target: str,
+    archive_dir: Path | None = None,
 ) -> None:
     """npm installs itself, using the node it extends.
 
@@ -404,7 +477,7 @@ def _stage_npm(
     ``--offline`` guarantees the registry is never consulted, so this
     installs exactly what the pin table says and nothing else.
     """
-    tarball = _fetch_verified(pin, tmp)
+    tarball = _fetch_verified(pin, tmp, archive_dir=archive_dir)
     node = ctx.node
     if node is None or not node.is_file():
         raise RuntimeError("npm extends node, which is not provisioned")
@@ -466,7 +539,9 @@ def _camoufox_version_json(pinned_version: str) -> dict[str, str]:
     return {"version": version, "release": release}
 
 
-def _stage_camoufox(pin: PinnedFile, dest: Path, tmp: Path) -> None:
+def _stage_camoufox(
+    pin: PinnedFile, dest: Path, tmp: Path, archive_dir: Path | None = None
+) -> None:
     """The Camoufox browser, plus the version file camoufox-js expects.
 
     The zip unpacks flat (707 entries, ``camoufox-bin`` at the root), but
@@ -476,7 +551,7 @@ def _stage_camoufox(pin: PinnedFile, dest: Path, tmp: Path) -> None:
     which its postinstall reports as a broken install. Writing it here is
     what makes a provisioned browser look installed to the library.
     """
-    _stage_archive(pin, dest, tmp)
+    _stage_archive(pin, dest, tmp, archive_dir=archive_dir)
     (dest / "version.json").write_text(
         json.dumps(_camoufox_version_json(pin.version)), encoding="utf-8"
     )
@@ -502,6 +577,7 @@ def _stage(
     tmp: Path,
     target: str,
     ctx: _StageContext,
+    archive_dir: Path | None = None,
 ) -> None:
     """Unpack one tool into *dest* — a scratch dir, not its final home.
 
@@ -510,22 +586,22 @@ def _stage(
     The caller publishes *dest* into the store with one atomic rename.
     """
     if tool == "git" and target.startswith("win32"):
-        _stage_portable_git(pin, dest, tmp)
+        _stage_portable_git(pin, dest, tmp, archive_dir=archive_dir)
         return
 
     if tool == "npm":
-        _stage_npm(pin, dest, tmp, ctx, target)
+        _stage_npm(pin, dest, tmp, ctx, target, archive_dir=archive_dir)
         return
 
     if tool == "camoufox":
-        _stage_camoufox(pin, dest, tmp)
+        _stage_camoufox(pin, dest, tmp, archive_dir=archive_dir)
         return
 
     if tool in PLAYWRIGHT_BROWSER_TOOLS:
-        _stage_playwright_browser(pin, dest, tmp)
+        _stage_playwright_browser(pin, dest, tmp, archive_dir=archive_dir)
         return
 
-    _stage_archive(pin, dest, tmp)
+    _stage_archive(pin, dest, tmp, archive_dir=archive_dir)
     if tool == "git" and not target.startswith("win32"):
         # dugite ships Windows remote-helper DLLs in every build. They
         # are dead weight on POSIX (~40MB) and now cost store space that
@@ -807,6 +883,7 @@ def _provision_one(
     facts: dict[str, RuntimeFact],
     target: str,
     path_order: list[str] | None = None,
+    archive_dir: Path | None = None,
 ) -> ToolResult:
     """Bring ONE tool to the pinned state. Never raises."""
     # Termux first: no pinned artifact runs on bionic, so the pin table
@@ -891,7 +968,9 @@ def _provision_one(
                 # dir: publishing is an os.replace, which fails across
                 # filesystems, and /tmp is very often a different one.
                 staging = store / f".staging-{uuid.uuid4().hex}"
-                _stage(tool, pin, staging, Path(td), target, ctx)
+                _stage(
+                    tool, pin, staging, Path(td), target, ctx, archive_dir=archive_dir
+                )
                 if not (staging / _binary_rel(tool, target)).is_file():
                     shutil.rmtree(staging, ignore_errors=True)
                     return ToolResult(
@@ -985,6 +1064,7 @@ def provision_runtimes(
     emit: Callable[[dict], None] | None = None,
     only: list[str] | None = None,
     store_dir: Path | None = None,
+    archive_dir: Path | None = None,
 ) -> list[ToolResult]:
     """Bring every pinned tool to its pinned version.
 
@@ -998,6 +1078,10 @@ def provision_runtimes(
     Provisioning is always for THIS host. A tool is never recorded until
     the staged binary has answered a version probe here, so a pin that
     downloads but cannot run is a failure rather than a fact.
+
+    *archive_dir* names a pin-archive cache of verified downloads (see
+    ``_fetch_verified``): only the desktop payload staging passes it, so
+    a normal install never grows one.
     """
     facts_dir, store = resolve_bases(runtime_dir, store_dir)
     facts_dir.mkdir(parents=True, exist_ok=True)
@@ -1025,6 +1109,7 @@ def provision_runtimes(
             facts,
             target,
             path_order=order,
+            archive_dir=archive_dir,
         )
         results.append(result)
         if emit:
@@ -1185,6 +1270,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--only", action="append", help="Provision just this tool (repeatable)."
     )
+    parser.add_argument(
+        "--archive-cache",
+        type=Path,
+        default=None,
+        help="A build cache of verified downloads keyed <sha256>-<filename>. "
+        "A hit skips the network but never the digest check, and entries no "
+        "pin references any more are pruned. Only the desktop payload "
+        "staging passes this — a normal install never grows one.",
+    )
     parser.add_argument("--json", action="store_true", help="Emit JSON lines.")
     ns = parser.parse_args(argv)
 
@@ -1208,8 +1302,18 @@ def main(argv: list[str] | None = None) -> int:
             detail = f" — {event['detail']}" if event.get("detail") else ""
             print(f"  {event['tool']}: {event['action']}{version}{detail}", flush=True)
 
+    if ns.archive_cache is not None:
+        # Prune BEFORE provisioning: entries whose digest left the pin
+        # table are dead weight, and a crashed writer's orphaned .tmp-*
+        # files go with them. Live entries survive to serve this run.
+        prune_archive_cache(ns.archive_cache, load_pins())
+
     results = provision_runtimes(
-        runtime_dir=ns.runtime_dir, store_dir=ns.store_dir, emit=emit, only=ns.only
+        runtime_dir=ns.runtime_dir,
+        store_dir=ns.store_dir,
+        emit=emit,
+        only=ns.only,
+        archive_dir=ns.archive_cache,
     )
     return 0 if all(r.ok for r in results) else 1
 

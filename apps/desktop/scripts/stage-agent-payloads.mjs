@@ -314,6 +314,8 @@ function stageManagedRuntimes(target, outDir, pythonExe) {
     outDir,
     "--target",
     targetKey,
+    "--archive-cache",
+    path.join(REPO_ROOT, "apps", "desktop", "build", "pin-archives"),
   ], { cwd: REPO_ROOT })
 
   // The sweep skips optional tools (provisioned on demand, per the pin
@@ -331,6 +333,8 @@ function stageManagedRuntimes(target, outDir, pythonExe) {
       targetKey,
       "--only",
       "git",
+      "--archive-cache",
+      path.join(REPO_ROOT, "apps", "desktop", "build", "pin-archives"),
     ], { cwd: REPO_ROOT })
   }
 
