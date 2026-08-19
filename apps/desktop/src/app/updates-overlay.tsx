@@ -14,6 +14,7 @@ import {
 import { ErrorIcon, ErrorState } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
 import { Progress } from '@/components/ui/progress'
+import { UpdateStatusCard, VersionHero } from '@/components/update-status'
 import { VersionDetails } from '@/components/version-details'
 import type { DesktopUpdateBlocker, DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus, DesktopVersionInfo } from '@/global'
 import { useI18n } from '@/i18n'
@@ -134,9 +135,7 @@ export function UpdatesOverlay() {
           <ErrorView message={apply.message} onDismiss={() => handleClose(false)} onRetry={handleInstall} />
         ) : null}
 
-        {phase === 'idle' && !isBackend && desktopVersion && status?.supported === false ? (
-          <ManagedInstallDetailsView onDone={() => handleClose(false)} version={desktopVersion} />
-        ) : phase === 'idle' ? (
+        {phase === 'idle' ? (
           <IdleView
             behind={behind}
             checking={checking}
@@ -152,25 +151,6 @@ export function UpdatesOverlay() {
         ) : null}
       </DialogContent>
     </Dialog>
-  )
-}
-
-function ManagedInstallDetailsView({ onDone, version }: { onDone: () => void; version: DesktopVersionInfo }) {
-  const { t } = useI18n()
-  const u = t.updates
-
-  return (
-    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
-      <div className="flex flex-col items-center gap-3 text-center">
-        <BrandMark className="size-16" />
-        <DialogTitle className="text-center text-xl">{u.versionDetailsTitle}</DialogTitle>
-        <DialogDescription className="text-center text-sm">{u.versionDetailsBody}</DialogDescription>
-      </div>
-      <VersionDetails version={version} />
-      <Button className="font-medium" onClick={onDone} type="button" variant="text">
-        {u.done}
-      </Button>
-    </div>
   )
 }
 
@@ -225,42 +205,18 @@ function IdleView({
 
   const details = version ? <VersionDetails version={version} /> : null
 
-  if (!status.supported) {
+  // Everything that is NOT the install pitch — unsupported, check error, and
+  // already-latest — is exactly the About page's state: render the shared
+  // hero + status card so the two surfaces cannot drift. The card owns the
+  // check/retry actions (its "Check now" covers the old Try-again button).
+  if (!status.supported || status.error || !updateAvailable) {
     return (
-      <div className="grid gap-4 px-6 pb-6 pt-7 pr-8">
-        <CenteredStatus
-          body={status.message ?? u.unsupportedMessage}
-          icon={<AlertCircle className="size-6 text-muted-foreground" />}
-          title={u.notAvailableTitle}
+      <div className="grid gap-4 px-6 pb-6 pt-1 pr-8">
+        <VersionHero
+          renderHeading={heading => <DialogTitle className="text-lg font-semibold tracking-tight">{heading}</DialogTitle>}
+          version={version}
         />
-        {details}
-      </div>
-    )
-  }
-
-  if (status.error) {
-    return (
-      <CenteredStatus
-        action={
-          <Button disabled={checking} onClick={onRetryCheck} size="sm">
-            {u.tryAgain}
-          </Button>
-        }
-        body={u.connectionRetry}
-        icon={<ErrorIcon />}
-        title={u.checkFailedTitle}
-      />
-    )
-  }
-
-  if (!updateAvailable) {
-    return (
-      <div className="grid gap-4 px-6 pb-6 pt-7 pr-8">
-        <CenteredStatus
-          body={target === 'backend' ? u.latestBodyBackend : u.latestBody}
-          icon={<BrandMark className="size-12" />}
-          title={u.allSetTitle}
-        />
+        <UpdateStatusCard target={target} />
         {details}
       </div>
     )

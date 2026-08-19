@@ -501,34 +501,6 @@ export interface Translations {
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
-    about: {
-      heading: string
-      version: (value: string) => string
-      versionUnavailable: string
-      bundleOutOfSync: string
-      bundleOutOfSyncDesc: string
-      bundleOutOfSyncAction: string
-      updates: string
-      checkNow: string
-      checking: string
-      seeWhatsNew: string
-      updateNow: string
-      releaseNotes: string
-      onLatest: string
-      installing: string
-      cantUpdate: string
-      cantReach: string
-      tapCheck: string
-      updateReady: (count: number) => string
-      updateReadyUnknown: string
-      lastChecked: (age: string) => string
-      justNowSuffix: string
-      never: string
-      justNow: string
-      minAgo: (count: number) => string
-      hoursAgo: (count: number) => string
-      daysAgo: (count: number) => string
-    }
     config: {
       none: string
       noneParen: string
@@ -2062,6 +2034,29 @@ export interface Translations {
 
   updates: {
     stages: Record<string, string>
+    appName: string
+    version: (value: string) => string
+    versionUnavailable: string
+    bundleOutOfSync: string
+    bundleOutOfSyncDesc: string
+    bundleOutOfSyncAction: string
+    updatesSection: string
+    checkNow: string
+    checkingShort: string
+    seeWhatsNew: string
+    releaseNotes: string
+    installing: string
+    cantReach: string
+    tapCheck: string
+    updateReady: (count: number) => string
+    updateReadyUnknown: string
+    lastChecked: (age: string) => string
+    justNowSuffix: string
+    never: string
+    justNow: string
+    minAgo: (count: number) => string
+    hoursAgo: (count: number) => string
+    daysAgo: (count: number) => string
     checking: string
     checkFailedTitle: string
     tryAgain: string

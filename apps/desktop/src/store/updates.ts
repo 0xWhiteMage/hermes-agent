@@ -257,8 +257,7 @@ export function openUpdatesWindow(): void {
  * Used by the "Update now" affordance on the About panel, which would otherwise
  * only be able to open the changelog overlay.
  */
-export function startActiveUpdate(): void {
-  const target: UpdateTarget = isRemoteMode() ? 'backend' : 'client'
+export function startActiveUpdate(target: UpdateTarget = isRemoteMode() ? 'backend' : 'client'): void {
   $updateOverlayTarget.set(target)
   $updateOverlayOpen.set(true)
   void (target === 'backend' ? applyBackendUpdate() : applyUpdates())
