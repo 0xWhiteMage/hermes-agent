@@ -2026,10 +2026,18 @@ export interface DailyMemoryLog {
   work_items: DailyMemoryWorkItem[];
 }
 
+export interface MemoryNotes {
+  memory: string[];
+  user: string[];
+  memory_count: number;
+  user_count: number;
+}
+
 export interface MemoryOverviewResponse {
   subjects: MemorySubject[];
   daily_logs: DailyMemoryLog[];
   recent_sessions: MemorySessionInfo[];
+  notes?: MemoryNotes;
 }
 
 export interface MemorySubjectsResponse {

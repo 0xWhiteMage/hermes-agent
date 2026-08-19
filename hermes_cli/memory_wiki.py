@@ -350,6 +350,36 @@ def get_daily_log(db, date: str) -> dict | None:
     return None
 
 
+def build_memory_notes() -> dict:
+    """Return the curated persistent memory entries (MEMORY.md / USER.md).
+
+    Inspired by Perplexity Computer's Brain memory pages: every derived wiki
+    view should link back to the memory the agent actually carries, so the
+    user can audit and prune it.  Reuses ``MemoryStore._read_file`` — the same
+    parser the memory tool itself uses — so the wiki never disagrees with the
+    system prompt about what an "entry" is.  Read-only; edits stay with the
+    ``memory`` tool and direct file edits.
+    """
+
+    from tools.memory_tool import MemoryStore, get_memory_dir
+
+    memory_dir = get_memory_dir()
+    notes: dict[str, list[str]] = {}
+    for target, filename in (("memory", "MEMORY.md"), ("user", "USER.md")):
+        path = memory_dir / filename
+        try:
+            entries = MemoryStore._read_file(path) if path.exists() else []
+        except Exception:
+            entries = []
+        notes[target] = [entry for entry in entries if entry.strip()]
+    return {
+        "memory": notes["memory"],
+        "user": notes["user"],
+        "memory_count": len(notes["memory"]),
+        "user_count": len(notes["user"]),
+    }
+
+
 def build_memory_overview(db, *, subject_limit: int = 50, day_limit: int = 30) -> dict:
     """Return overview payload for Memory Wiki dashboard/API consumers."""
 
@@ -362,6 +392,7 @@ def build_memory_overview(db, *, subject_limit: int = 50, day_limit: int = 30) -
         "subjects": build_memory_subjects(db, limit=subject_limit),
         "daily_logs": build_daily_logs(db, limit_days=day_limit),
         "recent_sessions": [_session_info(session) for session in recent],
+        "notes": build_memory_notes(),
     }
 
 

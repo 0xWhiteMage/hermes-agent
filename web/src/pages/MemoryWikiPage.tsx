@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { CalendarDays, Database, MessageSquare, Search, Tags } from "lucide-react";
+import { CalendarDays, Database, MessageSquare, NotebookPen, Search, Tags, UserRound } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -249,10 +249,55 @@ export default function MemoryWikiPage() {
             {overview.daily_logs.map((day) => <DayCard key={day.date} day={day} />)}
           </div>
         </div>
-        <Card>
-          <CardHeader><CardTitle className="text-base">Recent Activity</CardTitle></CardHeader>
-          <CardContent><SessionList sessions={overview.recent_sessions} /></CardContent>
-        </Card>
+        <div className="space-y-6">
+          <Card>
+            <CardHeader><CardTitle className="text-base">Recent Activity</CardTitle></CardHeader>
+            <CardContent><SessionList sessions={overview.recent_sessions} /></CardContent>
+          </Card>
+          {overview.notes && (overview.notes.memory_count > 0 || overview.notes.user_count > 0) && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <NotebookPen className="h-4 w-4" /> Persistent Memory
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-xs text-muted-foreground">
+                  The notes the agent actually carries into every session (MEMORY.md / USER.md).
+                  Audit here; edit via the memory tool or the files directly.
+                </p>
+                {overview.notes.memory.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <Database className="h-3.5 w-3.5" /> Agent notes ({overview.notes.memory_count})
+                    </div>
+                    <ul className="space-y-1.5">
+                      {overview.notes.memory.map((entry, i) => (
+                        <li key={i} className="rounded-md border border-border bg-muted/30 p-2 text-xs whitespace-pre-wrap">
+                          {entry}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {overview.notes.user.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <UserRound className="h-3.5 w-3.5" /> User profile ({overview.notes.user_count})
+                    </div>
+                    <ul className="space-y-1.5">
+                      {overview.notes.user.map((entry, i) => (
+                        <li key={i} className="rounded-md border border-border bg-muted/30 p-2 text-xs whitespace-pre-wrap">
+                          {entry}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
+        </div>
       </section>
     </PageShell>
   );

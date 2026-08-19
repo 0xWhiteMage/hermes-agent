@@ -131,7 +131,7 @@ def test_build_memory_overview_aggregates_subjects_and_daily_logs(tmp_path):
     finally:
         db.close()
 
-    assert set(overview) == {"subjects", "daily_logs", "recent_sessions"}
+    assert set(overview) == {"subjects", "daily_logs", "recent_sessions", "notes"}
 
     subjects_by_slug = {subject["slug"]: subject for subject in overview["subjects"]}
     assert "memory-wiki" in subjects_by_slug
@@ -278,3 +278,32 @@ def test_memory_wiki_aggregators_bound_loaded_history():
     assert len(logs) == 2
     assert len(db.message_session_ids) == 200
     assert set(db.message_session_ids) == {f"s-{index}" for index in range(100)}
+
+
+def test_build_memory_notes_reads_profile_memory_files(tmp_path, monkeypatch):
+    from hermes_cli.memory_wiki import build_memory_notes
+
+    memories = tmp_path / "memories"
+    memories.mkdir()
+    (memories / "MEMORY.md").write_text(
+        "Prefers rebase merges\n§\nCI watcher is canonical\n", encoding="utf-8"
+    )
+    (memories / "USER.md").write_text("Name: Teknium\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    notes = build_memory_notes()
+
+    assert notes["memory_count"] == 2
+    assert notes["memory"][0] == "Prefers rebase merges"
+    assert notes["user_count"] == 1
+    assert notes["user"] == ["Name: Teknium"]
+
+
+def test_build_memory_notes_missing_files_yield_empty_lists(tmp_path, monkeypatch):
+    from hermes_cli.memory_wiki import build_memory_notes
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    notes = build_memory_notes()
+
+    assert notes == {"memory": [], "user": [], "memory_count": 0, "user_count": 0}

@@ -18,6 +18,7 @@ Then open `/memory` from the dashboard sidebar.
 - **Subject pages** — related sessions, message snippets, keywords, first-seen and last-touched metadata for a topic.
 - **Daily logs** — sessions grouped by local calendar date, with subject chips and “what we did” bullets derived from messages and tool calls.
 - **Recent activity** — recent sessions from the same local history database.
+- **Persistent memory** — a read-only audit panel showing the curated `MEMORY.md` / `USER.md` entries the agent carries into every session, so derived wiki views always link back to the memory that actually shapes behavior. Edit entries via the `memory` tool or the files directly.
 
 ## Privacy model
 
