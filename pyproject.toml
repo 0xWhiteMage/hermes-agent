@@ -280,6 +280,18 @@ mcp = ["mcp==2.0.0", "httpx2==2.7.0", "starlette==1.3.1"]  # starlette: CVE-2026
 # Backwards-compatible no-op alias. Relay is a core dependency on supported
 # wheel targets and intentionally unavailable on other platforms.
 nemo-relay = []
+# Google Chat gateway adapter (plugins/platforms/google_chat). It contains
+# [google] for the API and auth stack, and adds the Pub/Sub client for the
+# optional pull-subscription transport.
+#
+# Declare each of these packages here, not only in a list inside the plugin.
+# `uv audit` and the OSV-Scanner CI job read uv.lock. A package that the
+# plugin installs at run time, but that pyproject.toml does not declare,
+# never reaches uv.lock, and no scanner examines it.
+google-chat = [
+  "hermes-agent[google]",
+  "google-cloud-pubsub==2.39.0",
+]
 homeassistant = ["aiohttp==3.14.3"]
 sms = ["aiohttp==3.14.3"]
 teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
