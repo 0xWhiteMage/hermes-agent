@@ -2549,10 +2549,13 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
     lines.append("")
     lines.append(f"**Release Date:** {date_str}")
     lines.append("")
-    # The builds-table job in desktop-bundled-release.yml replaces this
-    # marker with the download tables once every matrix leg has uploaded
-    # its artifacts (real asset names, never predicted ones). A release
-    # whose matrix never finishes keeps the marker — visibly unfinished.
+    # The builds-pending job in desktop-bundled-release.yml replaces this
+    # marker with a "builds in progress" link to the run as soon as the
+    # workflow starts. The builds-table job then replaces the link with
+    # the download tables once every matrix leg has uploaded its
+    # artifacts (real asset names, never predicted ones). A release
+    # whose matrix never finishes keeps the link — visibly unfinished,
+    # and it points at the run that stopped.
     lines.append("<!-- HERMES_BUILDS_TABLE -->")
     lines.append("")
 

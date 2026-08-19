@@ -68,3 +68,26 @@ class TestRenderAndSplice:
     def test_no_marker_leaves_body_alone(self):
         block = rbt.render_tables(rbt.parse_assets(ASSETS), "v0.28.0", "NousResearch/hermes-agent")
         assert rbt.splice("no marker here", block) == "no marker here"
+
+
+class TestPendingPlaceholder:
+    def test_final_render_replaces_the_pending_link(self):
+        # The lifecycle: marker → pending link (builds-pending job) →
+        # tables (builds-table job). The link must not survive step 3.
+        body = f"# Notes\n\n{rbt.MARKER}\n\n## Changes"
+        pending = rbt.render_pending("https://github.com/o/r/actions/runs/123")
+        with_pending = rbt.splice(body, pending)
+        assert "actions/runs/123" in with_pending
+        assert with_pending.count(rbt.MARKER) == 1  # wrapper survives for step 3
+        tables = rbt.render_tables(rbt.parse_assets(ASSETS), "v0.28.0", "NousResearch/hermes-agent")
+        final = rbt.splice(with_pending, tables)
+        assert "actions/runs/123" not in final
+        assert "## Downloads" in final
+        assert final.count(rbt.END_MARKER) == 1
+
+    def test_pending_rerender_replaces_not_stacks(self):
+        once = rbt.splice(rbt.MARKER, rbt.render_pending("https://x/runs/1"))
+        twice = rbt.splice(once, rbt.render_pending("https://x/runs/2"))
+        assert "https://x/runs/1" not in twice
+        assert twice.count("https://x/runs/2") == 1
+        assert twice.count(rbt.END_MARKER) == 1

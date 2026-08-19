@@ -15,6 +15,12 @@ tables on purpose; they remain attached to the release. The bare per-arch
 msixbundle job folds both arches into the universal .msixbundle it
 attaches instead, which also stays out of the tables).
 
+With --pending-run-url, renders a "builds in progress" link to the
+workflow run instead of the tables. The builds-pending job runs this
+mode as the first job of the run, so the draft body points at the live
+run while the matrix builds. The link block keeps the marker wrapper,
+so the final render replaces it.
+
 Usage: render-builds-table.py --tag vX.Y.Z [--repo owner/repo] [--dry-run]
 Idempotent: re-running replaces the previously rendered block (the
 marker is kept as an HTML comment wrapper around the tables).
@@ -83,6 +89,16 @@ def render_tables(assets_by_app: dict, tag: str, repo: str) -> str:
     return MARKER + "\n## Downloads\n\n" + "\n\n".join(sections) + "\n" + END_MARKER
 
 
+def render_pending(run_url: str) -> str:
+    """The placeholder block: a link to the run, in the same marker wrapper."""
+    return (
+        MARKER
+        + f"\n> 🚧 [Builds in progress]({run_url}) — the download links"
+        + " appear here when the build matrix finishes.\n"
+        + END_MARKER
+    )
+
+
 def splice(body: str, block: str) -> str:
     """Replace the marker (or a previously rendered block) with `block`."""
     if END_MARKER in body:
@@ -97,6 +113,9 @@ def main() -> int:
     parser.add_argument("--repo", default="NousResearch/hermes-agent")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the spliced body instead of editing the release")
+    parser.add_argument("--pending-run-url", default=None,
+                        help="Render a 'builds in progress' link to this workflow run "
+                             "instead of the tables")
     args = parser.parse_args()
 
     view = subprocess.run(
@@ -111,10 +130,13 @@ def main() -> int:
     body = release.get("body") or ""
     names = [a["name"] for a in release.get("assets", [])]
 
-    block = render_tables(parse_assets(names), args.tag, args.repo)
-    if not block:
-        print("::warning::no table-shaped assets on the release; leaving the body unchanged")
-        return 0
+    if args.pending_run_url:
+        block = render_pending(args.pending_run_url)
+    else:
+        block = render_tables(parse_assets(names), args.tag, args.repo)
+        if not block:
+            print("::warning::no table-shaped assets on the release; leaving the body unchanged")
+            return 0
     if MARKER not in body:
         print("::warning::release body has no HERMES_BUILDS_TABLE marker; leaving it unchanged")
         return 0
@@ -133,7 +155,8 @@ def main() -> int:
     if edit.returncode != 0:
         print(f"::error::gh release edit failed: {edit.stderr.strip()}")
         return 1
-    print(f"✓ Builds table rendered into {args.tag} ({len(names)} assets scanned)")
+    what = "Builds-in-progress link" if args.pending_run_url else "Builds table"
+    print(f"✓ {what} rendered into {args.tag} ({len(names)} assets scanned)")
     return 0
 
 
