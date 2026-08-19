@@ -34,6 +34,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { hostTarBin } from "../apps/desktop/scripts/stage-agent-payloads.mjs"
+import { windowsFileVersion } from "../apps/desktop/scripts/windows-file-version.mjs"
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 
@@ -207,6 +208,13 @@ if (!isNightly && tag !== `v${pyprojectVersion}`) {
 }
 const artifactVersion = isNightly ? tag.slice(1) : pyprojectVersion
 
+// Windows VERSIONINFO cannot hold a nightly's semver string: it is four
+// 16-bit fields, and resedit clamps `0.28.0-nightly.20260819171926` down
+// to a meaningless 0.28.0.65535. windowsFileVersion packs the nightly
+// timestamp into a legal, correctly-ordering quad instead; a stable tag
+// needs none of it and gets null. See apps/desktop/scripts/windows-file-version.mjs.
+const fileVersion = windowsFileVersion(tag)
+
 // On win32 the two artifacts carry DIFFERENT update stewards — nsis
 // updates through electron-updater, msix through the Store — and the
 // stamp is a build input (write-shell-stamp.mjs + stage-agent-payloads
@@ -309,6 +317,17 @@ for (const pass of passes) {
       "run", "builder", "--",
       ...pass.targets.split(" "),
       `-c.extraMetadata.version=${artifactVersion}`,
+      // Both keys or neither: app-builder-lib reads shortVersion for the
+      // VERSIONINFO FileVersion and shortVersionWindows for ProductVersion,
+      // and NsisTarget gates the uninstaller's VIProductVersion on
+      // shortVersion being set while reading shortVersionWindows for the
+      // value — setting only one emits `-XVIProductVersion undefined`.
+      ...(fileVersion
+        ? [
+            `-c.extraMetadata.shortVersion=${fileVersion}`,
+            `-c.extraMetadata.shortVersionWindows=${fileVersion}`,
+          ]
+        : []),
       ...extraBuilderArgs,
     ],
     { cwd: desktop, env: passEnv }
