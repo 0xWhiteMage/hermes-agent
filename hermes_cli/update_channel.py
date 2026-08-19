@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -50,6 +51,16 @@ CHANNEL_MAIN = "main"
 CHANNEL_STABLE = "stable"
 CHANNEL_NIGHTLY = "nightly"
 VALID_CHANNELS = (CHANNEL_MAIN, CHANNEL_STABLE, CHANNEL_NIGHTLY)
+
+# A nightly release tag: v<major>.<minor>.0-nightly.<YYYYMMDDHHMMSS>, or the
+# legacy date-only shape. Mirrors _release_tag in
+# scripts/write_install_stamp.py, which writes the ``tag`` field this reads.
+_NIGHTLY_TAG_RE = re.compile(r"^v(?:0|[1-9]\d{0,2})\.\d+\.\d+-nightly\.20\d{6}(?:\d{6})?$")
+
+
+def is_nightly_tag(tag: Any) -> bool:
+    """True when ``tag`` is a nightly release tag."""
+    return isinstance(tag, str) and bool(_NIGHTLY_TAG_RE.match(tag.strip()))
 
 
 def install_id(project_root: Optional[Path] = None) -> str:
@@ -86,18 +97,28 @@ def channel_record(config: Optional[dict], project_root: Optional[Path] = None) 
 def default_channel(project_root: Optional[Path] = None) -> str:
     """The channel an unconfigured install tracks.
 
-    ``self`` source installs follow main (historical behavior);
-    ``electron-updater`` bundles follow stable (the release feed).
+    ``self`` source installs follow main (historical behavior).
+    ``electron-updater`` bundles follow the channel their own artifact was
+    published to: a nightly artifact tracks nightly, every other bundle
+    tracks stable. The stamp's ``tag`` is the authority, the same fact
+    apps/desktop/product-identity.cjs keys the published feed name on — so
+    the feed a nightly artifact asks for and the feed it was published to
+    can never disagree. Deriving stable here instead would send a fresh
+    nightly install to look for its ``nightly.yml`` feed file under the
+    newest STABLE release, where that file does not exist (404), leaving
+    the install unable to update at all.
     """
     from installation.paths import get_install_root
     from installation.tree import read_build_info
 
     root = Path(project_root) if project_root is not None else get_install_root()
     try:
-        mechanism = read_build_info(root).get("updateMechanism")
+        build_info = read_build_info(root)
     except RuntimeError:
-        mechanism = None
-    return CHANNEL_STABLE if mechanism == "electron-updater" else CHANNEL_MAIN
+        return CHANNEL_MAIN
+    if build_info.get("updateMechanism") != "electron-updater":
+        return CHANNEL_MAIN
+    return CHANNEL_NIGHTLY if is_nightly_tag(build_info.get("tag")) else CHANNEL_STABLE
 
 
 def resolve_update_channel(
@@ -172,11 +193,64 @@ def set_install_channel(
         )
 
     sha16 = install_id(root)
-    _write_channel_record(sha16, str(root), channel)
+    _write_channel_record(sha16, str(root), channel, artifact_channel=default_channel(root))
     return sha16
 
 
-def _write_channel_record(sha16: str, path: str, channel: str) -> None:
+def seed_install_channel(project_root: Optional[Path] = None) -> Optional[str]:
+    """Seed this install's channel record from the artifact, at boot.
+
+    The record is keyed by PATH and lives in config.yaml, so it outlives the
+    artifact that wrote it: install stable, uninstall, install nightly to
+    the same location, and the stale ``stable`` record would pin the new
+    nightly build to the stable feed forever. Installing a build of a given
+    flavor IS the choice of that flavor, so the artifact wins that argument.
+
+    ``artifactChannel`` records which artifact default the stored channel
+    was chosen against, which is what makes the two cases separable:
+
+    * it matches the current artifact — the stored channel is a deliberate
+      choice made on THIS flavor of build (``--set-channel``), so keep it.
+    * it differs, or is absent — the artifact changed under the record;
+      reseed to the new artifact's default.
+
+    Returns the channel written, or None when nothing needed writing.
+    Never raises: a config problem must not stop boot.
+    """
+    from installation.paths import get_install_root
+
+    root = Path(project_root) if project_root is not None else get_install_root()
+    try:
+        artifact = default_channel(root)
+        # Only artifacts with a release feed have a flavor to seed from; a
+        # source checkout's channel is not an artifact property.
+        if artifact not in (CHANNEL_STABLE, CHANNEL_NIGHTLY):
+            return None
+
+        from hermes_cli.config import get_config_path
+
+        import yaml
+
+        try:
+            raw = yaml.safe_load(get_config_path().read_text(encoding="utf-8-sig")) or {}
+        except (FileNotFoundError, OSError, ValueError):
+            raw = {}
+        record = channel_record(raw if isinstance(raw, dict) else {}, root)
+
+        # A deliberate choice made on THIS flavor of build stands.
+        if record.get("artifactChannel") == artifact:
+            return None
+
+        _write_channel_record(install_id(root), str(root), artifact, artifact_channel=artifact)
+        return artifact
+    except Exception as exc:  # noqa: BLE001 — seeding must never break boot
+        logger.debug("channel seeding skipped: %s", exc)
+        return None
+
+
+def _write_channel_record(
+    sha16: str, path: str, channel: str, artifact_channel: Optional[str] = None
+) -> None:
     """Write ``update.installs.<sha16>`` into config.yaml, preserving the rest."""
     import yaml
 
@@ -202,6 +276,11 @@ def _write_channel_record(sha16: str, path: str, channel: str) -> None:
         installs[sha16] = record
     record["path"] = path  # DATA, for humans + doctor GC
     record["channel"] = channel
+    # Which artifact default this channel was chosen against. seed_install_channel
+    # compares it to the installed artifact to tell a deliberate choice from a
+    # record the artifact outlived.
+    if artifact_channel is not None:
+        record["artifactChannel"] = artifact_channel
 
     tmp = config_path.with_suffix(config_path.suffix + ".tmp")
     tmp.write_text(

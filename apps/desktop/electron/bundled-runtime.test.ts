@@ -4,8 +4,10 @@ import { createHash } from 'node:crypto'
 import { test } from 'vitest'
 
 import {
+  defaultUpdateChannel,
   findEmbeddedPython,
   installIdForRoot,
+  isNightlyTag,
   latestReleaseFromLsRemote,
   PAYLOAD_SCHEMA_VERSION,
   resolvePayload,
@@ -110,6 +112,54 @@ test('channel comes from the per-install record; absent means main', () => {
   assert.equal(updateChannelFromConfig('model:\n  provider: nous\n', ID), 'main')
   assert.equal(updateChannelFromConfig(null, ID), 'main')
   assert.equal(updateChannelFromConfig('', ID), 'main')
+})
+
+// ─── defaultUpdateChannel ──────────────────────────────────────────
+
+const NIGHTLY_TAG = 'v0.28.0-nightly.20260819171926'
+
+test('a bundle with no record tracks the feed its own artifact publishes to', () => {
+  // product-identity.cjs keys the published feed name on this same tag, so
+  // the feed the app asks for and the feed it was published to agree.
+  // Defaulting a nightly to stable made it request nightly.yml under the
+  // newest STABLE release — a 404 with no fallback, which left a fresh
+  // nightly install permanently unable to update.
+  assert.equal(defaultUpdateChannel(NIGHTLY_TAG, 'electron-updater'), 'nightly')
+  assert.equal(defaultUpdateChannel('v0.27.0', 'electron-updater'), 'stable')
+
+  // Only artifacts with a release feed have a feed to track.
+  assert.equal(defaultUpdateChannel(NIGHTLY_TAG, 'self'), 'main')
+  assert.equal(defaultUpdateChannel(NIGHTLY_TAG, 'external'), 'main')
+  assert.equal(defaultUpdateChannel(null, null), 'main')
+})
+
+test('isNightlyTag accepts both nightly tag shapes and nothing else', () => {
+  assert.equal(isNightlyTag(NIGHTLY_TAG), true)
+  // The legacy date-only shape release.py used to emit.
+  assert.equal(isNightlyTag('v0.28.0-nightly.20260818'), true)
+  assert.equal(isNightlyTag('v0.27.0'), false)
+  assert.equal(isNightlyTag('v0.28.0-rc.1'), false)
+  assert.equal(isNightlyTag(null), false)
+  assert.equal(isNightlyTag(undefined), false)
+})
+
+test('the artifact default answers wherever no record for this install exists', () => {
+  // Every path out of the parser, not just the empty-config one: a nightly
+  // bundle must not fall back to main because a SIBLING install has a record.
+  const stampArgs = [NIGHTLY_TAG, 'electron-updater'] as const
+
+  assert.equal(updateChannelFromConfig(null, ID, ...stampArgs), 'nightly')
+  assert.equal(updateChannelFromConfig('', ID, ...stampArgs), 'nightly')
+  assert.equal(updateChannelFromConfig('model:\n  provider: nous\n', ID, ...stampArgs), 'nightly')
+  assert.equal(updateChannelFromConfig(record('stable', 'ffffffffffffffff'), ID, ...stampArgs), 'nightly')
+  assert.equal(updateChannelFromConfig(`update:\n  interval: 1\n`, ID, ...stampArgs), 'nightly')
+})
+
+test('an explicit record still overrides the artifact default', () => {
+  // The tag supplies the DEFAULT only — opting a nightly build onto stable
+  // has to keep working.
+  assert.equal(updateChannelFromConfig(record('stable'), ID, NIGHTLY_TAG, 'electron-updater'), 'stable')
+  assert.equal(updateChannelFromConfig(record('main'), ID, NIGHTLY_TAG, 'electron-updater'), 'main')
 })
 
 test("another install's record never answers for this install", () => {

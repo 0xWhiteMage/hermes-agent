@@ -110,6 +110,34 @@ export function getAutoUpdater(): AppUpdater {
   return autoUpdater
 }
 
+/**
+ * The electron-updater feed selection for a channel: which `<channel>.yml`
+ * to read, and whether prereleases are eligible.
+ *
+ * `channel` must always be an explicit feed name, never null. null means
+ * "no override", and GitHubProvider then falls back to `options.channel` —
+ * the channel baked into app-update.yml, which on a nightly artifact is
+ * 'nightly'. Combined with `allowPrerelease: false` (which makes the
+ * provider read the feed file from `/releases/latest`, the newest STABLE
+ * release) that asks for nightly.yml under a stable release, where it does
+ * not exist: a 404 with no fallback, because the provider's latest.yml
+ * retry only runs when allowPrerelease is true.
+ *
+ * allowPrerelease also selects how the release is chosen: true walks the
+ * releases atom feed for the newest tag on the matching channel, false
+ * takes `/releases/latest`.
+ */
+export function feedSelection(
+  channel: 'stable' | 'nightly',
+  light: boolean
+): { channel: string; allowPrerelease: boolean } {
+  if (channel === 'nightly') {
+    return { channel: light ? 'light-nightly' : 'nightly', allowPrerelease: true }
+  }
+
+  return { channel: light ? 'light' : 'latest', allowPrerelease: false }
+}
+
 /** Check the GitHub Releases feed. Returns the renderer-shaped result. */
 export async function checkAppUpdate(
   currentVersion: string,
@@ -117,16 +145,11 @@ export async function checkAppUpdate(
 ): Promise<ReturnType<typeof describeFeedCheck>> {
   const updater = getAutoUpdater()
 
-  // electron-updater's channel property selects which <channel>.yml the
-  // check reads. Set it on every check: the user can flip the per-install
-  // record between two checks of one app session. The nightly feed name is
-  // per-variant (nightly.yml for Hermes, light-nightly.yml for Light);
-  // null restores the baked default (latest.yml / light.yml — whatever
-  // app-update.yml says). allowPrerelease rides along — nightly artifacts
-  // publish as GitHub prereleases.
-  updater.channel =
-    channel === 'nightly' ? (PRODUCT_IDENTITY.light ? 'light-nightly' : 'nightly') : null
-  updater.allowPrerelease = channel === 'nightly'
+  // Set on every check: the user can flip the per-install record between
+  // two checks of one app session.
+  const feed = feedSelection(channel, PRODUCT_IDENTITY.light)
+  updater.channel = feed.channel
+  updater.allowPrerelease = feed.allowPrerelease
 
   const result = await updater.checkForUpdates()
 

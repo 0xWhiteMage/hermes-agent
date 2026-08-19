@@ -2,7 +2,43 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { applyAppUpdate, describeFeedCheck, shouldUseAppUpdater } from './app-updater'
+import { applyAppUpdate, describeFeedCheck, feedSelection, shouldUseAppUpdater } from './app-updater'
+
+// ── feedSelection ───────────────────────────────────────────────────
+
+test('every channel names its feed file explicitly', () => {
+  // The regression: the stable arm passed null ("no override"), and
+  // GitHubProvider then fell back to the channel baked into app-update.yml.
+  // On a nightly artifact that is 'nightly', so a stable-channel check
+  // asked for nightly.yml under the newest STABLE release — 404, with no
+  // latest.yml retry because that only runs when allowPrerelease is true.
+  for (const light of [false, true]) {
+    for (const channel of ['stable', 'nightly'] as const) {
+      const feed = feedSelection(channel, light)
+
+      assert.ok(feed.channel, `${channel}/light=${light} must name a feed`)
+      assert.equal(typeof feed.channel, 'string')
+    }
+  }
+})
+
+test('feed names are per-variant so the two variants never share a feed', () => {
+  assert.equal(feedSelection('stable', false).channel, 'latest')
+  assert.equal(feedSelection('nightly', false).channel, 'nightly')
+  assert.equal(feedSelection('stable', true).channel, 'light')
+  assert.equal(feedSelection('nightly', true).channel, 'light-nightly')
+})
+
+test('only the nightly channel accepts prereleases', () => {
+  // allowPrerelease also picks which release the feed file is read FROM:
+  // true walks the atom feed for the newest nightly tag, false takes
+  // /releases/latest. A nightly feed must be paired with the atom walk, or
+  // it looks for its feed file under the newest stable release.
+  assert.equal(feedSelection('nightly', false).allowPrerelease, true)
+  assert.equal(feedSelection('nightly', true).allowPrerelease, true)
+  assert.equal(feedSelection('stable', false).allowPrerelease, false)
+  assert.equal(feedSelection('stable', true).allowPrerelease, false)
+})
 
 // ── shouldUseAppUpdater ─────────────────────────────────────────────
 

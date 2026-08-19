@@ -120,13 +120,42 @@ export function installIdForRoot(root: string, canonicalize: (p: string) => stri
 }
 
 /**
+ * A nightly release tag: `v<major>.<minor>.0-nightly.<YYYYMMDDHHMMSS>`, or
+ * the legacy date-only shape. Mirrors `_NIGHTLY_TAG_RE` in
+ * hermes_cli/update_channel.py and the nightly test in
+ * apps/desktop/product-identity.cjs — all three key off the same tag.
+ */
+export function isNightlyTag(tag: string | null | undefined): boolean {
+  return typeof tag === 'string' && /^v(?:0|[1-9]\d{0,2})\.\d+\.\d+-nightly\.20\d{6}(?:\d{6})?$/.test(tag.trim())
+}
+
+/**
+ * The channel an install with no per-install record tracks.
+ *
+ * A bundled/light artifact follows the feed it was itself published to:
+ * `product-identity.cjs` bakes `channel: 'nightly'` into app-update.yml for
+ * a nightly tag, so defaulting a nightly artifact to stable makes the app
+ * ask for its nightly feed file under the newest STABLE release, where it
+ * does not exist — a 404 that leaves the install permanently unable to
+ * update. Everything else defaults to main, the source-checkout default.
+ */
+export function defaultUpdateChannel(stampTag: string | null | undefined, mechanism: string | null | undefined): 'stable' | 'main' | 'nightly' {
+  if (mechanism !== 'electron-updater') {
+    return 'main'
+  }
+
+  return isNightlyTag(stampTag) ? 'nightly' : 'stable'
+}
+
+/**
  * The update channel of the install with id `installId`, read from
  * config.yaml text (`update.installs.<sha16>.channel` — the per-install
  * record `hermes update --set-channel` writes; there is no home-global
  * channel key). The CLI owns this shape; Electron only mirrors it for the
- * version pill and the stable-channel check path. Anything but an explicit
- * `stable`/`nightly` record for THIS install means `main` — the default
- * channel for source checkouts.
+ * version pill and the stable-channel check path. With no explicit record
+ * for THIS install, the answer is the artifact's own default channel
+ * (`defaultUpdateChannel`) — callers pass the stamp facts so a nightly
+ * bundle tracks nightly; omitting them keeps the source-checkout `main`.
  *
  * The parser is deliberately narrow: find the top-level `update:` block,
  * the `installs:` block inside it, then the `<installId>:` block, then its
@@ -134,10 +163,14 @@ export function installIdForRoot(root: string, canonicalize: (p: string) => stri
  */
 export function updateChannelFromConfig(
   configText: string | null | undefined,
-  installId: string
+  installId: string,
+  stampTag: string | null = null,
+  mechanism: string | null = null
 ): 'stable' | 'main' | 'nightly' {
+  const fallback = defaultUpdateChannel(stampTag, mechanism)
+
   if (!configText || !installId) {
-    return 'main'
+    return fallback
   }
 
   // Depth by indentation: update: (0) → installs: (>0) → <sha16>: (deeper) →
@@ -191,7 +224,7 @@ export function updateChannelFromConfig(
     }
   }
 
-  return 'main'
+  return fallback
 }
 
 /**

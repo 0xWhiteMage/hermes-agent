@@ -2922,7 +2922,9 @@ async function checkUpdates() {
         app.getVersion(),
         updateChannelFromConfig(
           readTextOrNull(path.join(HERMES_HOME, 'config.yaml')),
-          installIdForRoot(resolveUpdateRoot(), canonicalizeInstallPath)
+          installIdForRoot(resolveUpdateRoot(), canonicalizeInstallPath),
+          INSTALL_STAMP?.tag ?? null,
+          INSTALL_STAMP?.updateMechanism ?? null
         ) === 'nightly'
           ? 'nightly'
           : 'stable'
@@ -2946,7 +2948,9 @@ async function checkUpdates() {
   if (
     updateChannelFromConfig(
       readTextOrNull(path.join(HERMES_HOME, 'config.yaml')),
-      installIdForRoot(resolveUpdateRoot(), canonicalizeInstallPath)
+      installIdForRoot(resolveUpdateRoot(), canonicalizeInstallPath),
+      INSTALL_STAMP?.tag ?? null,
+      INSTALL_STAMP?.updateMechanism ?? null
     ) === 'stable'
   ) {
     return checkStableChannelUpdates()
