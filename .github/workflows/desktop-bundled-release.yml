@@ -264,11 +264,13 @@ jobs:
           # ships. (0.12+ also prints the build triple in --version, which
           # the payload staging guard requires.)
           version: ${{ steps.pins.outputs.uv }}
-          enable-cache: true
-          cache-suffix: -${{ matrix.variant }}
-          cache-dependency-glob: |
-            pyproject.toml
-            uv.lock
+          # No uv cache: the host uv only runs `uv export` (a lock read,
+          # no downloads) and `uv python install` into the payload tree,
+          # which the agent-payload cache below already covers. The
+          # site-packages install runs pip on the payload interpreter,
+          # not host uv, so the uv cache never receives a deposit —
+          # explicit false because the default is on for hosted runners.
+          enable-cache: false
           python-version: ${{ steps.pins.outputs.python }}
 
       # ── OpenSSL for the win32-arm64 source builds ──────────────────────
@@ -307,6 +309,12 @@ jobs:
       # No restore-keys: a partial match would fail that check and restage
       # anyway. win32-arm64 saves the most (15+ min of MSVC/Rust sdist
       # builds); every platform saves the python install + wheel downloads.
+      # The key hashes the staging script too: the script's cache identity
+      # also covers the payload schema version, the source-build list, and
+      # the uv python request, which all live in the script source. A key
+      # missing any of them meets the cache immutability trap — an exact
+      # hit never re-saves, so a schema bump would restore stale trees,
+      # restage from scratch, and skip the save, on every later run.
       - name: Cache payload python + site-packages
         if: matrix.variant == 'bundled'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
