@@ -8,10 +8,12 @@ from predicted ones — a missing artifact shows up as a missing row, not
 a dead link.
 
 Tables: Hermes Desktop (bundled) and Hermes Light, one row per (OS,
-arch). Feed manifests (latest*/light*/nightly*.yml), blockmaps, mac .zip
-(an electron-updater delta target, not a user download) and the .msix
-(store-channel artifact) stay out of the tables on purpose; they remain
-attached to the release.
+arch). Feed manifests (latest*/light*/nightly*.yml), blockmaps and mac .zip
+(an electron-updater delta target, not a user download) stay out of the
+tables on purpose; they remain attached to the release. The bare per-arch
+.msix never reaches the release at all (workflow-artifact only — the
+msixbundle job folds both arches into the universal .msixbundle it
+attaches instead, which also stays out of the tables).
 
 Usage: render-builds-table.py --tag vX.Y.Z [--repo owner/repo] [--dry-run]
 Idempotent: re-running replaces the previously rendered block (the

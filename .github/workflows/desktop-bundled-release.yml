@@ -526,8 +526,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           shopt -s nullglob
+          # No *.msix here on purpose: the bare per-arch packages travel as
+          # workflow artifacts only (the msixbundle job consumes them from
+          # there). The release carries just the universal .msixbundle,
+          # which that job uploads — one MSIX-shaped download, no chance of
+          # a user grabbing a single-arch package by hand.
           files=(apps/desktop/release/*.dmg apps/desktop/release/*.zip \
-                 apps/desktop/release/*.exe apps/desktop/release/*.msix \
+                 apps/desktop/release/*.exe \
                  apps/desktop/release/*.AppImage \
                  apps/desktop/release/*.blockmap apps/desktop/release/latest*.yml \
                  apps/desktop/release/light*.yml apps/desktop/release/nightly*.yml)
@@ -678,10 +683,12 @@ jobs:
   # After EVERY matrix leg has uploaded, render the download tables into
   # the release body's <!-- HERMES_BUILDS_TABLE --> marker from the
   # release's actual asset names (never predicted ones — a missing
-  # artifact is a missing row, not a dead link). msix and mac .zip stay
-  # out of the tables by design (store channel / updater delta target);
-  # their legs still gate this job through needs:. Draft stable releases
-  # and published nightly prereleases both work: gh resolves drafts too.
+  # artifact is a missing row, not a dead link). The universal .msixbundle
+  # and mac .zip stay out of the tables by design (store/sideload channel /
+  # updater delta target; the bare per-arch .msix never reaches the release
+  # at all). Their legs still gate this job through needs:. Draft stable
+  # releases and published nightly prereleases both work: gh resolves
+  # drafts too.
   builds-table:
     name: Render the release builds table
     needs: build
