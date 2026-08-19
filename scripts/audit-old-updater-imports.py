@@ -611,7 +611,56 @@ def resolve_in_tree(module: str, symbol: str | None, root: Path) -> tuple[bool, 
                 if (alias.asname or alias.name.split(".")[0]) == symbol:
                     return True, ""
 
+    # A lazy re-export registry counts, but only when the TARGET module
+    # really defines the name. main.py serves command symbols through a
+    # module-level ``__getattr__`` that reads a dict of
+    # ``{"module.path": ("name", ...)}`` string constants — an old
+    # updater's ``getattr(main_module, name)`` resolves through it at
+    # runtime, so the surface is intact. Follow the string to the target
+    # module and demand a real definition there; a registry entry whose
+    # target lost the def stays a failure.
+    has_module_getattr = any(
+        isinstance(node, ast.FunctionDef) and node.name == "__getattr__"
+        for node in tree.body
+    )
+    if has_module_getattr:
+        for target_module in _lazy_registry_targets(tree, symbol):
+            ok, _ = resolve_in_tree(target_module, symbol, root)
+            if ok:
+                return True, ""
+
     return False, f"{module}.{symbol} not found"
+
+
+def _lazy_registry_targets(tree: ast.Module, symbol: str) -> list[str]:
+    """Module paths whose lazy-registry entry lists *symbol*.
+
+    Matches the ``{"hermes_cli.update_cmd": ("_name", ...)}`` shape of
+    ``_LAZY_COMMAND_EXPORTS``: a module-level dict whose keys are dotted
+    module strings and whose values are tuples/lists of name strings.
+    """
+    targets: list[str] = []
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        value = node.value
+        if not isinstance(value, ast.Dict):
+            continue
+        for key, val in zip(value.keys, value.values):
+            if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                continue
+            if "." not in key.value:
+                continue
+            if not isinstance(val, (ast.Tuple, ast.List)):
+                continue
+            names = {
+                el.value
+                for el in val.elts
+                if isinstance(el, ast.Constant) and isinstance(el.value, str)
+            }
+            if symbol in names:
+                targets.append(key.value)
+    return targets
 
 
 def main(argv: list[str] | None = None) -> int:
