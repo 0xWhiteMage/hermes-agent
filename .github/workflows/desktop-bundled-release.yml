@@ -157,23 +157,41 @@ jobs:
           echo killing...; sudo pkill -9 XProtect >/dev/null || true;
           echo waiting...; while pgrep XProtect; do sleep 3; done;
 
-      # Exclude the workspace from Defender's real-time scanning. npm ci
-      # writes ~1300 packages of small files; on the windows-11-arm runner
-      # image that step measured 11-14 MINUTES against 33-60s on x64 for
-      # the same lockfile with a warm npm http cache — a file-write-path
+      # Exclude the build write paths from Defender's real-time scanning.
+      # npm ci writes ~1300 packages of small files; on the windows-11-arm
+      # runner image that step measured 11-14 MINUTES against 33-60s on x64
+      # for the same lockfile with a warm npm http cache — a file-write-path
       # slowdown, which is Defender's signature. The x64 images ship with
-      # runner exclusions this image appears to lack. Best-effort (try /
-      # catch): a hardened future image that denies the call should not
-      # fail the build, just run slow like today.
-      - name: Exclude workspace from Defender scanning
+      # runner exclusions this image appears to lack.
+      #
+      # The workspace alone is NOT enough: run 32301107652 measured 650-700s
+      # with the workspace exclusion confirmed applied. npm ci stages every
+      # tarball through the content-addressable cache (%LocalAppData%\
+      # npm-cache\_cacache) and extracts under %TEMP% — both outside
+      # $GITHUB_WORKSPACE, both scanned per-file. Exclude those write paths
+      # too. Best-effort (try / catch): a hardened future image that denies
+      # the call should not fail the build, just run slow like today.
+      - name: Exclude build write paths from Defender scanning
         if: startsWith(matrix.target.label, 'win32-')
         shell: powershell
         run: |
+          $paths = @(
+            $env:GITHUB_WORKSPACE,
+            $env:RUNNER_TEMP,
+            (npm config get cache)
+          )
           try {
-            Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE"
-            Write-Host "Defender exclusion added for $env:GITHUB_WORKSPACE"
+            Set-MpPreference -DisableRealtimeMonitoring $true
           } catch {
-            Write-Host "Defender exclusion not applied ($($_.Exception.Message)) - continuing"
+            Write-Host "Could not disable windows defender"
+          }
+          foreach ($p in $paths) {
+            try {
+              Add-MpPreference -ExclusionPath $p
+              Write-Host "Defender exclusion added for $p"
+            } catch {
+              Write-Host "Defender exclusion not applied for $p ($($_.Exception.Message)) - continuing"
+            }
           }
 
       - name: Validate tag shape
