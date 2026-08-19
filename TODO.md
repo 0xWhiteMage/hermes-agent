@@ -98,10 +98,16 @@ an interpreter.
 Termux removal, and remove it with its test if not. See
 `docs/termux-removal-notes.md` for the revival checklist.
 
-**10. PR #2 re-audit.** Measure whether `Lib/venv` plus pip and ensurepip
-are prunable now that Phase 7 landed and eject is gone. Record the extra
-megabytes the prune saves. This gates PR #2, which is why that PR folds
-last.
+**10. PR #2 re-audit — DONE (2026-08-18, at the fold).** `Lib/ensurepip`
+and `Lib/venv` are pruned now. The audit found no runtime consumer:
+`installation/pip_ladder.py` is uv-only (its tests assert no pip and no
+ensurepip spawn), `venv_sync` creates venvs with `uv venv`, and eject is
+gone. The venv-repair ensurepip calls (`_early_recovery.py`,
+`_install_repair.py`) target a checkout's venv python — a sealed payload
+has no venv. pip stays: uv lazy installs into the writable overlay need
+it as the installed-package backend. Byte measurement on a real artifact
+still pends the first CI bundle build; the stdlib dirs are small
+(single-digit MB), the win is correctness of the allowlist prose.
 
 **11. Nightly notarization minutes.** macOS notarization on every
 nightly costs runner minutes. If the cost becomes real, gate the nightly
