@@ -9544,6 +9544,21 @@ def cmd_update(args):
     """
     from hermes_cli.config import detect_install_method
 
+    # A pre-stamp managed install (main-era curl|sh checkout at a blessed
+    # root) classifies as "source" until step_adopt_blessed_checkout writes
+    # its stamp. Adoption normally runs from the boot bootstrap (CLI loop,
+    # gateway, serve), but `hermes update` can be the FIRST command a user
+    # runs on post-restack code — without this call the update would refuse
+    # its own managed install and point at `git pull`. The step is
+    # idempotent and self-gating (blessed root + .git + no stamp only), so
+    # calling it here costs a few stat calls on already-stamped installs.
+    try:
+        from hermes_cli.post_update import step_adopt_blessed_checkout
+
+        step_adopt_blessed_checkout()
+    except Exception:
+        logger.debug("blessed-checkout adoption skipped", exc_info=True)
+
     # Sealed trees (docker, nix, desktop-app — any steward) can't `git
     # pull`: the steward replaces the tree wholesale. ONE refusal table
     # (installation.tree.STEWARD_UPDATE_MESSAGES) answers all of them,

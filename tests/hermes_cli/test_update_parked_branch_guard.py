@@ -56,7 +56,13 @@ def repo_pair(tmp_path):
     _git(origin, "config", "user.email", "test@example.com")
     _git(origin, "config", "user.name", "Test")
     (origin / "a.txt").write_text("one\n")
-    _git(origin, "add", "a.txt")
+    # The stamp-pure ladder (installation/tree.py) needs updateMechanism:
+    # self for cmd_update to own this checkout. Commit it so every clone
+    # is both managed and clean (an untracked stamp would read as dirty).
+    (origin / "install-stamp.json").write_text(
+        '{"schemaVersion": 2, "updateMechanism": "self"}\n'
+    )
+    _git(origin, "add", "a.txt", "install-stamp.json")
     _git(origin, "commit", "-qm", "c1")
 
     clone = tmp_path / "clone"
@@ -356,7 +362,11 @@ def test_update_up_to_date_path_does_not_repark_merged_branch(
     _git(origin, "config", "user.email", "test@example.com")
     _git(origin, "config", "user.name", "Test")
     (origin / "a.txt").write_text("one\n")
-    _git(origin, "add", "a.txt")
+    # Committed stamp: managed under the stamp-pure ladder, clean tree.
+    (origin / "install-stamp.json").write_text(
+        '{"schemaVersion": 2, "updateMechanism": "self"}\n'
+    )
+    _git(origin, "add", "a.txt", "install-stamp.json")
     _git(origin, "commit", "-qm", "c1")
 
     clone = tmp_path / "clone"

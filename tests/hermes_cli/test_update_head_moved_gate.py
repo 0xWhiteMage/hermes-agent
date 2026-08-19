@@ -75,6 +75,12 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(hermes_main.subprocess, "run", run_side_effect)
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
     (tmp_path / ".git").mkdir()  # pass the "is a git repo" gate
+    # The stamp-pure ladder (installation/tree.py) classifies a stampless
+    # checkout as "source" and cmd_update refuses it before the pull. The
+    # stamp is what makes this fixture the managed install.
+    (tmp_path / "install-stamp.json").write_text(
+        '{"schemaVersion": 2, "updateMechanism": "self"}\n', encoding="utf-8"
+    )
     monkeypatch.setattr(
         hermes_main, "_resolve_update_branch", lambda args: "main"
     )
@@ -101,6 +107,18 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
         hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None
     )
     # Short-circuit the long tail: dependency install + desktop build.
+    # The restacked dependency phase provisions a real managed uv binary
+    # (download + integrity probe) that a subprocess.run mock cannot fake,
+    # so stub the managed_uv seam and the installer it feeds.
+    import hermes_cli.managed_uv as managed_uv
+
+    monkeypatch.setattr(managed_uv, "update_managed_uv", lambda *a, **k: None)
+    monkeypatch.setattr(managed_uv, "ensure_uv", lambda *a, **k: "/usr/bin/uv")
+    monkeypatch.setattr(
+        hermes_main,
+        "_install_python_dependencies_with_optional_fallback",
+        lambda *a, **k: None,
+    )
     monkeypatch.setattr(hermes_main, "_write_update_incomplete_marker", lambda: None)
     monkeypatch.setattr(hermes_main, "_clear_update_incomplete_marker", lambda: None)
     # Gateway restart path (called after a successful update).
