@@ -74,9 +74,12 @@ def test_install_npm_degrades_when_runtime_is_not_provisioned(tmp_path, monkeypa
     def raise_not_provisioned():
         raise NotProvisioned("npm is not in this install's runtime dir")
 
+    ran = []
+    monkeypatch.setattr(install_mod.subprocess, "run", lambda *a, **k: ran.append(a))
     monkeypatch.setattr(install_mod.nodejs, "npm_path", raise_not_provisioned)
 
     assert install_mod._install_npm("pyright", "pyright-langserver") is None
+    assert ran == [], "npm must not be spawned on an unprovisioned tree"
 
 
 
