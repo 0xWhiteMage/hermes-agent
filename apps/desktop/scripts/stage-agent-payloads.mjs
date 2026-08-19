@@ -397,7 +397,15 @@ export function assertPayloadArch(target, outDir) {
       ? probePeArch(binary)
       : (probeMachOArch(binary) ?? probeElfArch(binary))
 
-    if (arch !== "unknown" && arch !== target.arch) {
+    // null = not a native binary at all (npm's entry is a JS shim script;
+    // scripts have no architecture). "unknown" = native container whose
+    // machine type the probe cannot map. "universal" = a macOS fat binary,
+    // which contains the target arch by definition. None of these is
+    // evidence of a wrong-arch stage — only a POSITIVE mismatched
+    // identification is.
+    const inconclusive = arch === null || arch === "unknown" || arch === "universal"
+
+    if (!inconclusive && arch !== target.arch) {
       throw new Error(`${tool}: staged binary is ${arch}, expected ${target.arch}`)
     }
   }

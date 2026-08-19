@@ -367,6 +367,26 @@ test('assertPayloadArch rejects a wrong-arch binary', () => {
   assert.throws(() => assertPayloadArch(target, dir), /gh: staged binary is arm64/)
 })
 
+test('assertPayloadArch accepts a script-shim fact (npm has no architecture)', () => {
+  // npm's entry point is a JS script, not a native binary: the arch
+  // probes answer null, and null is not a wrong-arch finding. The
+  // nightly's linux/darwin staging died on exactly this once the gate
+  // started auditing every recorded fact.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-payload-'))
+  const target = resolveTargets('linux', 'x64')
+
+  stagePayloadFixture(dir)
+  const facts = JSON.parse(fs.readFileSync(path.join(dir, 'runtimes.json'), 'utf8'))
+  const rel = 'npm-12.0.2-linux-x64/bin/npm'
+  facts.tools.npm = { version: '12.0.2', path: rel }
+  const file = path.join(dir, rel)
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, '#!/usr/bin/env node\nrequire("../lib/cli.js")\n')
+  fs.writeFileSync(path.join(dir, 'runtimes.json'), JSON.stringify(facts))
+
+  assert.doesNotThrow(() => assertPayloadArch(target, dir))
+})
+
 test('assertPayloadArch rejects a payload missing a tool entirely', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-payload-'))
   const target = resolveTargets('linux', 'x64')
