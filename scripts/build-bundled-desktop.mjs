@@ -29,6 +29,7 @@
 // Signing is CI's job (Azure/Apple secrets). Local builds are unsigned.
 
 import { execSync, spawnSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -237,12 +238,38 @@ console.log(`[build-bundled] tag=${tag} variant=${variant} platform=${process.pl
 // node_modules. Never run npm ci inside a workspace directory — that
 // builds a partial shadow tree beside the hoisted one and breaks module
 // resolution for the workspace builds below.
-run("npm", ["ci", "--no-audit", "--no-fund"], {
-  env: {
-    ...process.env, // spawnSync env REPLACES the child environment; keep PATH etc.
-    "CI": "true" // skip annoying unicode install banner
-  }
-})
+//
+// The install is content-addressed: the tree npm ci produces is a pure
+// function of (lockfile, node, npm, platform-arch). The stamp below
+// records that tuple after a successful install; when a restored
+// node_modules carries a matching stamp, the tree already IS what npm ci
+// would rebuild, so rebuilding it proves nothing and is skipped. Any
+// mismatch (or absent stamp) deletes the stamp first and reinstalls —
+// CI's node_modules cache is an optimization this check accepts or
+// rejects, never a source of truth. This matters most on the
+// windows-11-arm runner image, where a cold npm ci measured 655-700s
+// against 56-61s on x64 (registry tarball fetches stalling 4-6 minutes
+// each), with Defender write-path exclusions confirmed applied and
+// irrelevant.
+const installStamp = [
+  `lock=${createHash("sha256").update(fs.readFileSync(path.join(REPO_ROOT, "package-lock.json"))).digest("hex")}`,
+  `node=${process.version}`,
+  `npm=${execSync("npm --version", { encoding: "utf8", shell: process.platform === "win32" }).trim()}`,
+  `target=${process.platform}-${process.arch}`,
+].join(" ")
+const installStampPath = path.join(REPO_ROOT, "node_modules", ".install-stamp")
+if (fs.existsSync(installStampPath) && fs.readFileSync(installStampPath, "utf8") === installStamp) {
+  console.log("[build-bundled] node_modules matches its install stamp — npm ci output already present")
+} else {
+  fs.rmSync(installStampPath, { force: true })
+  run("npm", ["ci", "--no-audit", "--no-fund"], {
+    env: {
+      ...process.env, // spawnSync env REPLACES the child environment; keep PATH etc.
+      "CI": "true" // skip annoying unicode install banner
+    }
+  })
+  fs.writeFileSync(installStampPath, installStamp)
+}
 run("npm", ["run", "build", "--workspace", "ui-tui"])
 run("npm", ["run", "build", "--workspace", "web"])
 

@@ -402,6 +402,31 @@ jobs:
             ${{ github.workspace }}/.cache/electron
           key: eb-${{ runner.os }}-${{ runner.arch }}-electron-${{ steps.toolchain.outputs.electron }}-builder-${{ steps.toolchain.outputs.builder }}
 
+      # ── node_modules cache ──────────────────────────────────────────────
+      # The root npm ci output (hoisted workspaces + per-workspace shadow
+      # trees). On the windows-11-arm image a cold npm ci runs 655-700s —
+      # individual registry tarball fetches stall 4-6 minutes (node-pty
+      # 393s, node-gyp 274s in run 32301107652) — against 56-61s on x64.
+      # Defender write-path exclusions were confirmed applied and changed
+      # nothing; the stall is in the fetch path, so the fix is to not
+      # fetch. build-bundled-desktop.mjs owns correctness through its
+      # .install-stamp (lockfile hash + node + npm + target): a restored
+      # tree with a stale or missing stamp is fully reinstalled, so this
+      # cache is purely an optimization the script accepts or rejects.
+      # Exact key only: restoring a near-miss tree buys nothing (npm ci
+      # deletes it) and uploads a wasted gigabyte.
+      - name: Cache node_modules
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            ui-tui/node_modules
+            ui-tui/packages/*/node_modules
+            web/node_modules
+            tests-js/node_modules
+          key: node-modules-${{ matrix.target.label }}-node-${{ steps.pins.outputs.node }}-npm-${{ steps.pins.outputs.npm }}-${{ hashFiles('package-lock.json') }}
+
       # ── Azure OIDC login for Windows signing ───────────────────────────
       # No client secret exists anywhere. GitHub mints an OIDC token for
       # this job; Azure redeems it only when the token's subject matches
