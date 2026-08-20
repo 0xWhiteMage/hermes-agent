@@ -611,16 +611,10 @@ def _build_server_config(
             cfg["args"] = [_expand_install_dir(a, install_dir) for a in t.args]
         env = dict(t.env) if t.env else {}
         if entry.auth.type == "api_key":
-            # The child gets a filtered environment — _build_safe_env passes an
-            # allowlist, not every secret this process happens to hold — so a
-            # credential written to .env never reaches the server unless the
-            # stanza asks for it by name. Without this the server starts
-            # without its credentials and reports them missing, which reads
-            # like the setup failed when it was only withheld.
-            #
-            # References, not values: ${NAME} is interpolated at connect time
-            # from .env, so config.yaml stays free of secrets and stays
-            # copyable between machines.
+            # A stdio child's environment is allowlist-filtered
+            # (_build_safe_env), so a credential in .env reaches it only if
+            # the stanza names it. Referenced, not inlined: ${NAME} resolves
+            # at connect time, keeping config.yaml free of secrets.
             for var in entry.auth.env:
                 env.setdefault(var.name, f"${{{var.name}}}")
         if env:
