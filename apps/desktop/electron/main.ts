@@ -180,6 +180,7 @@ import {
 import { cursorPointInWindow } from './hud-cursor'
 import { registerHudIpc } from './hud-ipc'
 import { snapHudBounds } from './hud-snap'
+import { restoreMainWindowSurface, shouldArmHudRestore } from './hud-restore'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
@@ -11441,9 +11442,11 @@ function restoreMainWindowFromHud() {
 
   hudRestoreMainWindow = false
 
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.show()
-  }
+  // focusWindow, not bare show(): the main window may have been minimized or
+  // hidden when the HUD opened (#88513) — show() alone leaves a minimized
+  // window minimized on several WMs, and the old visible-only restore flag
+  // meant closing the HUD could leave the app with NO surface at all.
+  restoreMainWindowSurface(true, mainWindow, focusWindow)
 }
 
 function openHudWindow(sessionId, profile) {
@@ -11485,7 +11488,10 @@ function openHudWindow(sessionId, profile) {
     return hudWindow
   }
 
-  hudRestoreMainWindow = Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible())
+  // Arm the restore whenever a live main window exists — NOT only when it is
+  // currently visible. Toggling the HUD from a minimized/hidden main window
+  // used to store false here, so closing the HUD left no surface (#88513).
+  hudRestoreMainWindow = shouldArmHudRestore(mainWindow)
   hudSessionId = sessionId || null
   hudProfile = profileKey
   hudWindow = spawnHudWindow(sessionId, profileKey)
