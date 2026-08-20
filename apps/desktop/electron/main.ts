@@ -277,7 +277,8 @@ import {
   translucencySupportedOn,
   vibrancyFor as vibrancyForTranslucency,
   windowBackingOptions,
-  windowOpacityFor
+  windowOpacityFor,
+  windowsGlassTransparency
 } from './translucency'
 import {
   compareApiUrl,
@@ -948,7 +949,10 @@ function applyWindowTranslucency(win, changed = { backing: true, material: true,
           win.setVibrancy(vibrancyForTranslucency(translucencyState), { animationDuration: 150 })
         }
 
-        if (IS_WINDOWS && GLASS_SUPPORTED && typeof win.setBackgroundMaterial === 'function') {
+        if (
+          typeof win.setBackgroundMaterial === 'function' &&
+          windowsGlassTransparency(IS_WINDOWS && GLASS_SUPPORTED, translucencyState)
+        ) {
           win.setBackgroundMaterial(backgroundMaterialFor(translucencyState))
         }
       }
@@ -984,11 +988,18 @@ function chatWindowSurfaceOptions() {
     // under glass — everywhere else the page buries the material.
     visualEffectState: IS_MAC ? ('active' as const) : undefined,
     // Win11 DWM materials only reach the client area on a transparent window
-    // (electron#49443). Chat windows on glass-capable Windows are born
-    // transparent so a live Clear→Glass toggle doesn't need a recreate; the
-    // opaque themed backgroundColor covers it while glass is off.
-    ...(IS_WINDOWS && GLASS_SUPPORTED ? { transparent: true } : {}),
-    backgroundMaterial: IS_WINDOWS && GLASS_SUPPORTED ? backgroundMaterialFor(translucencyState) : undefined,
+    // (electron#49443). Chat windows used to be born transparent whenever the
+    // OS COULD do glass so a live Clear→Glass toggle needed no recreate — but
+    // transparent windows change DWM hit-testing and break Snap/FancyZones
+    // (#90237) for EVERY Win11-22H2+ user, glass on or off. Gate on the glass
+    // setting actually being ACTIVE (windowsGlassTransparency): the default
+    // (glass off) gets a normal opaque window that snaps correctly. Trade-off,
+    // made consciously: a window born opaque shows the glass material only
+    // after the next window recreation/app relaunch.
+    ...(windowsGlassTransparency(IS_WINDOWS && GLASS_SUPPORTED, translucencyState) ? { transparent: true } : {}),
+    backgroundMaterial: windowsGlassTransparency(IS_WINDOWS && GLASS_SUPPORTED, translucencyState)
+      ? backgroundMaterialFor(translucencyState)
+      : undefined,
     opacity: windowOpacity(),
     ...windowBackingOptions(translucencyState, getWindowBackgroundColor())
   }

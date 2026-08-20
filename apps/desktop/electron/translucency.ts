@@ -66,3 +66,19 @@ export {
 export function windowBackingOptions(state: TranslucencyState, themedColor: string): { backgroundColor?: string } {
   return glassActive(state) ? {} : { backgroundColor: themedColor }
 }
+
+/**
+ * Whether a Windows chat window should be created `transparent: true`.
+ *
+ * `transparent` changes DWM hit-testing and breaks Snap layouts / FancyZones
+ * (#90237), so it must be paid ONLY when the user actually runs glass — never
+ * on bare OS capability. `capable` is the platform gate (IS_WINDOWS &&
+ * GLASS_SUPPORTED); the state gate is the user's live translucency mode.
+ *
+ * Consequence, on purpose: flipping glass ON with opaque-born windows shows
+ * the material after the next window recreation/relaunch instead of breaking
+ * snapping for everyone by default.
+ */
+export function windowsGlassTransparency(capable: boolean, state: TranslucencyState): boolean {
+  return capable && glassActive(state)
+}
