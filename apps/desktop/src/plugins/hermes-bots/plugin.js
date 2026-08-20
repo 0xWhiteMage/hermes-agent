@@ -4568,7 +4568,16 @@ function sendToGroupChat(group, members, text, thread, images) {
   const trimmed = String(text || '').trim()
   const attached = Array.isArray(images) ? images.filter(img => img && img.data) : []
 
-  if ((!trimmed && !attached.length) || !members.length) {
+  if (!trimmed && !attached.length) {
+    return null
+  }
+
+  // An empty member seat is a transient state (roster hydration race, meta
+  // clobber, legacy room record without member descriptors) — swallowing the
+  // send here made a fully-typed message vanish with no thread and no error.
+  // Surface it; callers keep the draft so nothing is lost.
+  if (!members.length) {
+    host.notify({ kind: 'error', message: `${group}: members are still loading — try again in a moment.` })
     return null
   }
 
@@ -8986,14 +8995,16 @@ function GroupChatWorkspace({ group, members, onBack }) {
       return
     }
 
-    setDraft('')
-    clearImages(null)
     // Main composer = START A NEW THREAD with the whole group (Slack shape).
     // Full descriptors ride into the turn loop: remote members keep their
     // connection fields so their turns route to their own machines.
     const minted = sendToGroupChat(group, memberDescriptors(), text, null, images)
 
+    // Only a real send consumes the draft — a rejected one (members still
+    // seating) keeps the user's text instead of eating it.
     if (minted) {
+      setDraft('')
+      clearImages(null)
       setOpenThreads(prev => ({ ...prev, [minted]: true }))
     }
   }
@@ -9006,12 +9017,15 @@ function GroupChatWorkspace({ group, members, onBack }) {
       return
     }
 
-    setReplyDrafts(prev => ({ ...prev, [thread]: '' }))
-    clearImages(thread)
     // Reply box = CONTINUE this thread; the member turns it triggers are
     // scoped to it.
-    sendToGroupChat(group, memberDescriptors(), text, thread, images)
-    setOpenThreads(prev => ({ ...prev, [thread]: true }))
+    const landed = sendToGroupChat(group, memberDescriptors(), text, thread, images)
+
+    if (landed) {
+      setReplyDrafts(prev => ({ ...prev, [thread]: '' }))
+      clearImages(thread)
+      setOpenThreads(prev => ({ ...prev, [thread]: true }))
+    }
   }
 
   /** Pending-attachment chips + the picker for one composer (thread = null →
