@@ -28,9 +28,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PS1_SCRIPTS = sorted(REPO_ROOT.glob("scripts/*.ps1"))
 
 _HARNESS = """\
-param([string[]]$Paths)
+# No param block on purpose: in -File mode, `-Paths a b` binds only `a`
+# to a [string[]] param and drops `b` into $args silently (exit 0), so a
+# second script would never get checked. Positional $args gets them all.
+if ($args.Count -lt 1) {
+    Write-Output "PS HARNESS ERROR: no paths given"
+    exit 2
+}
 $failed = $false
-foreach ($p in $Paths) {
+foreach ($p in $args) {
     $tokens = $null
     $errors = $null
     [System.Management.Automation.Language.Parser]::ParseFile(
@@ -73,7 +79,7 @@ def test_powershell_scripts_parse(tmp_path: Path) -> None:
 
     result = subprocess.run(
         [host, "-NoProfile", "-ExecutionPolicy", "Bypass",
-         "-File", str(harness), "-Paths"]
+         "-File", str(harness)]
         + [str(p) for p in PS1_SCRIPTS],
         capture_output=True,
         text=True,
