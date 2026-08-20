@@ -40,7 +40,12 @@ def _make_conflicted_managed_checkout(tmp_path: Path) -> Path:
     seed.mkdir()
     _git(seed, "init")
     (seed / "tracked.txt").write_text("base\n", encoding="utf-8")
-    _git(seed, "add", "tracked.txt")
+    # The installers stamp a managed checkout with install-stamp.json at the
+    # end of the repository stage, and the real repository's .gitignore
+    # ignores /install-stamp.json so the stamp never dirties git status.
+    # The seed repo must mirror that ignore rule for the clean-tree asserts.
+    (seed / ".gitignore").write_text("/install-stamp.json\n", encoding="utf-8")
+    _git(seed, "add", "tracked.txt", ".gitignore")
     _git(seed, "commit", "-m", "base")
     _git(seed, "branch", "-M", "main")
 
@@ -70,6 +75,9 @@ def _assert_conflict_was_recovered(repo: Path, output: str) -> None:
     assert "Working tree reset to clean state." in output
     assert "Restore your changes later with: git stash apply stash@{0}" in output
     assert _git(repo, "status", "--porcelain").stdout.strip() == ""
+    # The repository stage stamps the checkout so installation/tree.py
+    # classifies it as a managed install (updateMechanism self).
+    assert (repo / "install-stamp.json").is_file()
     assert _git(repo, "stash", "list").stdout.strip(), "stash must be preserved"
     content = (repo / "tracked.txt").read_text(encoding="utf-8")
     assert content == "upstream edit\n", content

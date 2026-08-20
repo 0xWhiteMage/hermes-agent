@@ -474,6 +474,38 @@ class TestDelegationCleanup:
         monkeypatch.setattr(relay_runtime, "get_runtime", lambda **_kwargs: relay_host)
         monkeypatch.setattr("tools.delegate_tool._get_child_timeout", lambda: 0.1)
 
+        # The 0.1s parent timeout counts from the submit of the child
+        # runner, not from child start. On a loaded runner the worker
+        # thread can take longer than 0.1s to start, so the parent would
+        # time out before the child begins its turn and every mid-turn
+        # assertion below would break. Gate the parent inside that one
+        # submit until the child is mid-turn, so the timeout can only
+        # expire against a child that already holds a turn. The gate must
+        # skip every other DaemonThreadPoolExecutor user: the child's
+        # acquire_conversation path submits scope work to a shared pool,
+        # and gating that submit deadlocks the child against its own gate.
+        from tools import daemon_pool
+
+        _original_submit = daemon_pool.DaemonThreadPoolExecutor.submit
+
+        def _is_child_runner(arg) -> bool:
+            qualname = getattr(arg, "__qualname__", "")
+            return "_run_single_child" in qualname
+
+        def _submit_then_wait_for_turn(pool_self, fn, /, *args, **kwargs):
+            future = _original_submit(pool_self, fn, *args, **kwargs)
+            if any(_is_child_runner(a) for a in (fn, *args)):
+                assert child_started.wait(timeout=30), (
+                    "child never began its turn"
+                )
+            return future
+
+        monkeypatch.setattr(
+            daemon_pool.DaemonThreadPoolExecutor,
+            "submit",
+            _submit_then_wait_for_turn,
+        )
+
         def run_conversation(**kwargs):
             lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
                 profile_key=relay_runtime.current_profile_key(),
@@ -487,7 +519,10 @@ class TestDelegationCleanup:
             )
             child_started.set()
             try:
-                release_child.wait(timeout=5)
+                # Ceiling only. The parent releases this event right after
+                # its asserts; a short ceiling under load would end the turn
+                # early and break the mid-turn assertions.
+                release_child.wait(timeout=30)
                 return {
                     "final_response": "late result",
                     "completed": True,
@@ -521,7 +556,9 @@ class TestDelegationCleanup:
             relay_host.unregister_subagent.assert_not_called()
 
             release_child.set()
-            assert child_finished.wait(timeout=5)
+            # Generous ceiling only. The child wakes as soon as the event is
+            # set. A tight bound here fails on loaded CI runners.
+            assert child_finished.wait(timeout=30)
             assert not relay_runtime.SESSION_COORDINATOR.has_active_turn(
                 profile_key=str(profile_home),
                 session_id=child.session_id,

@@ -167,6 +167,8 @@ class TestUpdatePathE2E:
         """
         script = """
 import sys
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 crypto_seen_at_dispatch = []
@@ -183,12 +185,25 @@ sys.argv = ['hermes', 'update', '--check']
 
 import hermes_cli.main as m
 
+# The stamp-pure ladder (installation/tree.py) classifies this repo —
+# a .git checkout without install-stamp.json — as 'source', and
+# cmd_update refuses source trees with exit 1 BEFORE dispatching to
+# _cmd_update_check. The probe measures the dispatch path, so point
+# PROJECT_ROOT at a synthetic managed root (.git + self stamp) the
+# ladder classifies as 'git'.
+managed_root = Path(tempfile.mkdtemp(prefix='hermes-crypto-probe-'))
+(managed_root / '.git').mkdir()
+(managed_root / 'install-stamp.json').write_text(
+    '{"schemaVersion": 2, "updateMechanism": "self"}\\n', encoding='utf-8'
+)
+
 # Patch the update handler so main() exercises its parser + dispatch
 # without doing network I/O.  cmd_update (in main.py) calls
 # _self()._cmd_update_check(branch=..., branch_explicit=...) where _self()
 # resolves the hermes_cli.main module's lazily re-exported attribute —
 # so the patch must land on hermes_cli.main._cmd_update_check.
-with patch('hermes_cli.main._cmd_update_check', capture_update_check):
+with patch('hermes_cli.main._cmd_update_check', capture_update_check), \\
+        patch.object(m, 'PROJECT_ROOT', managed_root):
     try:
         m.main()
     except SystemExit as e:

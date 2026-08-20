@@ -181,40 +181,13 @@ RUN useradd -u 10000 -m -d /opt/data hermes
 # pinned node, not a second authority. Layer-cached on the two files that
 # define the outcome: the pin table and the provisioner package.
 COPY installation/ /opt/hermes-build/installation/
+# The facts-publishing step lives in a checked-in script instead of a RUN
+# heredoc: hadolint cannot parse heredoc bodies and the docker-lint job
+# blocks on a Dockerfile parse error.
+COPY docker/publish_runtime_facts.py /opt/hermes-build/publish_runtime_facts.py
 RUN PYTHONPATH=/opt/hermes-build python3 -m installation.provisioner \
         --runtime-dir /opt/hermes/.hermes-runtime && \
-    PYTHONPATH=/opt/hermes-build python3 - <<'PYEOF'
-import shlex
-import sys
-from pathlib import Path
-
-sys.path.insert(0, "/opt/hermes-build")
-from installation.env import managed_path_dirs, managed_tool_env
-
-runtime_dir = Path("/opt/hermes/.hermes-runtime")
-dirs = managed_path_dirs(runtime_dir)
-assert dirs, "provisioner ran but assembled no PATH dirs"
-(runtime_dir / "path-dirs").write_text(
-    "".join(f"{d}\n" for d in dirs), encoding="utf-8"
-)
-(runtime_dir / "tool-env").write_text(
-    "".join(
-        f"export {key}={shlex.quote(value)}\n"
-        for key, value in sorted(managed_tool_env(runtime_dir).items())
-    ),
-    encoding="utf-8",
-)
-# Symlink each managed binary into /usr/local/bin: ENV PATH cannot hold
-# per-tool dirs computed at build time, and the link farm keeps `docker
-# exec <c> node` working with zero shell-profile tricks. The links point
-# INTO the runtime dir, so the facts file remains the single authority.
-for d in dirs:
-    for binary in Path(d).iterdir():
-        if binary.is_file():
-            link = Path("/usr/local/bin") / binary.name
-            if not link.exists():
-                link.symlink_to(binary)
-PYEOF
+    PYTHONPATH=/opt/hermes-build python3 /opt/hermes-build/publish_runtime_facts.py
 ENV PYTHONPATH_HERMES_BUILD=/opt/hermes-build
 WORKDIR /opt/hermes-build
 RUN PYTHONPATH=/opt/hermes-build python3 -c "\

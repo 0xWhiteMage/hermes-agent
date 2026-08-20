@@ -127,6 +127,13 @@ class TestDevTreeGuard:
         (repo / "f.txt").write_text("x\n")
         _git(repo, "add", ".")
         _git(repo, "commit", "-m", "initial")
+        # The stamp, not the blessed path, is what marks a checkout as
+        # managed under the stamp-pure ladder (installation/tree.py).
+        # Installers write it at install time; pre-stamp installs get it
+        # once from step_adopt_blessed_checkout.
+        (repo / "install-stamp.json").write_text(
+            '{"schemaVersion": 2, "updateMechanism": "self"}\n', encoding="utf-8"
+        )
         _patch_project_root(monkeypatch, repo)
 
         sentinel = RuntimeError("past-the-guard")

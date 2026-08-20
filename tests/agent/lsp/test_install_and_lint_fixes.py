@@ -45,18 +45,38 @@ def test_install_npm_works_without_extras(tmp_path, monkeypatch):
     from agent.lsp import install as install_mod
 
     monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
-    monkeypatch.setattr(install_mod.shutil, "which", lambda c: "/usr/bin/npm" if c == "npm" else None)
+    # The managed toolchain is the only npm authority; model a provisioned
+    # runtime the way every real install has one.
+    fake_npm = tmp_path / "managed" / "bin" / "npm"
+    monkeypatch.setattr(install_mod.nodejs, "npm_path", lambda: fake_npm)
 
     install_mod._install_npm("pyright", "pyright-langserver")
 
     cmd = captured["cmd"]
+    assert cmd[0] == str(fake_npm)
     assert "pyright" in cmd
     # Should not blow up when extra_pkgs is omitted/None
     install_targets = [c for c in cmd if not c.startswith("-") and c not in {
         "install", "--prefix", str(install_mod.hermes_lsp_bin_dir().parent),
-        "/usr/bin/npm",
+        str(fake_npm),
     }]
     assert install_targets == ["pyright"]
+
+
+def test_install_npm_degrades_when_runtime_is_not_provisioned(tmp_path, monkeypatch):
+    """A damaged runtime dir makes this best-effort installer return None,
+    never raise — the LSP tier degrades instead of crashing."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from agent.lsp import install as install_mod
+    from installation.nodejs import NotProvisioned
+
+    def raise_not_provisioned():
+        raise NotProvisioned("npm is not in this install's runtime dir")
+
+    monkeypatch.setattr(install_mod.nodejs, "npm_path", raise_not_provisioned)
+
+    assert install_mod._install_npm("pyright", "pyright-langserver") is None
 
 
 
@@ -74,7 +94,10 @@ def test_install_pip_finds_windows_scripts_launcher(tmp_path, monkeypatch):
 
     from agent.lsp import install as install_mod
 
-    def fake_run(cmd, **kwargs):
+    # _install_pip delegates to hermes_cli.tools_config._pip_install (the
+    # uv ladder), so that seam is the one to stub — this test is about the
+    # Scripts/ launcher discovery AFTER a successful install, not about uv.
+    def fake_pip_install(args, **kwargs):
         scripts_dir = install_mod.hermes_lsp_bin_dir().parent / "python-packages" / "Scripts"
         scripts_dir.mkdir(parents=True, exist_ok=True)
         launcher = scripts_dir / "fake-language-server.exe"
@@ -82,7 +105,9 @@ def test_install_pip_finds_windows_scripts_launcher(tmp_path, monkeypatch):
         launcher.chmod(0o755)
         return MagicMock(returncode=0, stderr="")
 
-    monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
+    import hermes_cli.tools_config as tools_config
+
+    monkeypatch.setattr(tools_config, "_pip_install", fake_pip_install)
 
     resolved = install_mod._install_pip("fake-lsp", "fake-language-server")
 
