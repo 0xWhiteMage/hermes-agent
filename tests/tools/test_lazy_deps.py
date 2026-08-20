@@ -270,10 +270,11 @@ class TestRefreshActiveFeatures:
         # Matrix E2EE pulls python-olm, which has no native Windows wheel/build
         # path. `hermes update` must not retry that doomed install every run.
         #
-        # The subject here is the *consumer* — refresh_active_features runs
-        # the entry's own `supported` probe before pip — so we install a
-        # probe that raises, instead of faking the host. That keeps this
-        # covered on Linux too.
+        # The subject here is the *consumer* — refresh_active_features
+        # reports a probe refusal as a skip, not a failure, and pip never
+        # runs. The probe raises through ensure() as an InstallSkipped
+        # subtype; we install a raising probe instead of faking the host,
+        # which keeps this covered on Linux too.
         def _probe() -> None:
             raise ld.UnsupportedFeature(
                 "unsupported on Windows: Matrix E2EE depends on python-olm"

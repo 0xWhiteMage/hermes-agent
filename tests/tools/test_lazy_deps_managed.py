@@ -50,9 +50,10 @@ def test_managed_install_fails_fast_without_touching_the_installer(monkeypatch):
         lazy_deps.ensure(FEATURE, prompt=False)
 
     assert "apt" in excinfo.value.reason
-    # refresh_active_features classifies by this prefix — anything else is
-    # reported to the user as a hard failure instead of a skip.
-    assert excinfo.value.reason.startswith("unsupported ")
+    # refresh_active_features classifies by exception type — a plain
+    # FeatureUnavailable is reported to the user as a hard failure
+    # instead of a skip.
+    assert isinstance(excinfo.value, lazy_deps.UnsupportedFeature)
 
 
 def test_readonly_install_fails_fast_without_touching_the_installer(monkeypatch):
@@ -66,9 +67,10 @@ def test_readonly_install_fails_fast_without_touching_the_installer(monkeypatch)
         lazy_deps.ensure(FEATURE, prompt=False)
 
     assert "read-only" in excinfo.value.reason
-    # refresh_active_features classifies by this prefix — anything else is
-    # reported to the user as a hard failure instead of a skip.
-    assert excinfo.value.reason.startswith("unsupported ")
+    # refresh_active_features classifies by exception type — a plain
+    # FeatureUnavailable is reported to the user as a hard failure
+    # instead of a skip.
+    assert isinstance(excinfo.value, lazy_deps.UnsupportedFeature)
 
 
 def test_nix_names_the_extra_and_both_ways_to_set_the_option(monkeypatch):
@@ -126,13 +128,13 @@ def test_package_manager_wins_over_the_sealed_flag(monkeypatch):
 
 
 def test_reason_is_classified_as_skipped_not_failed(monkeypatch):
-    """The wording contract with refresh_active_features, pinned directly."""
+    """The type contract with refresh_active_features, pinned directly."""
     monkeypatch.setattr(lazy_deps, "_site_packages_writable", lambda: False)
 
     with pytest.raises(FeatureUnavailable) as excinfo:
         lazy_deps.ensure(FEATURE, prompt=False)
 
-    assert excinfo.value.reason.startswith("unsupported "), (
+    assert isinstance(excinfo.value, lazy_deps.InstallSkipped), (
         "refresh_active_features would report this as failed: rather than skipped:"
     )
 

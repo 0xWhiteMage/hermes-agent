@@ -74,7 +74,7 @@ import tomllib
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Literal
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 
@@ -97,14 +97,93 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
-class UnsupportedFeature(RuntimeError):
-    """This host can never run the feature.
+class FeatureUnavailable(RuntimeError):
+    """A lazily-installable feature is missing and cannot be made available.
 
-    A :class:`LazyDep` ``supported`` probe raises this. The message is the
-    reason that the user reads. Start it with "unsupported ", because
-    :func:`refresh_active_features` classifies that prefix as a skip, not
-    as a failure.
+    Either the deps were never installed and the user has disabled lazy
+    installs, or the install attempt failed.
+
+    The subclass IS the classification. The ``hermes update`` lazy-refresh
+    pass reports an :class:`InstallSkipped` subtype as ``skipped:`` and a
+    plain :class:`FeatureUnavailable` as ``failed:``. Raise the subtype
+    that says why; never encode the classification in the message text.
     """
+
+    def __init__(
+        self,
+        feature: str,
+        missing: tuple[str, ...],
+        reason: str,
+        *,
+        actionable: bool = True,
+    ):
+        self.feature = feature
+        self.missing = missing
+        self.reason = reason
+        # Set this to False to remove the "install it yourself" footer. A
+        # sealed Docker venv and a package-manager install are both
+        # read-only, so the user cannot run the command. A command that
+        # always fails is worse than no command.
+        self.actionable = actionable
+        super().__init__(self._format())
+
+    def _format(self) -> str:
+        base = f"Feature {self.feature!r} unavailable: {self.reason}"
+        if not self.actionable or not self.missing:
+            return base
+        spec_list = " ".join(repr(s) for s in self.missing)
+        return (
+            f"{base}. "
+            f"To enable manually: uv pip install {spec_list}  "
+            f"(or: pip install {spec_list})."
+        )
+
+
+class InstallSkipped(FeatureUnavailable):
+    """An expected refusal, not a broken install.
+
+    The deployment or the user chose this outcome, so ``hermes update``
+    reports it as ``skipped:`` and moves on. A broken install (pip
+    failure, unreadable specs) stays a plain :class:`FeatureUnavailable`
+    and reports as ``failed:``.
+    """
+
+
+class UnsupportedFeature(InstallSkipped):
+    """This install can never run the feature.
+
+    Raised by a :class:`LazyDep` ``supported`` probe (host capability:
+    Matrix E2EE on native Windows), and by :func:`ensure` for a managed
+    or read-only install that no runtime pip command can serve.
+
+    Never actionable: a pip hint for an impossible install always fails,
+    so the reason must carry the remedy (WSL, extraDependencyGroups, the
+    owning package manager) itself.
+    """
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        feature: str = "",
+        missing: tuple[str, ...] = (),
+    ):
+        super().__init__(feature, missing, reason, actionable=False)
+
+    def _format(self) -> str:
+        # A probe raises before any feature context exists; "Feature ''
+        # unavailable" helps nobody.
+        if not self.feature:
+            return self.reason
+        return super()._format()
+
+
+class LazyInstallsDisabled(InstallSkipped):
+    """The user set ``security.allow_lazy_installs: false``."""
+
+
+class InstallDeclined(InstallSkipped):
+    """The user answered no at the interactive install prompt."""
 
 
 @dataclass(frozen=True)
@@ -115,9 +194,8 @@ class LazyDep:
 
     ``supported`` is a platform capability gate, not a security policy
     gate. It raises :class:`UnsupportedFeature` when this host can never
-    run the feature, and returns None when it can. Both :func:`ensure` and
-    the ``hermes update`` lazy-refresh pass run the probe before pip, so a
-    known-impossible install never starts.
+    run the feature, and returns None when it can. :func:`ensure` runs
+    the probe before pip, so a known-impossible install never starts.
     """
 
     extra: str
@@ -371,43 +449,6 @@ def _anchor_spec(extra: str, _seen: Optional[frozenset] = None) -> Optional[str]
         if found:
             return found
     return None
-
-
-class FeatureUnavailable(RuntimeError):
-    """A lazily-installable feature is missing and cannot be made available.
-
-    Either the deps were never installed and the user has disabled lazy
-    installs, or the install attempt failed.
-    """
-
-    def __init__(
-        self,
-        feature: str,
-        missing: tuple[str, ...],
-        reason: str,
-        *,
-        actionable: bool = True,
-    ):
-        self.feature = feature
-        self.missing = missing
-        self.reason = reason
-        # Set this to False to remove the "install it yourself" footer. A
-        # sealed Docker venv and a package-manager install are both
-        # read-only, so the user cannot run the command. A command that
-        # always fails is worse than no command.
-        self.actionable = actionable
-        super().__init__(self._format())
-
-    def _format(self) -> str:
-        base = f"Feature {self.feature!r} unavailable: {self.reason}"
-        if not self.actionable or not self.missing:
-            return base
-        spec_list = " ".join(repr(s) for s in self.missing)
-        return (
-            f"{base}. "
-            f"To enable manually: uv pip install {spec_list}  "
-            f"(or: pip install {spec_list})."
-        )
 
 
 @dataclass(frozen=True)
@@ -1156,7 +1197,7 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
     try:
         check_supported(feature)
     except UnsupportedFeature as e:
-        raise FeatureUnavailable(feature, missing, str(e)) from e
+        raise UnsupportedFeature(e.reason, feature=feature, missing=missing) from e
 
     # A read-only site-packages (any nix build, or any other distro that
     # ships Hermes from a read-only store) cannot receive lazy pip installs:
@@ -1168,39 +1209,34 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
     # Skipped when a durable install target is configured: the container
     # deployment sets HERMES_LAZY_INSTALL_TARGET (a writable volume), where
     # lazy installs legitimately work.
-    #
-    # The reason string starts with "unsupported " on purpose:
-    # refresh_active_features classifies FeatureUnavailable by that prefix and
-    # reports anything else as a hard failure rather than a skip.
     if _lazy_install_target() is None:
         managed_by = _managed_system()
         if managed_by:
-            raise FeatureUnavailable(
-                feature, missing,
+            raise UnsupportedFeature(
                 "unsupported on a managed install: "
                 + managed_install_reason(feature, feature_extra(feature)),
-                # The store is read-only. A `uv pip install` hint here
-                # fails with EROFS.
-                actionable=False,
+                feature=feature,
+                missing=missing,
             )
         if not _site_packages_writable():
             # Not a recognized managed system, but the store is still
             # read-only (a raw nix profile, a distro package without
             # HERMES_MANAGED set). Same dead-end, generic remedy.
-            raise FeatureUnavailable(
-                feature, missing,
+            raise UnsupportedFeature(
                 "unsupported on read-only installs: this build's "
                 "site-packages is not writable (e.g. a Nix store path), so "
                 "Hermes cannot install packages at runtime. Add the "
                 f"dependencies for {feature!r} through the package manager "
-                "that installed Hermes."
+                "that installed Hermes.",
+                feature=feature,
+                missing=missing,
             )
 
     # The explicit user opt-out outranks the sealed-image diagnosis: an
     # operator who set security.allow_lazy_installs=false asked for a
     # quiet "skipped", not a container-bug report.
     if not _allow_lazy_installs():
-        raise FeatureUnavailable(feature, missing, _CONFIG_DISABLED_REASON)
+        raise LazyInstallsDisabled(feature, missing, _CONFIG_DISABLED_REASON)
 
     # A sealed image contains each extra that a container can run, so a
     # LAZY_DEPS feature must never install here, even when a durable target
@@ -1236,7 +1272,7 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
         except (EOFError, KeyboardInterrupt):
             answer = "n"
         if answer and answer not in {"y", "yes"}:
-            raise FeatureUnavailable(
+            raise InstallDeclined(
                 feature, missing, "user declined install at prompt"
             )
 
@@ -1553,30 +1589,19 @@ def _refresh_features(
             continue
 
         try:
-            check_supported(feature)
-        except UnsupportedFeature as e:
-            results[feature] = f"skipped: {e}"
-            continue
-
-        try:
             if restoring:
                 ensure(feature, prompt=False)
                 results[feature] = "restored"
             else:
                 ensure(feature, prompt=prompt)
                 results[feature] = "refreshed"
+        except InstallSkipped as e:
+            # The deployment or the user chose this outcome (platform
+            # probe, managed/read-only install, config opt-out, prompt
+            # decline) — the update command renders it as a non-error.
+            results[feature] = f"skipped: {e.reason}"
         except FeatureUnavailable as e:
-            # Distinguish "user opted out" or platform-incompatible features
-            # from install failures so the update command can render the
-            # right non-error message.
-            if (
-                "lazy installs disabled" in str(e)
-                or "declined" in str(e)
-                or e.reason.startswith("unsupported ")
-            ):
-                results[feature] = f"skipped: {e.reason}"
-            else:
-                results[feature] = f"failed: {e.reason}"
+            results[feature] = f"failed: {e.reason}"
         except Exception as e:
             results[feature] = f"failed: {e}"
     return results
