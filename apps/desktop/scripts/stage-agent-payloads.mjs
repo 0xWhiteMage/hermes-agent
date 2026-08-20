@@ -38,10 +38,14 @@
 import { execSync, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import fs from "node:fs"
-import os from "node:os"
 import path from "node:path"
 
 import { isMain } from "./utils.mjs"
+
+// The pin table is build-time data, so the bundler resolves it and a
+// missing or malformed table fails at import instead of part way through
+// a staging run.
+import pins from "../../../installation/runtime-pins.json" with { type: "json" }
 
 export const PAYLOAD_SCHEMA_VERSION = 4
 
@@ -305,14 +309,6 @@ export function stageCacheKey({ target, pythonVersion, requirementsText }) {
 }
 
 // ─── impure staging steps (they shell out, have no unit tests, and run in CI) ──────
-function loadPins() {
-  const pins = JSON.parse(
-    fs.readFileSync(path.join(REPO_ROOT, "installation", "runtime-pins.json"), "utf8")
-  )
-
-  return pins.tools
-}
-
 /**
  * Managed runtime tools (node, npm, uv, git, gh, ripgrep) for the payload.
  *
@@ -1089,7 +1085,7 @@ function main() {
   // both paths, so a wrong or stale cache fails the same checks a bad
   // fresh staging would.
   run("uv", ["export", "--frozen", "--no-emit-project", "-o", "requirements-payload.txt"], { cwd: REPO_ROOT })
-  const pythonVersion = payloadPythonVersion(loadPins())
+  const pythonVersion = payloadPythonVersion(pins.tools)
   const cacheKey = stageCacheKey({
     target,
     pythonVersion,
