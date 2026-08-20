@@ -1308,7 +1308,7 @@ def _install_uv(target: Path) -> None:
     from installation.provisioner import provision_tool
 
     result = provision_tool("uv")
-    if not result.ok:
+    if not result.provisioned:
         raise RuntimeError(f"pinned uv provisioning failed: {result.detail}")
 
 

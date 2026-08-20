@@ -67,6 +67,7 @@ __all__ = [
     "PINS_SCHEMA_VERSION",
     "PinnedFile",
     "RuntimeFact",
+    "UnavailableOnTarget",
     "current_target",
     "facts_path",
     "install_order",
@@ -231,26 +232,6 @@ def load_pins(install_root: Path | None = None) -> dict[str, dict]:
         files = entry.get("files")
         if not isinstance(files, dict) or not files:
             raise ValueError(f"{path}: tool {name!r} has no 'files' table")
-        missing = entry.get("missingTargets", {})
-        if not isinstance(missing, dict) or not all(
-            isinstance(k, str) and isinstance(v, str) and v for k, v in missing.items()
-        ):
-            # A declared gap must SAY WHY — the reason string is what
-            # separates "upstream ships no such build" from "someone
-            # forgot a row", and the resolver shows it when refusing.
-            raise ValueError(
-                f"{path}: tool {name!r} 'missingTargets' must map target → reason"
-            )
-        if set(missing) & set(files):
-            raise ValueError(
-                f"{path}: tool {name!r} declares targets both present and missing"
-            )
-        if missing and not entry.get("optional", False):
-            # A REQUIRED tool with a hole would brick the whole install
-            # on that platform; only capability tools may declare gaps.
-            raise ValueError(
-                f"{path}: tool {name!r} is required but declares missingTargets"
-            )
         if ANY_TARGET in files and len(files) > 1:
             raise ValueError(
                 f"{path}: tool {name!r} mixes {ANY_TARGET!r} with per-target files; "
@@ -418,6 +399,28 @@ def path_order(pins: dict[str, dict]) -> list[str]:
     return _ordered_by({tool: pins[tool] for tool in blockers}, blockers)
 
 
+class UnavailableOnTarget(KeyError):
+    """A DECLARED gap: this tool has no artifact for this target, on purpose.
+
+    Raised by ``pinned_file`` when the pin table carries a
+    ``{"missing": reason}`` row — upstream genuinely ships no build, or the
+    table chose not to bundle one. The type IS the classification (a plain
+    ``KeyError`` remains "the table has a hole", which is a bug to fix):
+    consumers branch on the exception class, never on message text.
+    """
+
+    def __init__(self, tool: str, target: str, reason: str):
+        super().__init__(f"{tool!r} has no build for {target}: {reason}")
+        self.tool = tool
+        self.target = target
+        self.reason = reason
+
+    def __str__(self) -> str:
+        # KeyError.__str__ is repr(args[0]), which wraps the message in
+        # quotes; a declared gap is prose for humans, not a mapping key.
+        return self.args[0]
+
+
 def pinned_file(
     tool: str,
     target: str | None = None,
@@ -426,9 +429,11 @@ def pinned_file(
 ) -> PinnedFile:
     """The exact download for *tool* on *target* (default: this host).
 
-    Raises when the tool or target is not pinned — an unpinned platform is
-    a gap in the table to fill, not something to guess a URL for. A tool
-    whose artifact is target-independent pins the single ``any`` key and
+    Raises ``UnavailableOnTarget`` for a DECLARED gap (a
+    ``{"missing": reason}`` row) and plain ``KeyError`` when the tool or
+    target simply is not in the table — an unpinned platform is a gap in
+    the table to fill, not something to guess a URL for. A tool whose
+    artifact is target-independent pins the single ``any`` key and
     resolves to it for every target.
     """
     table = pins if pins is not None else load_pins(install_root)
@@ -440,18 +445,9 @@ def pinned_file(
     key = target or current_target()
     spec = files.get(ANY_TARGET) if ANY_TARGET in files else files.get(key)
     if spec is None:
-        reason = entry.get("missingTargets", {}).get(key)
-        if reason:
-            # A DECLARED gap: upstream genuinely ships nothing here. The
-            # distinct message keeps "fill the table" bugs separable
-            # from "this capability does not exist on this platform".
-            raise KeyError(f"{tool!r} has no build for {key}: {reason}")
         raise KeyError(f"{tool!r} has no pinned download for {key}")
     if "missing" in spec:
-        # A DECLARED gap: upstream genuinely ships nothing here. The
-        # distinct message keeps "fill the table" bugs separable
-        # from "this capability does not exist on this platform".
-        raise KeyError(f"{tool!r} has no build for {key}: {spec['missing']}")
+        raise UnavailableOnTarget(tool, key, spec["missing"])
 
     return PinnedFile(version=entry["version"], url=spec["url"], sha256=spec["sha256"])
 

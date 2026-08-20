@@ -1494,7 +1494,12 @@ class TestTermuxLane:
         self, tmp_path, monkeypatch
     ):
         """camoufox has no bionic build and no pkg package. Saying so
-        beats a download that segfaults at first launch."""
+        beats a download that segfaults at first launch.
+
+        UNAVAILABLE, not failed: nothing was attempted and nothing is
+        broken, so a sweep that hits this must not report the install as
+        having failed.
+        """
         self._termux(monkeypatch, tmp_path)
         target = rr.current_target()
         pins = _pins_file(tmp_path / "repo2", {"camoufox": {
@@ -1508,5 +1513,118 @@ class TestTermuxLane:
             install_root=pins, store_dir=tmp_path / "store",
         )
 
-        assert result.action == "failed"
+        assert result.action == "unavailable"
+        assert not result.provisioned
+        assert result.ok
         assert "not available on Termux" in (result.detail or "")
+
+
+class TestDeclaredGapsAreNotFailures:
+    """A pin table row of ``{"missing": reason}`` says this target has no
+    such artifact ON PURPOSE (upstream ships no win32-arm64 chromium).
+
+    That is a different outcome from a download that broke, and the two
+    must stay separable: a payload build has to keep going past the
+    first, and has to stop on the second. The classification is the
+    exception TYPE and the action string — never a substring of a
+    message, which is what a reworded reason silently breaks.
+    """
+
+    def _pins(self, tmp_path, target, *, gap_tool="chromium", served=None):
+        root, base = served
+        sha = _make_tar(root, "gap-gh.tar.gz", {"bin/gh": _script()})
+        return _pins_file(tmp_path / "gap-repo", {
+            "gh": {"version": "2.97.0", "files": {
+                target: {"url": f"{base}/gap-gh.tar.gz", "sha256": sha}}},
+            gap_tool: {
+                "version": "1208",
+                "optional": True,
+                "onPath": False,
+                "files": {target: {"missing": "no upstream build for this target"}},
+            },
+        })
+
+    def test_a_declared_gap_reports_unavailable_with_its_reason(
+        self, served, tmp_path, target
+    ):
+        pins = self._pins(tmp_path, target, served=served)
+        rt = tmp_path / "rt"
+
+        results = {r.tool: r for r in rp.provision_runtimes(
+            runtime_dir=rt, install_root=pins, only=["chromium"])}
+
+        assert results["chromium"].action == "unavailable"
+        assert results["chromium"].detail == "no upstream build for this target"
+        # Nothing was staged, so nothing is recorded: a reader sees the
+        # capability as absent, which it is.
+        assert "chromium" not in rr.load_facts(rt)
+
+    def test_a_gap_does_not_stop_the_tools_around_it(
+        self, served, tmp_path, target
+    ):
+        pins = self._pins(tmp_path, target, served=served)
+        rt = tmp_path / "rt-mixed"
+
+        results = {r.tool: r.action for r in rp.provision_runtimes(
+            runtime_dir=rt, install_root=pins, only=["gh", "chromium"])}
+
+        assert results == {"gh": "downloaded", "chromium": "unavailable"}
+        assert "gh" in rr.load_facts(rt)
+
+    def test_unavailable_is_ok_but_not_provisioned(self, served, tmp_path, target):
+        """The two properties answer different questions, and a caller
+        that conflates them either fails a build over a declared gap or
+        proceeds as though a missing browser were installed."""
+        pins = self._pins(tmp_path, target, served=served)
+
+        result = rp.provision_tool(
+            "chromium", runtime_dir=tmp_path / "rt2", install_root=pins)
+
+        assert result.action == "unavailable"
+        assert result.ok  # not a hard failure: the build carries on
+        assert not result.provisioned  # but the tool is NOT there
+
+    def test_the_cli_exits_zero_for_a_gap_and_one_for_a_failure(
+        self, served, tmp_path, target, monkeypatch
+    ):
+        """The exit code is the whole contract for the payload staging:
+        it shells out to this module and has no other way to tell a
+        declared gap from a broken download."""
+        root, base = served
+        gap = _pins_file(tmp_path / "cli-gap", {"chromium": {
+            "version": "1208", "optional": True, "onPath": False,
+            "files": {target: {"missing": "no upstream build"}}}})
+        broken = _pins_file(tmp_path / "cli-broken", {"chromium": {
+            "version": "1208", "optional": True, "onPath": False,
+            "files": {target: {
+                "url": f"{base}/absent-chromium.zip", "sha256": "c" * 64}}}})
+
+        monkeypatch.setenv("HERMES_RUNTIME_PINS", str(gap / rr.PINS_FILENAME))
+        assert rp.main([
+            "--runtime-dir", str(tmp_path / "cli-rt-gap"), "--only", "chromium",
+        ]) == 0
+
+        monkeypatch.setenv("HERMES_RUNTIME_PINS", str(broken / rr.PINS_FILENAME))
+        assert rp.main([
+            "--runtime-dir", str(tmp_path / "cli-rt-broken"), "--only", "chromium",
+        ]) == 1
+
+    def test_the_reason_is_carried_by_the_type_not_the_message(self, target):
+        """26206a4942's rule, applied to the pin table: a consumer that
+        greps the message reclassifies itself the day a reason is
+        reworded. A DECLARED gap raises its own type; a hole in the
+        table stays a plain KeyError, because that one IS a bug."""
+        pins = {"chromium": {
+            "version": "1208", "optional": True,
+            "files": {target: {"missing": "no upstream build"}}}}
+
+        with pytest.raises(rr.UnavailableOnTarget) as declared:
+            rr.pinned_file("chromium", target, pins=pins)
+        assert declared.value.reason == "no upstream build"
+        assert declared.value.target == target
+
+        # A target the table never mentions is NOT a declared gap.
+        with pytest.raises(KeyError) as hole:
+            rr.pinned_file("chromium", "plan9-riscv", pins=pins)
+        assert not isinstance(hole.value, rr.UnavailableOnTarget)
+

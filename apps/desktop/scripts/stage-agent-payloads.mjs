@@ -42,10 +42,8 @@ import path from "node:path"
 
 import { isMain } from "./utils.mjs"
 
-// The pin table is build-time data, so the bundler resolves it and a
-// missing or malformed table fails at import instead of part way through
-// a staging run.
-import pins from "../../../installation/runtime-pins.json" with { type: "json" }
+import pins from "../../../installation/runtime-pins.json" with {type: "json"}
+
 
 export const PAYLOAD_SCHEMA_VERSION = 4
 
@@ -332,23 +330,13 @@ export function stageCacheKey({ target, pythonVersion, requirementsText }) {
 function stageManagedRuntimes(target, outDir, pythonExe) {
   const targetKey = `${target.platform}-${target.arch}`
 
-  run(pythonExe, [
-    "-m",
-    "installation.provisioner",
-    "--runtime-dir",
-    outDir,
-    "--target",
-    targetKey,
-    "--archive-cache",
-    path.join(REPO_ROOT, "apps", "desktop", "build", "pin-archives"),
-  ], { cwd: REPO_ROOT })
-
-  // The sweep skips optional tools (provisioned on demand, per the pin
-  // table). git is optional since the one-locator refactor: macOS and
-  // Linux use the machine's git behind the flag floor, so their payloads
-  // do not carry one. On Windows the managed PortableGit IS the contract
-  // (git bash), so the payload must ask for it by name.
-  if (target.platform === "win32") {
+  /**
+   * Run the provisioner for this payload.
+   *
+   * @param {string[]} only Tools to ask for by name. Empty = the default
+   *   sweep, which covers every REQUIRED tool and skips optional ones.
+   */
+  function provision(only = []) {
     run(pythonExe, [
       "-m",
       "installation.provisioner",
@@ -356,12 +344,34 @@ function stageManagedRuntimes(target, outDir, pythonExe) {
       outDir,
       "--target",
       targetKey,
-      "--only",
-      "git",
+      ...only.flatMap((tool) => ["--only", tool]),
       "--archive-cache",
       path.join(REPO_ROOT, "apps", "desktop", "build", "pin-archives"),
     ], { cwd: REPO_ROOT })
   }
+
+  provision()
+
+  // The sweep skips optional tools (provisioned on demand, per the pin
+  // table), so the tools below are asked for BY NAME.
+  //
+  // git is optional since the one-locator refactor: macOS and Linux use
+  // the machine's git behind the flag floor, so their payloads do not
+  // carry one. On Windows the managed PortableGit IS the contract (git
+  // bash), so the payload must ask for it.
+  if (target.platform === "win32") {
+    provision(["git"])
+  }
+
+  // The browsers make a bundled install able to browse without a ~650MB
+  // and ~170MB download at first use.
+  //
+  // No exception handling, and no per-target filter: win32-arm64 has no
+  // upstream chromium build, but the pin table declares that gap and the
+  // provisioner reports it as `unavailable` and still exits 0. A real
+  // failure — a broken download, a bad digest — exits non-zero and fails
+  // this build, which is the outcome a swallowed exception destroyed.
+  provision(["camoufox", "chromium", "chromium-headless-shell"])
 
   assertPayloadArch(target, outDir)
 }
@@ -533,9 +543,9 @@ export function probeElfArch(binaryPath) {
 
 function run(cmd, args, opts = {}) {
   // stdio: inherit — subprocess output (pip's resolution errors, uv's
-  // install messages) streams to the build log in real time. The throw
-  // below only names the command; the CAUSE is in the streamed output
-  // directly above it.
+  // install messages, the provisioner's per-tool receipt lines) streams
+  // to the build log in real time. The throw below only names the
+  // command; the CAUSE is in the streamed output directly above it.
   const result = spawnSync(cmd, args, { stdio: "inherit", ...opts })
   if (result.error) {
     throw new Error(`${cmd} did not start: ${result.error.message}`)

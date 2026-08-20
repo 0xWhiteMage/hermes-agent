@@ -606,23 +606,44 @@ class TestRuntimeCutover:
 # ---------------------------------------------------------------------------
 
 class TestInstallUvInternals:
+    """Real ToolResult objects, never a SimpleNamespace stand-in: a hand-made
+    stub carries whatever attributes the test author remembered, so it keeps
+    passing after the real type grows a distinction the code depends on
+    (a stub with only ``ok`` hid the ok-vs-provisioned split entirely)."""
+
     def test_delegates_to_the_pinned_provisioner(self, tmp_path):
         """_install_uv is a thin veneer over provision_tool("uv") — the pin
         table is the only uv acquisition authority."""
         from hermes_cli.managed_uv import _install_uv
+        from installation.provisioner import ToolResult
 
         target = tmp_path / ".hermes-runtime" / "uv" / "uv"
-        ok = SimpleNamespace(ok=True, detail="")
+        ok = ToolResult("uv", "downloaded", version="0.9.7")
         with patch("installation.provisioner.provision_tool", return_value=ok) as mock_provision:
             _install_uv(target)
         mock_provision.assert_called_once_with("uv")
 
     def test_provisioner_failure_raises(self, tmp_path):
         from hermes_cli.managed_uv import _install_uv
+        from installation.provisioner import ToolResult
 
-        failed = SimpleNamespace(ok=False, detail="digest mismatch")
+        failed = ToolResult("uv", "failed", detail="digest mismatch")
         with patch("installation.provisioner.provision_tool", return_value=failed):
             with pytest.raises(RuntimeError, match="digest mismatch"):
+                _install_uv(tmp_path / "uv")
+
+    def test_an_unavailable_uv_still_raises(self, tmp_path):
+        """uv is REQUIRED, so "no artifact for this target" is every bit as
+        fatal here as a broken download — the caller cannot proceed without
+        the binary either way. `ok` is true for an unavailable result, which
+        is exactly why this path reads `provisioned` instead."""
+        from hermes_cli.managed_uv import _install_uv
+        from installation.provisioner import ToolResult
+
+        gap = ToolResult("uv", "unavailable", detail="no build for plan9-riscv")
+        assert gap.ok and not gap.provisioned
+        with patch("installation.provisioner.provision_tool", return_value=gap):
+            with pytest.raises(RuntimeError, match="no build for plan9-riscv"):
                 _install_uv(tmp_path / "uv")
 
 

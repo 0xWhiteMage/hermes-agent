@@ -184,7 +184,7 @@ def _install_browser(interactive: bool) -> bool:
     from installation.provisioner import provision_tool
 
     result = provision_tool("camoufox")
-    if not result.ok:
+    if not result.provisioned:
         if interactive:
             print(f"  Could not provision the Camoufox browser: {result.detail}")
         return False
@@ -266,7 +266,7 @@ def ensure_dependency(
             if interactive:
                 print(f"  Could not provision {pinned}: {exc}")
             return False
-        if not result.ok:
+        if not result.provisioned:
             if interactive:
                 print(f"  Could not provision {pinned}: {result.detail}")
             return False

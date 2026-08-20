@@ -68,7 +68,9 @@ class TestCurrentTarget:
                 assert entry.get("optional", False), (
                     f"{tool} is required but declares a gap on {target}"
                 )
-                with pytest.raises(KeyError, match="has no build for"):
+                # The TYPE is the classification, not the wording: a
+                # reworded reason must not change how a caller reads this.
+                with pytest.raises(rr.UnavailableOnTarget):
                     rr.pinned_file(tool, target)
                 continue
             assert rr.pinned_file(tool, target).url, f"{tool} has no {target} download"
@@ -286,9 +288,12 @@ class TestRealPinTable:
                 spec = files.get(rr.ANY_TARGET) or files.get(target, {})
                 if "missing" in spec:
                     # The gap is allowed ONLY as an explicit, reasoned
-                    # declaration — and the resolver must surface it.
-                    with pytest.raises(KeyError, match="has no build for"):
+                    # declaration — and the resolver must surface it as
+                    # its own type, which is what separates a declared
+                    # gap from a hole someone forgot to fill.
+                    with pytest.raises(rr.UnavailableOnTarget) as gap:
                         rr.pinned_file(tool, target)
+                    assert gap.value.reason == spec["missing"]
                     continue
                 # Either a per-target row or a target-independent 'any'
                 # artifact — what matters is that nothing is unreachable.

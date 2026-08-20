@@ -64,6 +64,7 @@ from installation.registry import (
     PLAYWRIGHT_BROWSER_TOOLS,
     PinnedFile,
     RuntimeFact,
+    UnavailableOnTarget,
     current_target,
     extends_closure,
     install_order,
@@ -305,13 +306,30 @@ def _probe_env(
 @dataclass
 class ToolResult:
     tool: str
-    action: str  # kept | adopted | downloaded | system | failed
+    # kept | adopted | downloaded | system | unavailable | failed
+    #
+    # "unavailable" is a DECLARED gap (the pin table's {"missing": reason}
+    # rows, or a tool with no Termux mapping): the capability does not
+    # exist on this target, so nothing was attempted and nothing is
+    # broken. "failed" means work was attempted and went wrong — a
+    # download, digest, or probe failure that a retry or a fix can cure.
+    # The split is what lets a payload build treat win32-arm64's missing
+    # chromium as a fact while a mid-build network flake still fails it.
+    action: str
     version: Optional[str] = None
     detail: Optional[str] = None
 
     @property
     def ok(self) -> bool:
+        """Not a hard failure. An UNAVAILABLE tool is ok: absence by
+        design is a recorded fact, not an error to cure — the runtime's
+        resolver shows the reason when the capability is asked for."""
         return self.action != "failed"
+
+    @property
+    def provisioned(self) -> bool:
+        """The tool is actually present and recorded after this result."""
+        return self.action in ("kept", "adopted", "downloaded", "system")
 
 
 def _binary_rel(tool: str, target: str) -> str:
@@ -704,9 +722,9 @@ def _provision_termux(
     spec = TERMUX_TOOLS.get(tool)
     if spec is None:
         # A tool with no Termux mapping (camoufox, chromium): explicitly
-        # unsupported there, not silently skipped.
+        # unsupported there — a declared gap, not a failure to cure.
         return ToolResult(
-            tool, "failed", detail=f"{tool} is not available on Termux"
+            tool, "unavailable", detail=f"{tool} is not available on Termux"
         )
     floor, pkg_name = spec
 
@@ -941,6 +959,11 @@ def _provision_one(
 
     try:
         pin = pinned_file(tool, target, pins={tool: entry})
+    except UnavailableOnTarget as exc:
+        # A DECLARED gap ({"missing": reason} in the pin table): the
+        # capability does not exist here by design. Report the reason,
+        # not a failure — nothing was attempted and nothing is broken.
+        return ToolResult(tool, "unavailable", detail=exc.reason)
     except KeyError as exc:
         return ToolResult(tool, "failed", detail=str(exc))
 
@@ -1051,9 +1074,10 @@ def provision_tool(
         result = _provision_one(
             name, pins[name], facts_dir, store, facts, target, path_order=order
         )
-        if not result.ok:
-            # A dependency that cannot be staged makes the request
-            # impossible; report the failure that actually happened.
+        if not result.provisioned:
+            # A dependency that cannot be staged — broken OR absent by
+            # design — makes the request impossible; report the result
+            # that actually stopped the chain.
             return result
     return result
 
@@ -1315,6 +1339,11 @@ def main(argv: list[str] | None = None) -> int:
         only=ns.only,
         archive_dir=ns.archive_cache,
     )
+    # Exit 1 only for HARD failures. An "unavailable" tool is a declared
+    # gap the pin table states on purpose (win32-arm64 has no chromium
+    # build) — the receipt line above says so, and failing the build over
+    # it would force every caller to pre-filter tools per target,
+    # duplicating knowledge the table already owns.
     return 0 if all(r.ok for r in results) else 1
 
 
