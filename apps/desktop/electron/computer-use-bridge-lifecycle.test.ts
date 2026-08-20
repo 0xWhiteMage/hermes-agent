@@ -1,10 +1,8 @@
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
-import path from 'node:path'
-import test from 'node:test'
+
+import { test } from 'vitest'
 
 import {
-  detachBridgeOwnedPoolEntry,
   releaseBridgeOwnerAndStopSidecarIfIdle,
   scheduleBridgeReconnectIfCurrent,
   ScopedComputerUseBridgeLifecycle
@@ -20,6 +18,7 @@ test('sidecar startup timeout and early exit schedule retry for a current enable
     new Error('Timed out waiting for local Computer Use bridge to announce its port.'),
     new Error('Local Computer Use bridge exited before ready (1).')
   ]
+
   let reconnects = 0
 
   for (const failure of failures) {
@@ -35,6 +34,7 @@ test('sidecar startup timeout and early exit schedule retry for a current enable
           capturedScopedGeneration: generation,
           scheduleReconnect: () => (reconnects += 1)
         })
+
         assert.equal(scheduled, true)
         throw error
       }),
@@ -47,6 +47,7 @@ test('sidecar startup timeout and early exit schedule retry for a current enable
 
 test('sidecar startup failure does not retry a stale, disabled, stopping, or unowned scope', () => {
   const remoteKey = 'https://remote.example|token|profile|current'
+
   const cases = [
     { name: 'stale global generation', stopping: false, enabled: true, capturedGlobal: 3, currentGlobal: 4 },
     { name: 'disabled bridge', stopping: false, enabled: false, capturedGlobal: 4, currentGlobal: 4 },
@@ -175,6 +176,7 @@ test('releasing the final bridge owner stops and clears the local sidecar withou
   let stops = 0
   const state = { closedByDesktop: false, ws: { close: () => (closes += 1) } }
   const timer = { reconnect: remoteKey } as unknown as ReturnType<typeof setTimeout>
+
   const sidecar = {
     process: { killed: false } as { killed: boolean } | null,
     startPromise: Promise.resolve() as Promise<void> | null,
@@ -193,9 +195,11 @@ test('releasing the final bridge owner stops and clears the local sidecar withou
     owner,
     stopSidecar: () => {
       stops += 1
+
       if (sidecar.process) {
         sidecar.process.killed = true
       }
+
       sidecar.process = null
       sidecar.startPromise = null
       sidecar.state = null
@@ -239,30 +243,13 @@ test('disabling one of two profiles sharing a remote keeps the final owner conne
   const pending = Promise.resolve(state)
   const sidecar = { process: {}, startPromise: Promise.resolve(), state: {} }
   let sidecarStops = 0
+
   const stopSidecar = () => {
     sidecarStops += 1
     sidecar.process = null
     sidecar.startPromise = null
     sidecar.state = null
   }
-  const pool = new Map([
-    [
-      'research',
-      {
-        computerUseBridgeOwner: 'pool:research',
-        computerUseBridgeRemoteKey: remoteKey,
-        stopped: false
-      }
-    ],
-    [
-      'writing',
-      {
-        computerUseBridgeOwner: 'pool:writing',
-        computerUseBridgeRemoteKey: remoteKey,
-        stopped: false
-      }
-    ]
-  ])
 
   lifecycle.acquire(remoteKey, 'pool:research')
   lifecycle.acquire(remoteKey, 'pool:writing')
@@ -271,10 +258,10 @@ test('disabling one of two profiles sharing a remote keeps the final owner conne
   lifecycle.reconnectTimers.set(remoteKey, timer)
   const generation = lifecycle.generation(remoteKey)
 
-  const disabled = detachBridgeOwnedPoolEntry(pool, 'research', lifecycle, stopSidecar)
+  const release = (owner: string) =>
+    releaseBridgeOwnerAndStopSidecarIfIdle({ lifecycle, owner, remoteKey, stopSidecar })
 
-  assert.equal(disabled?.stopped, true)
-  assert.deepEqual([...pool.keys()], ['writing'])
+  assert.equal(release('pool:research'), false)
   assert.equal(lifecycle.hasOwners(remoteKey), true)
   assert.equal(lifecycle.connections.get(remoteKey), state)
   assert.equal(lifecycle.connectionPromises.get(remoteKey), pending)
@@ -301,10 +288,7 @@ test('disabling one of two profiles sharing a remote keeps the final owner conne
   )
   assert.equal(reconnects, 1)
 
-  const removed = detachBridgeOwnedPoolEntry(pool, 'writing', lifecycle, stopSidecar)
-
-  assert.equal(removed?.stopped, true)
-  assert.equal(pool.size, 0)
+  assert.equal(release('pool:writing'), true)
   assert.equal(lifecycle.hasOwners(remoteKey), false)
   assert.equal(lifecycle.connections.has(remoteKey), false)
   assert.equal(lifecycle.connectionPromises.has(remoteKey), false)
@@ -357,81 +341,4 @@ test('connect timeout allows retry while deliberate owner removal suppresses rec
   assert.equal(removalCloses, 1)
   assert.equal(removed.closedByDesktop, true)
   assert.equal(lifecycle.hasOwners(remoteKey), false)
-})
-
-test('delete, disable, LRU, and idle teardown paths use the owner-aware detach operation', () => {
-  const source = fs.readFileSync(path.join(import.meta.dirname, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
-
-  for (const functionName of ['stopPoolBackend', 'teardownPoolBackendAndWait']) {
-    const start = source.indexOf(`function ${functionName}(`)
-    assert.notEqual(start, -1, `${functionName} not found`)
-    const body = source.slice(start, start + 900)
-    assert.match(body, /detachBridgeOwnedPoolEntry\([\s\S]*?stopLocalComputerUseBridgeSidecar\s*\)/)
-  }
-
-  const releaseStart = source.indexOf('function stopRemoteComputerUseBridge(')
-  assert.notEqual(releaseStart, -1, 'stopRemoteComputerUseBridge not found')
-  assert.match(
-    source.slice(releaseStart, releaseStart + 500),
-    /releaseBridgeOwnerAndStopSidecarIfIdle\([\s\S]*?stopSidecar: stopLocalComputerUseBridgeSidecar/
-  )
-
-  const stopSidecarStart = source.indexOf('function stopLocalComputerUseBridgeSidecar(')
-  assert.notEqual(stopSidecarStart, -1, 'stopLocalComputerUseBridgeSidecar not found')
-  const stopSidecarBody = source.slice(stopSidecarStart, stopSidecarStart + 550)
-  assert.match(stopSidecarBody, /computerUseBridgeGeneration \+= 1/)
-  assert.match(stopSidecarBody, /computerUseBridgeProcess = null/)
-  assert.match(stopSidecarBody, /computerUseBridgeStartPromise = null/)
-  assert.match(stopSidecarBody, /computerUseBridgeState = null/)
-
-  const sidecarStart = source.indexOf('async function ensureLocalComputerUseBridgeSidecar(')
-  assert.notEqual(sidecarStart, -1, 'ensureLocalComputerUseBridgeSidecar not found')
-  const sidecarBody = source.slice(sidecarStart, sidecarStart + 4800)
-  assert.match(sidecarBody, /generation !== computerUseBridgeGeneration/)
-  assert.match(sidecarBody, /Local Computer Use bridge startup was cancelled/)
-
-  const requestStart = source.indexOf('async function handleComputerUseBridgeRequest(')
-  assert.notEqual(requestStart, -1, 'handleComputerUseBridgeRequest not found')
-  assert.match(
-    source.slice(requestStart, requestStart + 1500),
-    /state\.generation !== computerUseBridgeGeneration[\s\S]*?computerUseBridgeState\?\.child !== state\.child/
-  )
-
-  const spawnStart = source.indexOf('async function spawnPoolBackend(')
-  const spawnBody = source.slice(spawnStart, spawnStart + 1800)
-  assert.match(spawnBody, /entry\.computerUseBridgeRemoteKey = computerUseBridgeRemoteKey\(remote, profile\)/)
-  assert.match(
-    spawnBody,
-    /computerUseBridgeLifecycle\.acquire\(entry\.computerUseBridgeRemoteKey, entry\.computerUseBridgeOwner\)/
-  )
-  assert.match(spawnBody, /!entry\.stopped && backendPool\.get\(profile\) === entry/)
-
-  const connectStart = source.indexOf('async function connectRemoteComputerUseBridge(')
-  assert.notEqual(connectStart, -1, 'connectRemoteComputerUseBridge not found')
-  const ensureStart = source.indexOf('async function ensureRemoteComputerUseBridge(')
-  assert.notEqual(ensureStart, -1, 'ensureRemoteComputerUseBridge not found')
-  const ensureBody = source.slice(ensureStart, connectStart)
-  const awaitStart = ensureBody.indexOf('return await connectionPromise')
-  assert.notEqual(awaitStart, -1, 'bridge connection await not found')
-  const recoveryBody = ensureBody.slice(awaitStart, awaitStart + 900)
-  assert.match(recoveryBody, /catch \(error\)/)
-  assert.match(recoveryBody, /scheduleBridgeReconnectIfCurrent\(/)
-  assert.match(recoveryBody, /throw error/)
-
-  const connectBody = source.slice(connectStart, connectStart + 3200)
-  const timeoutStart = connectBody.indexOf('const timer = setTimeout(')
-  assert.notEqual(timeoutStart, -1, 'bridge connect timeout not found')
-  assert.match(connectBody.slice(timeoutStart, timeoutStart + 500), /closeComputerUseBridgeSocket\(remoteKey, true\)/)
-
-  const callPaths = [
-    ['function evictLruPoolBackends(', /stopPoolBackend\(profile\)/],
-    ['function startPoolIdleReaper(', /stopPoolBackend\(profile\)/],
-    ['async function prepareProfileDeleteRequest(', /teardownPoolBackendAndWait\(profile\)/],
-    ["ipcMain.handle('hermes:connection-config:apply'", /stopPoolBackend\(key\)/]
-  ] as const
-  for (const [marker, expected] of callPaths) {
-    const start = source.indexOf(marker)
-    assert.notEqual(start, -1, `${marker} path not found`)
-    assert.match(source.slice(start, start + 1600), expected)
-  }
 })

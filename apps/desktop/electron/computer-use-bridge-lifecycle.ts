@@ -38,11 +38,14 @@ class ScopedComputerUseBridgeLifecycle<State extends BridgeSocketState = BridgeS
     if (!key || !owner) {
       return
     }
+
     let owners = this.owners.get(key)
+
     if (!owners) {
       owners = new Set()
       this.owners.set(key, owners)
     }
+
     owners.add(owner)
   }
 
@@ -58,14 +61,18 @@ class ScopedComputerUseBridgeLifecycle<State extends BridgeSocketState = BridgeS
 
   release(key: string, owner: string): boolean {
     const owners = this.owners.get(key)
+
     if (!owners?.delete(owner)) {
       return false
     }
+
     if (owners.size > 0) {
       return false
     }
+
     this.owners.delete(key)
     this.cancel(key)
+
     return true
   }
 
@@ -75,10 +82,13 @@ class ScopedComputerUseBridgeLifecycle<State extends BridgeSocketState = BridgeS
     for (const scopedKey of keys) {
       const state = this.connections.get(scopedKey)
       this.connections.delete(scopedKey)
+
       if (!state?.ws) {
         continue
       }
+
       state.closedByDesktop = !allowReconnect
+
       try {
         state.ws.close()
       } catch {
@@ -91,6 +101,7 @@ class ScopedComputerUseBridgeLifecycle<State extends BridgeSocketState = BridgeS
     this.generations.set(key, this.generation(key) + 1)
 
     const timer = this.reconnectTimers.get(key)
+
     if (timer !== undefined) {
       this.clearTimer(timer)
       this.reconnectTimers.delete(key)
@@ -113,12 +124,6 @@ class ScopedComputerUseBridgeLifecycle<State extends BridgeSocketState = BridgeS
       this.cancel(key)
     }
   }
-}
-
-interface BridgeOwnedPoolEntry {
-  computerUseBridgeOwner?: string | null
-  computerUseBridgeRemoteKey?: string | null
-  stopped?: boolean
 }
 
 interface BridgeReconnectGuard<State extends BridgeSocketState = BridgeSocketState> {
@@ -147,11 +152,13 @@ function releaseBridgeOwnerAndStopSidecarIfIdle<State extends BridgeSocketState>
   stopSidecar
 }: BridgeOwnerRelease<State>): boolean {
   const releasedFinalOwner = lifecycle.release(remoteKey, owner)
+
   if (!releasedFinalOwner || lifecycle.hasScopedActivity()) {
     return false
   }
 
   stopSidecar()
+
   return true
 }
 
@@ -177,40 +184,9 @@ function scheduleBridgeReconnectIfCurrent<State extends BridgeSocketState>({
   }
 
   scheduleReconnect()
+
   return true
 }
 
-/**
- * Remove one profile backend and release its reverse-bridge ownership.
- *
- * Delete, disable/apply, LRU eviction, and idle reaping all converge on this
- * operation in main.ts. Returning the detached entry lets synchronous and
- * wait-for-exit callers share the ownership semantics without duplicating it.
- */
-function detachBridgeOwnedPoolEntry<Entry extends BridgeOwnedPoolEntry>(
-  pool: Map<string, Entry>,
-  profile: string,
-  lifecycle: ScopedComputerUseBridgeLifecycle,
-  stopSidecar: () => void
-): Entry | null {
-  const entry = pool.get(profile)
-  if (!entry) {
-    return null
-  }
-  entry.stopped = true
-  pool.delete(profile)
-  const remoteKey = entry.computerUseBridgeRemoteKey
-  const owner = entry.computerUseBridgeOwner
-  if (remoteKey && owner) {
-    releaseBridgeOwnerAndStopSidecarIfIdle({ lifecycle, remoteKey, owner, stopSidecar })
-  }
-  return entry
-}
-
-export {
-  detachBridgeOwnedPoolEntry,
-  releaseBridgeOwnerAndStopSidecarIfIdle,
-  scheduleBridgeReconnectIfCurrent,
-  ScopedComputerUseBridgeLifecycle
-}
-export type { BridgeOwnedPoolEntry, BridgeOwnerRelease, BridgeReconnectGuard, BridgeSocketState, BridgeTimer }
+export { releaseBridgeOwnerAndStopSidecarIfIdle, scheduleBridgeReconnectIfCurrent, ScopedComputerUseBridgeLifecycle }
+export type { BridgeOwnerRelease, BridgeReconnectGuard, BridgeSocketState, BridgeTimer }

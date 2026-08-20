@@ -189,6 +189,7 @@ test('profileRemoteOverride preserves normalized remote headers', () => {
     url: 'https://x',
     authMode: 'token',
     token: undefined,
+    computerUseBridge: true,
     headers: {
       'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'encrypted-id' }
     }
@@ -207,7 +208,8 @@ test('profileRemoteOverride treats a cloud entry as a remote override', () => {
   assert.deepEqual(profileRemoteOverride(config, 'coder'), {
     url: 'https://agent-1.agents.nousresearch.com',
     authMode: 'oauth',
-    token: undefined
+    token: undefined,
+    computerUseBridge: true
   })
 })
 
@@ -872,6 +874,16 @@ test('buildComputerUseBridgeWsUrlWithTicket uses OAuth ticket auth', () => {
     buildComputerUseBridgeWsUrlWithTicket('http://127.0.0.1:9119', 'ticket+1'),
     'ws://127.0.0.1:9119/api/tools/computer-use/desktop-bridge/ws?ticket=ticket%2B1'
   )
+})
+
+test('a bridge socket names the profile it is for, so the backend files it there', () => {
+  assert.match(buildComputerUseBridgeWsUrl('https://host', 'tok', 'work'), /&profile=work$/)
+  assert.match(buildComputerUseBridgeWsUrlWithTicket('https://host', 'tick', 'a b'), /&profile=a%20b$/)
+})
+
+test('an unscoped bridge socket asks for nothing, leaving the backend its launch profile', () => {
+  assert.doesNotMatch(buildComputerUseBridgeWsUrl('https://host', 'tok'), /profile=/)
+  assert.doesNotMatch(buildComputerUseBridgeWsUrl('https://host', 'tok', ''), /profile=/)
 })
 
 // --- authModeFromStatus ---

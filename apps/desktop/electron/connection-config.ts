@@ -118,12 +118,27 @@ function buildGatewayWsUrlWithTicket(baseUrl, ticket) {
   return buildWsUrl(baseUrl, '/api/ws', `ticket=${encodeURIComponent(ticket)}`)
 }
 
-function buildComputerUseBridgeWsUrl(baseUrl, token) {
-  return buildWsUrl(baseUrl, COMPUTER_USE_BRIDGE_WS_PATH, `token=${encodeURIComponent(token)}`)
+/** The routing scope a bridge socket asks for; absent means the launch profile. */
+function computerUseBridgeScopeQuery(profile) {
+  const scope = connectionScopeKey(profile)
+
+  return scope ? `&profile=${encodeURIComponent(scope)}` : ''
 }
 
-function buildComputerUseBridgeWsUrlWithTicket(baseUrl, ticket) {
-  return buildWsUrl(baseUrl, COMPUTER_USE_BRIDGE_WS_PATH, `ticket=${encodeURIComponent(ticket)}`)
+function buildComputerUseBridgeWsUrl(baseUrl, token, profile = null) {
+  return buildWsUrl(
+    baseUrl,
+    COMPUTER_USE_BRIDGE_WS_PATH,
+    `token=${encodeURIComponent(token)}${computerUseBridgeScopeQuery(profile)}`
+  )
+}
+
+function buildComputerUseBridgeWsUrlWithTicket(baseUrl, ticket, profile = null) {
+  return buildWsUrl(
+    baseUrl,
+    COMPUTER_USE_BRIDGE_WS_PATH,
+    `ticket=${encodeURIComponent(ticket)}${computerUseBridgeScopeQuery(profile)}`
+  )
 }
 
 /** True only when a gateway explicitly rejected the current OAuth session. */
