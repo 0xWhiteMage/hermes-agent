@@ -123,6 +123,40 @@ class TestManifestParsing:
         assert e.install is None
         assert e.suggest is None
 
+    def test_setup_steps_keep_their_order_and_drop_blanks(self, catalog_dir):
+        _write_manifest(
+            catalog_dir,
+            "demo",
+            _basic_manifest(
+                setup=[
+                    "Create a project at [the console](https://console.example.com).",
+                    "   ",
+                    "Enable the Demo API.",
+                ]
+            ),
+        )
+        from hermes_cli.mcp_catalog import list_catalog
+
+        steps = [step.text for step in list_catalog()[0].setup]
+        # Order is the instruction: step 2 makes no sense before step 1.
+        assert steps == [
+            "Create a project at [the console](https://console.example.com).",
+            "Enable the Demo API.",
+        ]
+
+    def test_setup_absent_means_nothing_to_do_first(self, catalog_dir):
+        _write_manifest(catalog_dir, "demo", _basic_manifest())
+        from hermes_cli.mcp_catalog import list_catalog
+
+        assert list_catalog()[0].setup == []
+
+    def test_setup_must_be_a_list(self, catalog_dir):
+        _write_manifest(catalog_dir, "demo", _basic_manifest(setup="do the thing"))
+        from hermes_cli.mcp_catalog import catalog_diagnostics, list_catalog
+
+        assert list_catalog() == []
+        assert any("setup" in message for (_n, _kind, message) in catalog_diagnostics())
+
     def test_suggest_block_parsed_and_normalized(self, catalog_dir):
         _write_manifest(
             catalog_dir,
