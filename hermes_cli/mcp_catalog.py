@@ -609,8 +609,22 @@ def _build_server_config(
         cfg["command"] = _expand_install_dir(t.command or "", install_dir)
         if t.args:
             cfg["args"] = [_expand_install_dir(a, install_dir) for a in t.args]
-        if t.env:
-            cfg["env"] = dict(t.env)
+        env = dict(t.env) if t.env else {}
+        if entry.auth.type == "api_key":
+            # The child gets a filtered environment — _build_safe_env passes an
+            # allowlist, not every secret this process happens to hold — so a
+            # credential written to .env never reaches the server unless the
+            # stanza asks for it by name. Without this the server starts
+            # without its credentials and reports them missing, which reads
+            # like the setup failed when it was only withheld.
+            #
+            # References, not values: ${NAME} is interpolated at connect time
+            # from .env, so config.yaml stays free of secrets and stays
+            # copyable between machines.
+            for var in entry.auth.env:
+                env.setdefault(var.name, f"${{{var.name}}}")
+        if env:
+            cfg["env"] = env
     elif t.type == "http":
         cfg["url"] = t.url
         if entry.auth.type == "oauth":

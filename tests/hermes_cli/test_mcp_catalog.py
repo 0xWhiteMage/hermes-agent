@@ -235,6 +235,52 @@ class TestManifestParsing:
         assert cfg["url"] == "https://mcp.example.com/sse"
         assert cfg["headers"] == {"Authorization": "Bearer ${MCP_DEMO_API_KEY}"}
 
+    def test_stdio_api_key_hands_its_credentials_to_the_child(self, catalog_dir):
+        """A stdio child gets a filtered environment, so a credential sitting
+        in .env never reaches it unless the stanza names it. Without this the
+        server starts up unable to see credentials the user just supplied."""
+        body = _basic_manifest(
+            transport={"type": "stdio", "command": "uvx", "args": ["demo-mcp"]},
+            auth={
+                "type": "api_key",
+                "env": [
+                    {"name": "DEMO_CLIENT_ID", "prompt": "id", "secret": False},
+                    {"name": "DEMO_SECRET", "prompt": "secret", "secret": True},
+                ],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import _build_server_config
+
+        cfg = _build_server_config(_entry("demo"), None)
+
+        # References, so the secret stays in .env and config.yaml stays
+        # shareable.
+        assert cfg["env"] == {
+            "DEMO_CLIENT_ID": "${DEMO_CLIENT_ID}",
+            "DEMO_SECRET": "${DEMO_SECRET}",
+        }
+
+    def test_a_manifests_own_env_wins_over_the_credential_reference(self, catalog_dir):
+        body = _basic_manifest(
+            transport={
+                "type": "stdio",
+                "command": "uvx",
+                "args": ["demo-mcp"],
+                "env": {"DEMO_SECRET": "literal-from-manifest"},
+            },
+            auth={
+                "type": "api_key",
+                "env": [{"name": "DEMO_SECRET", "prompt": "secret", "secret": True}],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import _build_server_config
+
+        cfg = _build_server_config(_entry("demo"), None)
+
+        assert cfg["env"]["DEMO_SECRET"] == "literal-from-manifest"
+
     def test_http_api_key_requires_matching_env_declaration(self, catalog_dir):
         """http+api_key manifests must declare the env key the header references.
 
