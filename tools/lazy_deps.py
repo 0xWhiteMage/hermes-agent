@@ -201,15 +201,19 @@ class LazyDep:
     extra: str
     supported: Callable[[], None]
 
+PlatformType = Literal["linux", "win32", "darwin", "msys", "cygwin"]
 
-def _matrix_supported() -> None:
-    """Matrix E2EE cannot build on native Windows."""
-    if sys.platform == "win32":
-        raise UnsupportedFeature(
-            "unsupported on Windows: Matrix E2EE depends on python-olm, "
-            "which has no Windows wheel and requires make + libolm to build "
-            "from sdist. Run Hermes under WSL to use Matrix on Windows."
-        )
+def only_platform(platform: PlatformType, explainer: str | None = None): 
+    def _supported():
+        if sys.platform != platform:
+            raise UnsupportedFeature(f"unsupported on platforms other than {platform}.{' ' + explainer if explainer else ''}")
+    return _supported
+
+def never_platform(platform: PlatformType, explainer: str | None = None):
+    def _supported():
+        if sys.platform == platform:
+            raise UnsupportedFeature(f"unsupported on platform {platform}.{' ' + explainer if explainer else ''}")
+    return _supported
 
 
 LAZY_DEPS: dict[str, str | LazyDep] = {
@@ -259,7 +263,11 @@ LAZY_DEPS: dict[str, str | LazyDep] = {
     "platform.telegram": "telegram",
     "platform.discord": "discord",
     "platform.slack": "slack",
-    "platform.matrix": LazyDep("matrix", _matrix_supported),
+    "platform.matrix": LazyDep("matrix", only_platform(
+        "linux",
+        "Matrix E2EE depends on python-olm, which only ships wheels for Linux."
+        "Run Hermes under WSL to use Matrix on Windows."
+    )),
     "platform.dingtalk": "dingtalk",
     "platform.feishu": "feishu",
     "platform.wecom_callback": "wecom",
