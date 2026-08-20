@@ -1089,6 +1089,7 @@ def provision_runtimes(
     only: list[str] | None = None,
     store_dir: Path | None = None,
     archive_dir: Path | None = None,
+    extras: list[str] | None = None,
 ) -> list[ToolResult]:
     """Bring every pinned tool to its pinned version.
 
@@ -1098,6 +1099,22 @@ def provision_runtimes(
     Tools are provisioned in the pin table's dependency order, so a tool
     that extends another is staged after it — npm is unpacked by running
     the node it extends, which has to exist first.
+
+    Three selections, and they answer different questions:
+
+    * default — every REQUIRED tool, plus optional tools this install has
+      already recorded (that is what carries a pin bump onto an install
+      which uses the capability).
+    * *extras* — the default sweep PLUS these optional tools by name. For
+      a caller that wants a full install and some capabilities with it,
+      the desktop payload being the one that does.
+    * *only* — exactly these tools and nothing else, optional or not. The
+      self-heal paths that need one runtime without paying for a sweep.
+
+    *only* and *extras* are mutually exclusive: "exactly these" and "the
+    sweep plus these" cannot both be the selection. An unknown name in
+    either raises ``ValueError`` rather than silently matching nothing —
+    a typo must not look like a successful run that provisioned nothing.
 
     Provisioning is always for THIS host. A tool is never recorded until
     the staged binary has answered a version probe here, so a pin that
@@ -1116,14 +1133,30 @@ def provision_runtimes(
     results: list[ToolResult] = []
     order = path_order(pins)
 
+    requested = set(only or ())
+    extra = set(extras or ())
+    if requested and extra:
+        raise ValueError(
+            "provision_runtimes: 'only' and 'extras' are different selections "
+            "(exactly these vs the sweep plus these); pass one"
+        )
+    unknown = sorted((requested | extra) - set(pins))
+    if unknown:
+        # A name that matches nothing would otherwise skip the loop body
+        # entirely and report success having provisioned nothing — the
+        # exact silent-empty-payload outcome this engine exists to avoid.
+        raise ValueError(
+            f"provision_runtimes: not in the pin table: {', '.join(unknown)}"
+        )
+
     for tool in install_order(pins):
-        if only and tool not in only:
-            continue
-        # An optional tool is provisioned on demand (provision_tool), not
-        # for everyone. Once the facts record it, though, the sweep owns
-        # it like any other tool — that is what carries a pin bump onto
-        # an install that actually uses the capability.
-        if not only and is_optional(tool, pins) and tool not in facts:
+        if requested:
+            if tool not in requested:
+                continue
+        elif is_optional(tool, pins) and tool not in facts and tool not in extra:
+            # An optional tool is provisioned on demand (provision_tool or
+            # an explicit extras request), not for everyone. Once the facts
+            # record it, though, the sweep owns it like any other tool.
             continue
         result = _provision_one(
             tool,
@@ -1292,7 +1325,20 @@ def main(argv: list[str] | None = None) -> int:
         "A mismatch exits 2.",
     )
     parser.add_argument(
-        "--only", action="append", help="Provision just this tool (repeatable)."
+        "--only",
+        action="append",
+        help="Provision EXACTLY this tool and nothing else (repeatable). "
+        "Optional tools are included when named. Mutually exclusive with "
+        "--extras.",
+    )
+    parser.add_argument(
+        "--extras",
+        action="append",
+        help="Provision the default sweep PLUS this optional tool "
+        "(repeatable). What a payload build wants: every required tool, "
+        "and the capabilities this artifact ships with. A target the pin "
+        "table declares no build for is reported 'unavailable' and does "
+        "not fail the run, so the caller never has to filter by platform.",
     )
     parser.add_argument(
         "--archive-cache",
@@ -1332,13 +1378,21 @@ def main(argv: list[str] | None = None) -> int:
         # files go with them. Live entries survive to serve this run.
         prune_archive_cache(ns.archive_cache, load_pins())
 
-    results = provision_runtimes(
-        runtime_dir=ns.runtime_dir,
-        store_dir=ns.store_dir,
-        emit=emit,
-        only=ns.only,
-        archive_dir=ns.archive_cache,
-    )
+    try:
+        results = provision_runtimes(
+            runtime_dir=ns.runtime_dir,
+            store_dir=ns.store_dir,
+            emit=emit,
+            only=ns.only,
+            extras=ns.extras,
+            archive_dir=ns.archive_cache,
+        )
+    except ValueError as exc:
+        # A bad selection (both flags, or a name no pin table row matches).
+        # Exit 2 like the target mismatch above: the caller asked for
+        # something impossible, which is not the same as a tool failing.
+        print(f"runtime_provisioner: {exc}", file=sys.stderr)
+        return 2
     # Exit 1 only for HARD failures. An "unavailable" tool is a declared
     # gap the pin table states on purpose (win32-arm64 has no chromium
     # build) — the receipt line above says so, and failing the build over

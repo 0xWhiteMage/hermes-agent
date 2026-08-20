@@ -1628,3 +1628,137 @@ class TestDeclaredGapsAreNotFailures:
             rr.pinned_file("chromium", "plan9-riscv", pins=pins)
         assert not isinstance(hole.value, rr.UnavailableOnTarget)
 
+
+class TestSelectionSemantics:
+    """Three selections, three questions.
+
+    default  = required tools + optional ones this install already has
+    extras   = the default sweep PLUS named optional tools
+    only     = exactly these and nothing else
+
+    The distinction earns its keep in the payload build: it wants a full
+    install AND some capabilities, which used to take two subprocess runs
+    plus a platform conditional in JavaScript restating what the pin table
+    already says.
+    """
+
+    def _pins(self, served, tmp_path, target):
+        root, base = served
+        gh = _make_tar(root, "sel-gh.tar.gz", {"bin/gh": _script()})
+        rg = _make_tar(root, "sel-rg.tar.gz", {"rg": _script()})
+        cam = _make_tar(root, "sel-cam.tar.gz", {"camoufox-bin": _script()})
+        return _pins_file(tmp_path / "sel-repo", {
+            "gh": {"version": "2.97.0", "files": {
+                target: {"url": f"{base}/sel-gh.tar.gz", "sha256": gh}}},
+            "ripgrep": {"version": "14.1.0", "files": {
+                target: {"url": f"{base}/sel-rg.tar.gz", "sha256": rg}}},
+            "camoufox": {
+                "version": "152.0.4-beta.28", "optional": True, "onPath": False,
+                "files": {target: {"url": f"{base}/sel-cam.tar.gz", "sha256": cam}}},
+        })
+
+    def _run(self, tmp_path, pins, name, **kwargs):
+        return {r.tool: r.action for r in rp.provision_runtimes(
+            runtime_dir=tmp_path / name, install_root=pins, **kwargs)}
+
+    def test_the_default_sweep_skips_an_unrecorded_optional_tool(
+        self, served, tmp_path, target
+    ):
+        pins = self._pins(served, tmp_path, target)
+
+        results = self._run(tmp_path, pins, "rt-default")
+
+        assert results == {"gh": "downloaded", "ripgrep": "downloaded"}
+
+    def test_extras_adds_an_optional_tool_to_the_full_sweep(
+        self, served, tmp_path, target
+    ):
+        """The whole point: required tools AND a named capability, one call."""
+        pins = self._pins(served, tmp_path, target)
+
+        results = self._run(tmp_path, pins, "rt-extras", extras=["camoufox"])
+
+        assert results == {
+            "gh": "downloaded", "ripgrep": "downloaded", "camoufox": "downloaded",
+        }
+
+    def test_only_stays_exactly_those_tools(self, served, tmp_path, target):
+        """`only` must NOT have become "sweep plus" — the self-heal paths
+        depend on it not paying for a full sweep."""
+        pins = self._pins(served, tmp_path, target)
+
+        results = self._run(tmp_path, pins, "rt-only", only=["camoufox"])
+
+        assert results == {"camoufox": "downloaded"}
+
+    def test_an_extra_that_is_already_recorded_is_kept_not_refetched(
+        self, served, tmp_path, target
+    ):
+        """extras names a tool the sweep would already own once recorded;
+        asking for it again must not re-download it."""
+        pins = self._pins(served, tmp_path, target)
+        rt = tmp_path / "rt-twice"
+
+        first = {r.tool: r.action for r in rp.provision_runtimes(
+            runtime_dir=rt, install_root=pins, extras=["camoufox"])}
+        second = {r.tool: r.action for r in rp.provision_runtimes(
+            runtime_dir=rt, install_root=pins, extras=["camoufox"])}
+
+        assert first["camoufox"] == "downloaded"
+        assert second == {"gh": "kept", "ripgrep": "kept", "camoufox": "kept"}
+
+    def test_the_two_selections_cannot_be_combined(self, served, tmp_path, target):
+        pins = self._pins(served, tmp_path, target)
+
+        with pytest.raises(ValueError, match="only.*extras|extras.*only"):
+            rp.provision_runtimes(
+                runtime_dir=tmp_path / "rt-both", install_root=pins,
+                only=["gh"], extras=["camoufox"])
+
+    def test_a_typo_is_refused_rather_than_silently_provisioning_nothing(
+        self, served, tmp_path, target
+    ):
+        """A name matching no pin row would skip every loop iteration and
+        report success having done nothing — a payload build would ship an
+        installer with no browser and a green log."""
+        pins = self._pins(served, tmp_path, target)
+
+        with pytest.raises(ValueError, match="chromiun"):
+            rp.provision_runtimes(
+                runtime_dir=tmp_path / "rt-typo", install_root=pins,
+                extras=["chromiun"])
+        with pytest.raises(ValueError, match="ripgrepp"):
+            rp.provision_runtimes(
+                runtime_dir=tmp_path / "rt-typo2", install_root=pins,
+                only=["ripgrepp"])
+
+    def test_the_cli_exits_two_for_a_bad_selection(
+        self, served, tmp_path, target, monkeypatch
+    ):
+        """Exit 2 = "your request is impossible", distinct from 1 = "a tool
+        failed". A build script must be able to tell a typo in its own
+        arguments from a broken download."""
+        pins = self._pins(served, tmp_path, target)
+        monkeypatch.setenv(
+            "HERMES_RUNTIME_PINS", str(pins / rr.PINS_FILENAME))
+
+        assert rp.main([
+            "--runtime-dir", str(tmp_path / "cli-typo"), "--extras", "nope",
+        ]) == 2
+        assert rp.main([
+            "--runtime-dir", str(tmp_path / "cli-both"),
+            "--only", "gh", "--extras", "camoufox",
+        ]) == 2
+
+    def test_the_cli_stages_extras_alongside_the_sweep(
+        self, served, tmp_path, target, monkeypatch
+    ):
+        """End to end through argv, the way the payload staging calls it."""
+        pins = self._pins(served, tmp_path, target)
+        monkeypatch.setenv("HERMES_RUNTIME_PINS", str(pins / rr.PINS_FILENAME))
+        rt = tmp_path / "cli-extras"
+
+        assert rp.main([
+            "--runtime-dir", str(rt), "--extras", "camoufox",
+        ]) == 0
+        assert set(rr.load_facts(rt)) == {"gh", "ripgrep", "camoufox"}

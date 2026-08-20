@@ -330,48 +330,34 @@ export function stageCacheKey({ target, pythonVersion, requirementsText }) {
 function stageManagedRuntimes(target, outDir, pythonExe) {
   const targetKey = `${target.platform}-${target.arch}`
 
-  /**
-   * Run the provisioner for this payload.
-   *
-   * @param {string[]} only Tools to ask for by name. Empty = the default
-   *   sweep, which covers every REQUIRED tool and skips optional ones.
-   */
-  function provision(only = []) {
-    run(pythonExe, [
-      "-m",
-      "installation.provisioner",
-      "--runtime-dir",
-      outDir,
-      "--target",
-      targetKey,
-      ...only.flatMap((tool) => ["--only", tool]),
-      "--archive-cache",
-      path.join(REPO_ROOT, "apps", "desktop", "build", "pin-archives"),
-    ], { cwd: REPO_ROOT })
-  }
-
-  provision()
-
-  // The sweep skips optional tools (provisioned on demand, per the pin
-  // table), so the tools below are asked for BY NAME.
+  // One provisioner run: every REQUIRED tool, plus the optional
+  // capabilities this payload ships with.
   //
-  // git is optional since the one-locator refactor: macOS and Linux use
-  // the machine's git behind the flag floor, so their payloads do not
-  // carry one. On Windows the managed PortableGit IS the contract (git
-  // bash), so the payload must ask for it.
-  if (target.platform === "win32") {
-    provision(["git"])
-  }
-
-  // The browsers make a bundled install able to browse without a ~650MB
-  // and ~170MB download at first use.
+  // The optional tools are named, never derived from the platform. git is
+  // Windows-only (bash.exe ships inside PortableGit; macOS and Linux take
+  // the machine's git behind the flag floor) and win32-arm64 has no
+  // upstream chromium — but the pin table already states both as declared
+  // gaps, and the provisioner reports a gap as `unavailable` and still
+  // exits 0. Re-deciding that here in JavaScript would be a second copy of
+  // the table's own knowledge, which is exactly the split that let the old
+  // missingTargets rows drift out of sync with it.
   //
-  // No exception handling, and no per-target filter: win32-arm64 has no
-  // upstream chromium build, but the pin table declares that gap and the
-  // provisioner reports it as `unavailable` and still exits 0. A real
-  // failure — a broken download, a bad digest — exits non-zero and fails
-  // this build, which is the outcome a swallowed exception destroyed.
-  provision(["camoufox", "chromium", "chromium-headless-shell"])
+  // Naming the extras is still deliberate: a NEW optional pin must not
+  // silently add several hundred MB to the installer, so bundling a
+  // capability stays an edit to this list. A real failure — broken
+  // download, bad digest — exits non-zero and fails the build.
+  run(pythonExe, [
+    "-m",
+    "installation.provisioner",
+    "--runtime-dir",
+    outDir,
+    "--target",
+    targetKey,
+    ...["git", "camoufox", "chromium", "chromium-headless-shell"]
+      .flatMap((tool) => ["--extras", tool]),
+    "--archive-cache",
+    path.join(REPO_ROOT, "apps", "desktop", "build", "pin-archives"),
+  ], { cwd: REPO_ROOT })
 
   assertPayloadArch(target, outDir)
 }
