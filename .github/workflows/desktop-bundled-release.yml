@@ -112,7 +112,10 @@ jobs:
         # variant × target: every target builds both the bundled installer
         # and the light client. The light lanes skip every payload step and
         # finish much faster; signing and packaging are identical.
-        variant: [bundled, light]
+
+        # light variants are disabled right now. enable later when they're fleshed out more.
+        # variant: [bundled, light]
+        variant: [bundled]
         target:
           # electron-builder targets are chosen by the shared script from
           # the runner platform: linux AppImage, mac dmg+zip, win nsis.
