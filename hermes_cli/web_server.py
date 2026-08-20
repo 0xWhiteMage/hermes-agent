@@ -9298,11 +9298,14 @@ def _spawn_whatsapp_pairing_process(session_path: Path, mode: str) -> subprocess
             status_code=500,
             detail=f"WhatsApp bridge script was not found at {bridge_script}.",
         )
-    node = str(nodejs.node_path())
-    if not node:
+    try:
+        node = str(nodejs.node_path())
+    except nodejs.NotProvisioned as exc:
+        # Same dead-guard class as the npm site above: str() never returns
+        # None, and node_path() raises on an unprovisioned runtime dir.
         raise HTTPException(
             status_code=500,
-            detail="Node.js was not found. WhatsApp setup needs Node.js.",
+            detail=f"WhatsApp setup needs the managed Node.js: {exc}",
         )
 
     _ensure_whatsapp_bridge_dependencies(bridge_dir)

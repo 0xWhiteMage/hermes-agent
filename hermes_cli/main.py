@@ -3174,10 +3174,20 @@ def cmd_whatsapp(args):
     print("─" * 50)
     print()
 
+    # The step-5 npm guard is skipped when node_modules already exists, so
+    # this node_path() call can be the first one to see an unprovisioned
+    # runtime dir — resolve it before the spawn instead of crashing the
+    # pairing wizard with a traceback.
+    try:
+        _pair_node = str(nodejs.node_path())
+    except nodejs.NotProvisioned as exc:
+        print(f"  ✗ {exc}")
+        return
+
     try:
         subprocess.run(
             [
-                str(nodejs.node_path()),
+                _pair_node,
                 str(bridge_script),
                 "--pair-only",
                 "--session",
