@@ -436,6 +436,7 @@ async def list_mcp_catalog(profile: Optional[str] = None):
                 "name": entry.name,
                 "description": entry.description,
                 "source": entry.source,
+                "homepage": entry.homepage,
                 "transport": transport.type,
                 "auth_type": getattr(auth, "type", "none"),
                 # Env vars the user must supply (names + prompts only, never values).
@@ -458,6 +459,8 @@ async def list_mcp_catalog(profile: Optional[str] = None):
                 "default_enabled": list(entry.tools.default_enabled)
                 if entry.tools.default_enabled is not None
                 else None,
+                # What the user has to go do themselves before this can work.
+                "setup": [step.text for step in entry.setup],
                 "post_install": entry.post_install or "",
                 # Composer-suggestion triggers (desktop brand pills). Present
                 # only for entries whose manifest declares a `suggest` block.

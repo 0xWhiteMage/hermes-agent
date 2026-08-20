@@ -1438,6 +1438,10 @@ export interface McpCatalogEntry {
   name: string
   description: string
   source: string
+  /** The product's own site, when the manifest names one. Read for its
+   *  favicon; absent on entries with a bundled brand glyph and on backends
+   *  that predate the field. */
+  homepage?: string
   transport: string
   auth_type: string
   required_env: { name: string; prompt: string; required: boolean }[]
@@ -1448,6 +1452,10 @@ export interface McpCatalogEntry {
   install_ref: string | null
   bootstrap: string[]
   default_enabled: string[] | null
+  /** Ordered things the user must do elsewhere before this connector works
+   *  (create a cloud project, enable a plugin). Markdown links allowed.
+   *  Absent on backends that predate the field. */
+  setup?: string[]
   post_install: string
   /** Composer-suggestion triggers (present when the manifest declares a
    *  `suggest` block; null/absent on entries without one and on older
