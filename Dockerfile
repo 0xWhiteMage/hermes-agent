@@ -354,6 +354,11 @@ RUN mkdir -p /etc/cont-init.d && \
         > /etc/cont-init.d/01-hermes-setup && \
     chmod +x /etc/cont-init.d/01-hermes-setup
 COPY --chmod=0755 docker/cont-init.d/015-supervise-perms /etc/cont-init.d/015-supervise-perms
+# 016-flaps-socket-perms lets the unprivileged hermes user connect(2) to
+# /.fly/api, without which scale-to-zero's self-suspend gets EACCES and the
+# machine never sleeps. Ordered after 015 (both are root-time permission
+# fixups) and before 02, though it depends on neither.
+COPY --chmod=0755 docker/cont-init.d/016-flaps-socket-perms /etc/cont-init.d/016-flaps-socket-perms
 COPY --chmod=0755 docker/cont-init.d/02-reconcile-profiles /etc/cont-init.d/02-reconcile-profiles
 
 # ---------- Runtime ----------

@@ -1,0 +1,51 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Let the unprivileged hermes user reach Fly's in-machine Machines API socket.
+#
+# Scale-to-zero self-suspend (gateway/scale_to_zero.py::suspend_self) POSTs
+# /v1/apps/$FLY_APP_NAME/machines/$FLY_MACHINE_ID/suspend over /.fly/api. Fly
+# creates that socket root:root 0755, and connect(2) on a unix socket requires
+# WRITE permission — so the gateway, which runs under ``s6-setuidgid hermes``
+# like every other Hermes runtime path, gets EACCES. The watcher then logs
+# "self-suspend not accepted (fail-awake)" and retries every idle window
+# forever, so the machine NEVER sleeps.
+#
+# The de-privileging (PR #30136, s6-overlay as PID 1) predates the self-suspend
+# by three months, so the two never met in review; the flaps call was written
+# against a runtime that had already stopped being root.
+#
+# Sibling of 015-supervise-perms: same shape, same reason — a root-time
+# permission fixup so the unprivileged runtime can use a facility that s6 or
+# Fly created owned by root.
+#
+# SCOPE OF WHAT THIS GRANTS — measured against live flaps, not assumed:
+#   permitted : suspend/stop THIS machine; POST /v1/tokens/oidc
+#   refused   : exec on this machine (403); update this machine's config (403);
+#               any operation targeting another app's machines (403)
+# The socket is self-scoped: this does NOT confer the Machines API at large and
+# does NOT make the agent root. The single capability reaching beyond this
+# machine is the OIDC token (iss https://oidc.fly.io/<org>), which is inert
+# unless some cloud role trusts that issuer — confirm that before relying on
+# this, and prefer a narrow root helper if such a trust ever exists.
+#
+# Off-Fly (local dev, CI, non-Fly hosts) the socket is absent and this no-ops.
+
+set -eu
+
+SOCKET=/.fly/api
+
+if [ ! -S "$SOCKET" ]; then
+    echo "[flaps-perms] $SOCKET not present; skipping (not a Fly machine)"
+    exit 0
+fi
+
+# root:hermes 0660 — the hermes group gains connect(2). This also drops the
+# world r-x bits Fly leaves on the socket, which nothing in this image uses.
+# Non-fatal on failure: a machine that can't self-suspend still runs fine (it
+# just stays awake), so this must never take the container down with it.
+chown root:hermes "$SOCKET" 2>/dev/null ||
+    echo "[flaps-perms] could not chown $SOCKET"
+chmod 0660 "$SOCKET" 2>/dev/null ||
+    echo "[flaps-perms] could not chmod $SOCKET"
+
+echo "[flaps-perms] $(ls -l "$SOCKET")"
