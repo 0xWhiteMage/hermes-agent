@@ -2705,31 +2705,24 @@ export interface Translations {
       lateAnswerHint: string
     }
     mcpSetup: {
-      connectTitle: (connectors: string) => string
+      lookingUp: (connectors: string) => string
       connectAction: string
       retryAction: string
-      done: string
-      summary: (connected: number, total: number) => string
+      grantAction: string
       phase: Record<'adding' | 'enabling' | 'installing' | 'probing' | 'signing_in', string>
       decline: string
       dismiss: string
-      declined: string
-      declinedOne: (server: string) => string
-      connected: (server: string) => string
-      skipped: (server: string) => string
-      failed: (server: string) => string
-      unanswered: string
       toolCount: (count: number) => string
       notFound: (connectors: string) => string
-      catalogSource: string
+      stateConnected: string
+      stateDeclined: string
+      stateFailed: string
       stateDisabled: string
       stateNeedsAuth: string
-      trustCatalog: string
-      trustOfficial: string
       trustVerified: (publisher: string) => string
       trustVerifiedTip: (publisher: string) => string
       trustCommunity: string
-      trustCommunityTip: string
+      trustCommunityTip: (host: string) => string
       envRequired: string
       sendFailed: string
       reloadFailed: string

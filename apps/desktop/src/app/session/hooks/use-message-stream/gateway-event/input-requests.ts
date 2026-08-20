@@ -169,6 +169,10 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
 
     const reason = typeof payload?.reason === 'string' ? payload.reason : ''
 
+    const steps = Array.isArray(payload?.steps)
+      ? payload.steps.filter((step): step is string => typeof step === 'string' && step.trim() !== '')
+      : []
+
     if (requestId && servers.length > 0) {
       setMcpSetupRequest({
         action,
@@ -176,7 +180,8 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         requestId,
         server: server || servers[0]!,
         servers,
-        sessionId: sessionId ?? null
+        sessionId: sessionId ?? null,
+        steps
       })
 
       if (sessionId) {

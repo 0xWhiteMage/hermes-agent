@@ -20,6 +20,11 @@ export interface McpSetupRequest {
   action: 'authorize' | 'connect' | 'enable' | 'install'
   /** Agent-supplied one-liner: why these help right now. */
   reason: string
+  /** Prerequisites the agent wrote for a connector that has none of its own.
+   *  A reviewed connector's manifest steps always win — those were checked;
+   *  these are the model's best account of an unreviewed setup, which still
+   *  beats the same account buried in a chat message above the card. */
+  steps: string[]
   sessionId: string | null
 }
 
@@ -30,6 +35,10 @@ export interface McpConnectorOutcome {
   detail?: string
   /** Tool names the connector brought in, when the flow learned them. */
   tools?: string[]
+  /** The failure was a refusal, not a fault: wrong key, expired grant, or a
+   *  grant that never covered the tools. Asking again is the fix, so the card
+   *  offers access rather than a retry. */
+  needsAuth?: boolean
 }
 
 /** The card's answer, serialized back through `mcp.setup.respond`.
@@ -42,34 +51,23 @@ export interface McpSetupOutcome {
 }
 
 /**
- * Fold a card's per-row results into the answer the tool gets.
+ * Fold each connector card's result into the one answer the tool gets.
  *
  * The aggregate is derived, never authoritative: `connectors` is the truth and
- * `status` only summarizes it, so a card that connected two of three reports
- * `partial` with both successes intact rather than collapsing to one verdict.
+ * `status` only summarizes it, so two of three connecting reports `partial`
+ * with both successes intact rather than collapsing to a single verdict.
  *
- * Rows with no result are filled in by intent. A row still switched on when
- * the user walked away without ever running a pass is `declined` — they said
- * no. Everything else (switched off, or abandoned partway through a pass) is
- * `skipped`, which tells the agent it was offered and passed over rather than
- * refused.
+ * A connector with no result was never connected — its card was dismissed, or
+ * the user walked away from the whole set — so it reports `declined`.
  */
 export function buildSetupOutcome(input: {
-  attempted: boolean
   names: string[]
   results: Record<string, McpConnectorOutcome>
-  selected: Record<string, boolean>
   server: string
 }): McpSetupOutcome {
-  const { attempted, names, results, selected, server } = input
+  const { names, results, server } = input
 
-  const connectors: McpConnectorOutcome[] = names.map(
-    name =>
-      results[name] ?? {
-        server: name,
-        status: selected[name] && !attempted ? 'declined' : 'skipped'
-      }
-  )
+  const connectors: McpConnectorOutcome[] = names.map(name => results[name] ?? { server: name, status: 'declined' })
 
   const connected = connectors.filter(connector => connector.status === 'connected').length
   const failed = connectors.some(connector => connector.status === 'error')
