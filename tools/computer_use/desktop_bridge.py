@@ -140,6 +140,10 @@ class DesktopBridgeBroker:
             )
         return resolved, matches[0]
 
+    def connection_count(self) -> int:
+        with self._lock:
+            return sum(len(items) for items in self._connections.values())
+
     def is_connected(self, scope: Optional[DesktopBridgeScope] = None) -> bool:
         try:
             self._matching_connection(scope)
@@ -153,11 +157,9 @@ class DesktopBridgeBroker:
         try:
             resolved, connection = self._matching_connection(scope)
         except RuntimeError as exc:
-            with self._lock:
-                total = sum(len(items) for items in self._connections.values())
             return {
                 "connected": False,
-                "connection_count": total,
+                "connection_count": self.connection_count(),
                 "error": str(exc),
             }
         with self._lock:
@@ -317,6 +319,17 @@ _BROKER = DesktopBridgeBroker()
 
 def desktop_bridge_connected(scope: Optional[DesktopBridgeScope] = None) -> bool:
     return _BROKER.is_connected(scope)
+
+
+def any_desktop_bridge_connected() -> bool:
+    """Whether any client holds a bridge socket, ignoring scope.
+
+    Only for questions that are genuinely about the process — "should this
+    backend advertise computer_use at all" — never for deciding whose screen a
+    call reaches. That one goes through :func:`desktop_bridge_connected`, which
+    matches the caller's verified scope and fails closed.
+    """
+    return _BROKER.connection_count() > 0
 
 
 def desktop_bridge_info(

@@ -8,6 +8,7 @@ import pytest
 
 from tools.computer_use.backend import CaptureResult, UIElement
 from tools.computer_use.bridge import capture_to_payload
+from tools.computer_use.bridge_providers import DESKTOP_BRIDGE_PROVIDER_NAME
 from tools.computer_use.desktop_bridge import (
     DesktopBridgeBroker,
     DesktopBridgeScope,
@@ -125,6 +126,9 @@ def test_tool_backend_lookup_dispatches_only_to_current_principal_and_falls_back
     from tools.computer_use import tool as computer_use_tool
 
     class LocalFallback:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
         def start(self):
             return None
 
@@ -147,15 +151,24 @@ def test_tool_backend_lookup_dispatches_only_to_current_principal_and_falls_back
         bob_handler = asyncio.create_task(broker.handle_ws(bob_ws, bob))
         await asyncio.sleep(0)
 
+        configured = {"provider": "local"}
+
         monkeypatch.setattr(desktop_bridge, "_BROKER", broker)
         monkeypatch.setattr(
-            computer_use_tool, "configured_computer_use_backend", lambda: "cua"
+            "hermes_cli.config.load_config",
+            lambda: {"computer_use": dict(configured)},
         )
         monkeypatch.setattr(
             "hermes_cli.profiles.get_active_profile_name", lambda: "default"
         )
         monkeypatch.setattr(
             "tools.computer_use.cua_backend.CuaDriverBackend", LocalFallback
+        )
+        # The host provider gates on a real cua-driver install; this test is
+        # about which machine a call routes to, not about that binary.
+        monkeypatch.setattr(
+            "tools.computer_use.host_provider.HostCuaProvider.is_available",
+            lambda _self: True,
         )
 
         async def dispatch_for(subject):
@@ -185,18 +198,16 @@ def test_tool_backend_lookup_dispatches_only_to_current_principal_and_falls_back
         assert json.loads(await bob_call)["apps"] == [{"name": "bob-desktop"}]
 
         unmatched = json.loads(await dispatch_for("mallory"))
-        assert unmatched["apps"] == [{"name": "backend-local"}]
+        assert unmatched.get("apps") == [{"name": "backend-local"}], unmatched
         assert alice_ws.sent.empty()
         assert bob_ws.sent.empty()
 
+        # Pinning the provider is how a shared gateway refuses that fallback.
         computer_use_tool.reset_backend_for_tests()
-        monkeypatch.setattr(
-            computer_use_tool,
-            "configured_computer_use_backend",
-            lambda: "desktop",
-        )
+        configured["provider"] = DESKTOP_BRIDGE_PROVIDER_NAME
         fail_closed = json.loads(await dispatch_for("mallory"))
         assert "not connected for the authenticated principal" in fail_closed["error"]
+        configured["provider"] = "local"
 
         await alice_ws.disconnect()
         await alice_handler
@@ -283,12 +294,20 @@ def test_tui_branch_turn_keeps_parent_profile_bridge_scope(monkeypatch, tmp_path
     from tui_gateway import server
     from tui_gateway.transport import bind_transport, reset_transport
 
+    from hermes_state import SessionDB
+
     root = tmp_path / ".hermes"
     profile_home = root / "profiles" / "work"
     profile_home.mkdir(parents=True)
     parent_key = "20260713_100000_parent"
     child_key = "20260713_100001_child"
     principal = ("ticket", "alice")
+
+    # session.branch writes the child into the PARENT PROFILE's state.db, and
+    # the child row carries a foreign key to its parent. Seed the parent there.
+    seed_db = SessionDB(db_path=profile_home / "state.db")
+    seed_db.create_session(parent_key, "desktop")
+    seed_db.close()
 
     class _Transport:
         authenticated_principal = principal

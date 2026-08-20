@@ -21,7 +21,8 @@ from tools.computer_use.bridge import (
     make_bridge_handler,
     run_bridge_server,
 )
-from tools.computer_use.tool import configured_computer_use_backend
+from tools.computer_use.bridge_providers import HTTP_BRIDGE_PROVIDER_NAME
+from tools.computer_use.tool import active_computer_use_provider
 
 
 def test_capture_payload_round_trips_elements_and_image_metadata():
@@ -190,18 +191,18 @@ def test_bridge_behavioral_env_vars_are_ignored(monkeypatch):
     assert backend.timeout == 30
 
 
-def test_bridge_backend_mode_and_timeout_come_from_config(monkeypatch):
+def test_bridge_provider_and_timeout_come_from_config(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
         lambda: {
             "computer_use": {
-                "backend": "bridge",
+                "provider": HTTP_BRIDGE_PROVIDER_NAME,
                 "bridge_timeout_seconds": 12.5,
             }
         },
     )
 
-    assert configured_computer_use_backend() == "bridge"
+    assert active_computer_use_provider().name == HTTP_BRIDGE_PROVIDER_NAME
     backend = HttpComputerUseBridgeBackend(
         url="http://127.0.0.1:8765", token="secret"
     )
