@@ -727,25 +727,28 @@ jobs:
           echo "ATS_DLIB=tools/Microsoft.Trusted.Signing.Client/bin/x64/Azure.CodeSigning.Dlib.dll" >> "$GITHUB_ENV"
 
       - name: Bundle the per-arch packages
-        shell: bash
+        # PowerShell, not bash: git-bash rewrites leading-slash args into
+        # Windows paths before the child sees them (makeappx got 'O:/' for
+        # '/o' — run 32307837608). pwsh passes /o /bv /d /p verbatim.
+        shell: pwsh
         run: |
-          shopt -s nullglob
-          msix=(msix-in/*.msix)
-          if [ ${#msix[@]} -ne 2 ]; then
-            echo "::error::expected exactly 2 .msix packages (x64 + arm64), found ${#msix[@]}: ${msix[*]}"
+          $msix = @(Get-ChildItem msix-in -Filter *.msix)
+          if ($msix.Count -ne 2) {
+            Write-Host "::error::expected exactly 2 .msix packages (x64 + arm64), found $($msix.Count): $($msix.Name -join ', ')"
             exit 1
-          fi
+          }
           # HermesBundled-0.28.0-win-x64.msix → HermesBundled-0.28.0-win.msixbundle
-          base="$(basename "${msix[0]}" .msix)"
-          name="${base%-*}"
+          $base = $msix[0].BaseName
+          $name = $base -replace '-[^-]+$', ''
           # Bundle version: the numeric prefix of the app version, in the
           # X.Y.Z.0 form the inner manifests carry (prerelease suffixes
           # like -nightly.N are not representable in a bundle version).
-          version="$(printf '%s' "$name" | sed -E 's/^[A-Za-z]+-//; s/-win$//; s/-.*$//')"
-          mkdir staging
-          cp "${msix[@]}" staging/
-          "$KITS_BIN/makeappx.exe" bundle /o /bv "$version.0" /d staging /p "$name.msixbundle"
-          echo "BUNDLE_PATH=$name.msixbundle" >> "$GITHUB_ENV"
+          $version = $name -replace '^[A-Za-z]+-', '' -replace '-win$', '' -replace '-.*$', ''
+          New-Item -ItemType Directory staging | Out-Null
+          Copy-Item $msix.FullName staging/
+          & "$env:KITS_BIN/makeappx.exe" bundle /o /bv "$version.0" /d staging /p "$name.msixbundle"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "BUNDLE_PATH=$name.msixbundle" | Out-File -Append $env:GITHUB_ENV
 
       - name: Azure login (OIDC)
         if: vars.AZURE_CLIENT_ID != ''
@@ -760,7 +763,9 @@ jobs:
       # comes 20+ minutes in).
       - name: Sign the bundle
         if: vars.AZURE_CLIENT_ID != ''
-        shell: bash
+        # pwsh for the same reason as the bundle step: /fd /td /tr /dlib
+        # /dmdf /pa are all shapes git-bash would rewrite.
+        shell: pwsh
         env:
           AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
@@ -769,22 +774,25 @@ jobs:
           AZURE_SIGN_PROFILE: ${{ vars.AZURE_SIGN_PROFILE }}
           AZURE_TOKEN_CREDENTIALS: prod
         run: |
-          file="$RUNNER_TEMP/azure-federated-token"
-          curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" \
-            | jq -r .value > "$file"
-          export AZURE_FEDERATED_TOKEN_FILE="$file"
-          cat > sign-metadata.json <<EOF
-          {
-            "Endpoint": "$AZURE_SIGN_ENDPOINT",
-            "CodeSigningAccountName": "$AZURE_SIGN_ACCOUNT",
-            "CertificateProfileName": "$AZURE_SIGN_PROFILE"
-          }
-          EOF
-          "$KITS_BIN/signtool.exe" sign /fd SHA256 /td SHA256 \
-            /tr http://timestamp.acs.microsoft.com \
-            /dlib "$ATS_DLIB" /dmdf sign-metadata.json "$BUNDLE_PATH"
-          "$KITS_BIN/signtool.exe" verify /pa "$BUNDLE_PATH"
+          $file = Join-Path $env:RUNNER_TEMP 'azure-federated-token'
+          $resp = Invoke-RestMethod -Uri "$env:ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" `
+            -Headers @{ Authorization = "bearer $env:ACTIONS_ID_TOKEN_REQUEST_TOKEN" }
+          # -NoNewline + ascii: notarytool precedent says trust the traced
+          # code, and the dlib reads the file verbatim — a BOM or trailing
+          # newline is part of the token to it.
+          [System.IO.File]::WriteAllText($file, $resp.value)
+          $env:AZURE_FEDERATED_TOKEN_FILE = $file
+          @{
+            Endpoint = $env:AZURE_SIGN_ENDPOINT
+            CodeSigningAccountName = $env:AZURE_SIGN_ACCOUNT
+            CertificateProfileName = $env:AZURE_SIGN_PROFILE
+          } | ConvertTo-Json | Set-Content sign-metadata.json
+          & "$env:KITS_BIN/signtool.exe" sign /fd SHA256 /td SHA256 `
+            /tr http://timestamp.acs.microsoft.com `
+            /dlib "$env:ATS_DLIB" /dmdf sign-metadata.json "$env:BUNDLE_PATH"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:KITS_BIN/signtool.exe" verify /pa "$env:BUNDLE_PATH"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
