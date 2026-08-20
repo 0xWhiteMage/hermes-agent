@@ -52,7 +52,6 @@ const identity = {
   displayName: name.display,
   appId: `com.nousresearch.${name.kebab}`,
   channel: light ? (nightly ? 'light-nightly' : 'light') : (nightly ? 'nightly' : 'latest'),
-  protocolScheme: name.kebab,
   appNamePascal: name.pascal,
   msixAppIdWithOrg: `NousResearch.${name.pascal}`
 }

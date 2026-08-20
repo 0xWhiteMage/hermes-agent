@@ -12,8 +12,6 @@ interface ProductIdentity {
   /** electron-updater feed channel this build publishes to. Stable tags:
    *  "latest" | "light"; nightly tags: "nightly" | "light-nightly". */
   channel: string
-  /** Deep-link scheme this artifact owns. e.g. "hermes-light" | "hermes". */
-  protocolScheme: string
 }
 
 declare const identity: ProductIdentity

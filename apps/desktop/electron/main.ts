@@ -121,7 +121,7 @@ import {
 } from './connection-registry'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
-import { type DeepLinkRoute, deepLinkScheme, routeDeepLink } from './deep-link-route'
+import { type DeepLinkRoute, routeDeepLink } from './deep-link-route'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
 import { installDesktopPluginFromGit, probePluginRepo } from './desktop-plugin-install'
@@ -16047,15 +16047,9 @@ ipcMain.handle('hermes:vscode-theme:search', async (_event, query) => searchMark
 // running app. Three delivery paths: macOS 'open-url',
 // Win/Linux running-app 'second-instance' (argv), Win/Linux cold-start argv.
 // ---------------------------------------------------------------------------
-// Variant-owned scheme (hermes:// vs hermes-light://): side-by-side installs
-// must not fight over one OS handler registration. Contract with the build:
-// deep-link-route.ts deepLinkScheme. Dev (`HERMES_DESKTOP_DEV_SERVER`)
-// registers hermes-dev:// instead — bare Electron or a stale OS handler
-// often owns the production scheme on dev machines.
-const VARIANT_PROTOCOL: string = deepLinkScheme(INSTALL_STAMP?.payload)
-const HERMES_PROTOCOL: string = DEV_SERVER ? 'hermes-dev' : VARIANT_PROTOCOL
+const HERMES_PROTOCOL: string = DEV_SERVER ? 'hermes-dev' : 'hermes'
 /** Schemes accepted when parsing inbound URLs (dev accepts both). */
-const DEEPLINK_SCHEMES: string[] = DEV_SERVER ? ['hermes-dev', VARIANT_PROTOCOL] : [VARIANT_PROTOCOL]
+const DEEPLINK_SCHEMES: string[] = DEV_SERVER ? ['hermes-dev', 'hermes'] : ['hermes']
 let _pendingDeepLink = null
 let _rendererReadyForDeepLink = false
 

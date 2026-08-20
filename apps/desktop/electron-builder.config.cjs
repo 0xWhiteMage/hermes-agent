@@ -31,7 +31,6 @@ const {
   appId,
   appNamePascal,
   channel,
-  protocolScheme,
   msixAppIdWithOrg
 } = require('./product-identity.cjs')
 
@@ -54,7 +53,7 @@ module.exports = {
   protocols: [
     {
       name: `${displayName} Protocol`,
-      schemes: [protocolScheme]
+      schemes: ["hermes"]
     }
   ],
   // separate variants for release filenames
@@ -266,9 +265,9 @@ function copilotKeyFragmentPath() {
       Description="Launch ${displayName} with the Copilot key"
       PublicFolder="Public">
     <uap3:Properties>
-      <SingleTap>${protocolScheme}://copilot-key/start?state=Tap</SingleTap>
-      <PressAndHoldStart>${protocolScheme}://copilot-key/start?state=Down</PressAndHoldStart>
-      <PressAndHoldStop>${protocolScheme}://copilot-key/stop?state=Up</PressAndHoldStop>
+      <SingleTap>hermes://copilot-key/start?state=Tap</SingleTap>
+      <PressAndHoldStart>hermes://copilot-key/start?state=Down</PressAndHoldStart>
+      <PressAndHoldStop>hermes://copilot-key/stop?state=Up</PressAndHoldStop>
     </uap3:Properties>
   </uap3:AppExtension>
 </uap3:Extension>
