@@ -159,50 +159,120 @@ def _tui_embedded_pane_clarifier(hint: str) -> str:
 
 
 def _pending_connectors_hint() -> str:
-    """Name the connectors the user opted into but hasn't connected yet.
+    """Name the apps that can be connected on the spot, and the rule for them.
 
-    ``mcp.connectors`` is an intent list written by the desktop onboarding
-    step: "these are the apps I use." It is deliberately NOT the same thing
-    as ``mcp_servers`` — nothing was configured and no credential was
-    collected, because the whole point is to defer sign-in to the moment a
-    task actually needs the app. Telling the agent about the gap is what
-    closes the loop: it knows to raise a setup card instead of apologizing
-    that it can't reach Linear.
+    Three sources. The first two are offers, minus whatever is already in
+    ``mcp_servers``:
 
-    Read once, here, with the rest of the stable prefix. The list is intent
-    rather than live state, so it can't shift mid-conversation and break the
-    prompt cache — and a connector that IS configured drops off the list on
-    the next session, which is exactly when the prompt is rebuilt anyway.
+    * ``mcp.connectors`` — an intent list written by the desktop onboarding
+      step: "these are the apps I use." Deliberately NOT ``mcp_servers``:
+      nothing was configured and no credential was collected, because the
+      point is to defer sign-in to the moment a task needs the app.
+    * the reviewed catalog — every connector that exists whether or not the
+      user ever saw the picker. Without it a user who skipped onboarding gets
+      no hint at all, and the model has no way to know Linear is one call
+      away. Asked to "check my linear backlog" it does what any model without
+      that knowledge does: greps the environment for an API key and asks the
+      user to paste one.
+
+    The third is a recovery: a server sitting in ``mcp_servers`` with
+    ``auth: oauth`` and no token on disk. Being configured is not being
+    usable — an abandoned sign-in leaves an entry that 401s on every connect
+    and parks. Left off this list it would be invisible twice over: excluded
+    from the offers as "already configured", and silent in the tool schema
+    because a parked server registers nothing. ``setup_mcp`` resolves it to
+    ``needs_auth`` and goes straight to the browser, so naming it is the whole
+    retry path.
+
+    The rule matters more than the list. The failure mode is not "refuses" —
+    it is *asking*: for a key, or for which way to authenticate, or offering
+    to hand-roll the vendor's REST API instead. Every one of those is the
+    card's job.
+
+    Read once, here, with the rest of the stable prefix. Both lists are
+    static for the life of a session — intent and an on-disk catalog — so
+    they cannot shift mid-conversation and break the prompt cache, and a
+    connector that gets configured drops off on the next session, which is
+    when the prompt is rebuilt anyway.
     """
     try:
         from hermes_cli.config import load_config_readonly
 
         config = load_config_readonly()
-        wanted = (config.get("mcp") or {}).get("connectors")
-        if not isinstance(wanted, list):
-            return ""
 
         configured = config.get("mcp_servers")
         configured_names = set(configured) if isinstance(configured, dict) else set()
 
-        pending = [
-            name
-            for name in dict.fromkeys(str(item).strip() for item in wanted)
-            if name and name not in configured_names
+        mcp_section = config.get("mcp")
+        wanted = mcp_section.get("connectors") if isinstance(mcp_section, dict) else None
+        wanted_names = [str(item).strip() for item in wanted] if isinstance(wanted, list) else []
+
+        stated = [
+            name for name in dict.fromkeys(wanted_names) if name and name not in configured_names
         ]
+
     except Exception:
         return ""
 
-    if not pending:
+    try:
+        from hermes_cli.mcp_catalog import list_catalog
+
+        available = [
+            entry.name
+            for entry in list_catalog()
+            if entry.name not in configured_names and entry.name not in stated
+        ]
+    except Exception:
+        # An unreadable catalog costs the broader offer, not the wishlist.
+        available = []
+
+    try:
+        from hermes_cli.mcp_config import _oauth_tokens_present
+
+        signed_out = [
+            name
+            for name, entry in (configured if isinstance(configured, dict) else {}).items()
+            if isinstance(entry, dict)
+            and entry.get("auth") == "oauth"
+            and not _oauth_tokens_present(name)
+        ]
+    except Exception:
+        signed_out = []
+
+    if not stated and not available and not signed_out:
         return ""
 
-    return (
-        "The user has told us they use these apps, but they are not connected "
-        f"yet: {', '.join(pending)}. When a task needs one of them, call "
-        "setup_mcp with that connector name instead of saying you lack access "
-        "— the card handles sign-in inline. Do not set them up preemptively, "
-        "and drop one for the rest of the session if they decline it."
+    lines = []
+
+    if signed_out:
+        lines.append(
+            "These connectors are configured but signed out, so their tools "
+            f"will not answer until sign-in finishes: {', '.join(signed_out)}."
+        )
+
+    if stated:
+        lines.append(
+            "The user has told us they use these apps, but they are not "
+            f"connected yet: {', '.join(stated)}."
+        )
+
+    if available:
+        lines.append(f"These connectors can also be set up on the spot: {', '.join(available)}.")
+
+    lines.append(
+        "When a task needs one of them, call setup_mcp with that connector "
+        "name, and reach for it before any workaround — a terminal command, a "
+        "raw HTTP call, or asking the user to go configure something. Do not "
+        "ask them for an API key or token, and do not ask which way they want "
+        "to authenticate: the card collects whatever that connector needs "
+        "(nothing, a key, or a browser sign-in) inline. Do not set them up "
+        "preemptively. If they decline, drop that connector for the request "
+        "in hand and carry on without it — but a decline is not permanent. A "
+        "later task that needs the same connector is a fresh ask, and so is a "
+        "retry after one that failed."
     )
+
+    return " ".join(lines)
 
 
 def _plugin_session_info(agent: Any) -> Dict[str, str]:

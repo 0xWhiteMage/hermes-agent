@@ -144,6 +144,54 @@ def test_non_json_answer_wrapped_as_error_status():
     assert result["status"] == "error"
 
 
+def test_steps_reach_a_callback_that_takes_them():
+    seen = {}
+
+    def callback(servers, action, reason, steps=()):
+        seen["steps"] = list(steps)
+        return json.dumps({"status": "declined", "server": servers[0]})
+
+    setup_mcp_tool(
+        server="acme",
+        steps=["Create a token at [Settings](https://acme.test/settings)", "  ", "Paste it below"],
+        callback=callback,
+    )
+
+    # Blanks dropped, order kept — a checklist with a hole in it reads as a
+    # step the user missed.
+    assert seen["steps"] == [
+        "Create a token at [Settings](https://acme.test/settings)",
+        "Paste it below",
+    ]
+
+
+def test_a_callback_that_predates_steps_still_gets_its_card():
+    """The card matters more than the checklist. A surface wired before steps
+    existed should show the connector, not raise a TypeError at the user."""
+    calls = []
+
+    def old_callback(servers, action, reason):
+        calls.append(servers)
+        return json.dumps({"status": "declined", "server": servers[0]})
+
+    result = json.loads(setup_mcp_tool(server="acme", steps=["do a thing"], callback=old_callback))
+
+    assert result["status"] == "declined"
+    assert calls == [["acme"]]
+
+
+def test_an_essay_is_trimmed_to_a_checklist():
+    seen = {}
+
+    def callback(servers, action, reason, steps=()):
+        seen["steps"] = list(steps)
+        return json.dumps({"status": "declined", "server": servers[0]})
+
+    setup_mcp_tool(server="acme", steps=[f"step {i}" for i in range(20)], callback=callback)
+
+    assert len(seen["steps"]) == 6
+
+
 @pytest.mark.parametrize("action", ["connect", "install", "enable", "authorize"])
 def test_all_actions_accepted(action):
     result = json.loads(

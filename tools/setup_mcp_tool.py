@@ -40,6 +40,11 @@ _ACTIONS = ("connect", "install", "enable", "authorize")
 # being asked to audit a list rather than consent to it.
 _MAX_CONNECTORS = 5
 
+# Prerequisites are a short checklist, not a manual. Past a handful the card
+# stops being something the user reads before clicking Connect.
+_MAX_STEPS = 6
+_MAX_STEP_CHARS = 200
+
 
 def _connector_names(server: str, servers: Any) -> List[str]:
     """Merge the singular and list forms into deduplicated, ordered names."""
@@ -67,11 +72,61 @@ def _connector_names(server: str, servers: Any) -> List[str]:
     return names
 
 
+def _clean_steps(steps: Any) -> List[str]:
+    """Normalize model-supplied prerequisites into short, ordered lines."""
+    if isinstance(steps, str):
+        try:
+            decoded = json.loads(steps)
+        except (TypeError, ValueError):
+            decoded = [steps]
+        steps = decoded if isinstance(decoded, list) else [steps]
+
+    if not isinstance(steps, (list, tuple)):
+        return []
+
+    cleaned = []
+    for item in steps:
+        text = " ".join(str(item or "").split())
+        if text:
+            cleaned.append(text[:_MAX_STEP_CHARS])
+
+    return cleaned[:_MAX_STEPS]
+
+
+def _invoke_setup_callback(
+    callback: Callable, names: List[str], action: str, reason: str, steps: List[str]
+):
+    """Call the platform callback, passing steps only if it takes them.
+
+    Signature inspection rather than a TypeError retry: a retry would re-run a
+    callback that raised TypeError internally, and this one puts a card in
+    front of the user — showing it twice is worse than dropping the steps.
+    """
+    if not steps:
+        return callback(names, action, reason)
+
+    import inspect
+
+    try:
+        params = inspect.signature(callback).parameters
+        takes_steps = "steps" in params or any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
+    except (TypeError, ValueError):
+        takes_steps = False
+
+    if not takes_steps:
+        return callback(names, action, reason)
+
+    return callback(names, action, reason, steps=steps)
+
+
 def setup_mcp_tool(
     server: str = "",
     servers: Any = None,
     action: str = "connect",
     reason: str = "",
+    steps: Any = None,
     callback: Optional[Callable] = None,
 ) -> str:
     """Ask the desktop GUI to run a connector setup flow; return its JSON outcome."""
@@ -97,7 +152,7 @@ def setup_mcp_tool(
         return tool_error(f"action must be one of {', '.join(_ACTIONS)}.")
 
     try:
-        raw = callback(names, action, (reason or "").strip())
+        raw = _invoke_setup_callback(callback, names, action, (reason or "").strip(), _clean_steps(steps))
     except Exception as exc:
         return tool_error(f"Connector setup flow failed: {exc}")
 
@@ -164,7 +219,13 @@ SETUP_MCP_SCHEMA = {
         "user asks to add/set up a connector (e.g. \"add the linear mcp\"), or "
         "when a task clearly needs one that is missing or signed out. Pass "
         "several names in `servers` to ask once instead of one card at a time. "
-        "Never call it again for a connector the user already declined. "
+        "This is the only way to set a connector up: do not ask the user for an "
+        "API key or token, do not ask which authentication method they want, "
+        "and do not offer to call the vendor's REST API by hand instead. "
+        "A decline applies to the request in hand, not forever: drop the "
+        "connector and continue without it rather than re-offering it to "
+        "finish the same task, but a later task that needs it — or a retry "
+        "after an attempt that failed — is a fresh ask. "
         "Returns JSON {status: connected|partial|declined|unanswered|error, "
         "connectors: [{server, status, tools?, detail?}]}. On declined or "
         "unanswered, continue without the connector. Connectors can come from "
@@ -204,6 +265,21 @@ SETUP_MCP_SCHEMA = {
                     "right now (e.g. \"To read the JIRA ticket you linked\")."
                 ),
             },
+            "steps": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Prerequisites the user must do elsewhere before the "
+                    "connector can work — creating a cloud project, enabling "
+                    "an API, turning on a plugin. Max 6 short lines, in order, "
+                    "with markdown links to the exact page: \"Create a token "
+                    "at [Settings > API](https://example.com/settings/api)\". "
+                    "Reviewed connectors already carry their own steps and "
+                    "will ignore these; supply them for a connector that has "
+                    "none, instead of explaining the setup in chat where the "
+                    "user has to hold it in their head while filling the card."
+                ),
+            },
         },
         "required": [],
     },
@@ -219,6 +295,7 @@ registry.register(
         servers=args.get("servers"),
         action=args.get("action", "connect"),
         reason=args.get("reason", ""),
+        steps=args.get("steps"),
         callback=kw.get("callback"),
     ),
     emoji="🔌",
