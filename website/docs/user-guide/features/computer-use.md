@@ -185,14 +185,19 @@ export HERMES_COMPUTER_USE_BRIDGE_TOKEN="$(python -c 'import secrets; print(secr
 hermes computer-use bridge --host 127.0.0.1 --port 8765
 ```
 
-Then expose that loopback-only bridge to the backend with SSH/VPN tunnelling and point the backend at it:
+Then expose that loopback-only bridge to the backend with SSH/VPN tunnelling and point the backend at it. The URL is behavior, so it lives in `config.yaml`; only the shared token is a secret:
+
+```yaml
+# Remote backend host — ~/.hermes/config.yaml
+computer_use:
+  provider: http-bridge
+  bridge_url: http://127.0.0.1:18765
+```
 
 ```bash
 # Remote backend host
 ssh -N -L 18765:127.0.0.1:8765 mac-host
-export HERMES_COMPUTER_USE_BACKEND=bridge
-export HERMES_COMPUTER_USE_BRIDGE_URL=http://127.0.0.1:18765
-export HERMES_COMPUTER_USE_BRIDGE_TOKEN="<same token>"
+echo 'HERMES_COMPUTER_USE_BRIDGE_TOKEN=<same token>' >> ~/.hermes/.env
 hermes serve --host 0.0.0.0 --port 9119
 ```
 
@@ -441,6 +446,9 @@ computer_use:
   provider: local
 ```
 
+`http-bridge` drives a desktop running [`hermes computer-use bridge`](#remote-desktoplocal-tool-bridge)
+at `computer_use.bridge_url`.
+
 A plugin can register other providers — a per-task container pool, a leased
 cloud sandbox — by calling `ctx.register_computer_use_provider()`. Name one
 here to activate it. Registering never activates on its own: an unrecognized
@@ -450,6 +458,14 @@ clicking the user's screen.
 
 `noop` is built in for tests and CI — it records calls and has no side
 effects.
+
+Hermes Desktop's own bridge is the exception and is normally absent from this
+setting. It belongs to a connection rather than to the backend: the same
+gateway process can serve a Desktop client with a bridge, a phone on Telegram,
+and a cron job at once, so it is resolved per session from the socket the app
+authenticated on. Naming `desktop-bridge` here is still meaningful on a shared
+gateway — it pins the answer to "a Desktop I authenticated, or nothing", so a
+cron tick fails instead of falling back to driving the server's own screen.
 
 `HERMES_COMPUTER_USE_BACKEND` did this before `computer_use.provider` existed.
 It still wins where it is set, and warns once per process.

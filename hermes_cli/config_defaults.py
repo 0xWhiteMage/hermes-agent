@@ -4240,6 +4240,15 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "HERMES_COMPUTER_USE_BRIDGE_TOKEN": {
+        "description": "Bearer token shared by `hermes computer-use bridge` and the backend that drives it",
+        "prompt": "Computer Use bridge token",
+        "url": None,
+        "tools": ["computer_use"],
+        "password": True,
+        "category": "tool",
+        "advanced": True,
+    },
     "PORCUPINE_ACCESS_KEY": {
         "description": "Picovoice access key for the Porcupine 'Hey Hermes' wake word engine (optional; openWakeWord is the free default)",
         "prompt": "Picovoice access key",

@@ -88,27 +88,36 @@ class TestRegistration:
         assert cua_backend.resolve_cua_driver_cmd() == str(driver)
         assert cua_backend.cua_driver_binary_available() is True
 
-    def test_check_fn_true_for_configured_bridge_backend_without_local_driver(self):
+    def test_check_fn_true_for_configured_bridge_provider_without_local_driver(self):
         from tools.computer_use import tool as cu_tool
-        env = {
-            "HERMES_COMPUTER_USE_BACKEND": "bridge",
-            "HERMES_COMPUTER_USE_BRIDGE_URL": "http://127.0.0.1:8765",
-            "HERMES_COMPUTER_USE_BRIDGE_TOKEN": "secret",
+        config = {
+            "computer_use": {
+                "provider": "http-bridge",
+                "bridge_url": "http://127.0.0.1:8765",
+            }
         }
+        cu_tool.reset_backend_for_tests()
         with patch("tools.computer_use.tool.sys.platform", "linux"), \
-             patch.dict(os.environ, env, clear=False), \
+             patch("hermes_cli.config.load_config", return_value=config), \
+             patch.dict(os.environ, {"HERMES_COMPUTER_USE_BRIDGE_TOKEN": "secret"}, clear=False), \
              patch("tools.computer_use.cua_backend.cua_driver_binary_available", return_value=False):
             assert cu_tool.check_computer_use_requirements() is True
+        cu_tool.reset_backend_for_tests()
 
-    def test_check_fn_false_for_bridge_backend_without_token(self):
+    def test_check_fn_false_for_bridge_provider_without_token(self):
         from tools.computer_use import tool as cu_tool
-        env = {
-            "HERMES_COMPUTER_USE_BACKEND": "bridge",
-            "HERMES_COMPUTER_USE_BRIDGE_URL": "http://127.0.0.1:8765",
+        config = {
+            "computer_use": {
+                "provider": "http-bridge",
+                "bridge_url": "http://127.0.0.1:8765",
+            }
         }
+        cu_tool.reset_backend_for_tests()
         with patch("tools.computer_use.tool.sys.platform", "linux"), \
-             patch.dict(os.environ, env, clear=True):
+             patch("hermes_cli.config.load_config", return_value=config), \
+             patch.dict(os.environ, {}, clear=True):
             assert cu_tool.check_computer_use_requirements() is False
+        cu_tool.reset_backend_for_tests()
 
 
 # ---------------------------------------------------------------------------

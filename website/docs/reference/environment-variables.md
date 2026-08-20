@@ -566,13 +566,16 @@ Three dashboard-auth providers ship in the box. For a remote Hermes Desktop conn
 
 Settings for forwarding `computer_use` calls from a remote backend to a local desktop bridge. See [Computer Use → Remote Desktop/local-tool bridge](/user-guide/features/computer-use#remote-desktoplocal-tool-bridge).
 
+Which machine the agent drives, where the bridge lives, and how long a call may
+take are behavior, so they are `config.yaml` keys — `computer_use.provider`,
+`computer_use.bridge_url`, `computer_use.bridge_timeout_seconds`. The bearer
+token is the one secret here, and the only one of the set that belongs in
+`.env`.
+
 | Variable | Description |
 |----------|-------------|
-| `HERMES_COMPUTER_USE_BACKEND` | Backend mode for Computer Use. `bridge` uses the manual HTTP bridge; `desktop-bridge` / `desktop` uses a live Hermes Desktop reverse-WebSocket bridge when Desktop is connected. |
-| `HERMES_DESKTOP_REMOTE_COMPUTER_USE_BRIDGE` | Desktop-side override for remote backends. Set to `0` to disable Desktop's managed local Computer Use bridge for remote connections. The in-app Gateway setting is used when this env var is unset. |
-| `HERMES_COMPUTER_USE_BRIDGE_URL` | Backend-side URL of the manual HTTP bridge, typically a loopback SSH tunnel such as `http://127.0.0.1:18765`. Also configurable as `computer_use.bridge_url`. |
-| `HERMES_COMPUTER_USE_BRIDGE_TOKEN` | Bearer token shared by the bridge server and backend client. Store it in `~/.hermes/.env`, not shell history. Also configurable as `computer_use.bridge_token`. |
-| `HERMES_COMPUTER_USE_BRIDGE_TIMEOUT` | Backend-side HTTP timeout in seconds for bridge calls (default `30`). Raise for slow captures over high-latency links. |
+| `HERMES_COMPUTER_USE_BRIDGE_TOKEN` | Bearer token shared by the bridge server and the backend client. Store it in `~/.hermes/.env`, not shell history. |
+| `HERMES_COMPUTER_USE_BACKEND` | Deprecated predecessor of `computer_use.provider`. Still wins where it is set, and warns once per process. |
 
 ### Microsoft Graph (Teams Meetings)
 
