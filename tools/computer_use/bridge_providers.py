@@ -130,6 +130,13 @@ class DesktopBridgeProvider(ComputerUseProvider):
     def create_backend(self, session_id: str, permission_mode: str) -> "ComputerUseBackend":
         from tools.computer_use.desktop_bridge import DesktopComputerUseBridgeBackend
 
+        # Refuse here rather than hand back a backend with nothing on the far
+        # end. This provider is only reached by name when config pinned it, so
+        # the caller asked for a Desktop specifically: say that none answered
+        # instead of letting a request time out against a dead socket.
+        if not self.is_available():
+            raise RuntimeError(self.unavailable_reason())
+
         return DesktopComputerUseBridgeBackend()
 
     def get_status(self) -> Dict[str, Any]:
