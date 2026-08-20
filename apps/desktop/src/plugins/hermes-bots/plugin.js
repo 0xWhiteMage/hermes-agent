@@ -3468,6 +3468,69 @@ function isCanonicalBotChatHistory(history) {
   return rootTitle === 'Bot Chat' || (!rootTitle && title === 'Bot Chat')
 }
 
+/** Last-resort recovery when the pinned id is dead AND no adoptable history
+ *  was handed in: the canonical Bot Chat is hidden from the roster's
+ *  last_session/preferred_session (both computed from a hidden-EXCLUDING
+ *  query), so a stale/never-persisted pin used to fall straight through to
+ *  createCanonicalChat and reintroduce the bot on a brand-new session while
+ *  the real forever-chat sat intact but hidden on disk. Browse the profile's
+ *  own hidden sessions (the same include_hidden view the Sessions submenu
+ *  uses) and adopt the existing "Bot Chat" instead of minting a new one.
+ *  Returns the adoptable stored id, or null when there genuinely isn't one. */
+async function findExistingCanonicalBotChat(name) {
+  if (typeof host.request !== 'function') {
+    return null
+  }
+
+  let rows
+  try {
+    const res = await host.request('session.list', {
+      profile: name,
+      limit: PROFILE_SESSION_LIST_LIMIT,
+      include_hidden: true
+    })
+    rows = res?.sessions ?? res?.rows ?? (Array.isArray(res) ? res : null)
+  } catch {
+    // Older gateway without include_hidden (or a transient failure): no safe
+    // adoption target — the caller keeps its existing behavior.
+    return null
+  }
+
+  if (!Array.isArray(rows)) {
+    return null
+  }
+
+  // Prefer the most recently active canonical Bot Chat. session.list is
+  // already newest-first, so the first match wins.
+  for (const row of rows) {
+    if (isCanonicalBotChatHistory(row)) {
+      return row.resolved_id || row.id || row.session_id || null
+    }
+  }
+
+  return null
+}
+
+/** Adopt the profile's existing hidden Bot Chat if one exists; else mint a
+ *  fresh canonical chat. Centralizes the dead-pin / no-history recovery so
+ *  every branch reintroduces the bot ONLY when there is truly no forever-chat
+ *  to return to. */
+async function adoptOrCreateCanonicalChat(name) {
+  const existing = await findExistingCanonicalBotChat(name)
+  if (existing && typeof host.openSession === 'function') {
+    try {
+      await openStoredBotChat(name, existing, null)
+      saveBotMeta(name, { chat: existing })
+      return existing
+    } catch {
+      // Fall through to a fresh chat only if opening the adopted row failed
+      // outright (not a transient hydration retry, which openStoredBotChat
+      // already handles internally).
+    }
+  }
+  return createCanonicalChat(name)
+}
+
 async function openBotCanonicalChat(name, pinned, history) {
   if (!pinned) {
     // Grandfather only an actual Bot Chat. `last_session` is merely the most
@@ -3479,7 +3542,10 @@ async function openBotCanonicalChat(name, pinned, history) {
       saveBotMeta(name, { chat: adoptId })
       return adoptId
     }
-    return createCanonicalChat(name)
+    // No pin and no adoptable preview — but the forever-chat may still exist
+    // hidden on disk (its id just isn't surfaced by the roster query). Adopt
+    // it before minting a new introduction.
+    return adoptOrCreateCanonicalChat(name)
   }
 
   // Precise verification. An older gateway ignores the unknown param and
@@ -3524,10 +3590,11 @@ async function openBotCanonicalChat(name, pinned, history) {
 
   if (preferred) {
     // The stored pointer resolved to a real session, but not to Bot Mode's
-    // plumbing session. Treat it as corrupted metadata rather than opening or
-    // hiding the user's ordinary conversation.
+    // plumbing session. The pin is bad — but before minting a NEW chat (which
+    // reintroduces the bot), adopt the profile's existing hidden Bot Chat if
+    // one is there. Only reintroduce when there truly is no forever-chat.
     await saveBotMeta(name, { chat: null })
-    return createCanonicalChat(name)
+    return adoptOrCreateCanonicalChat(name)
   }
 
   // Definitively gone (db reset, or the lineage was rewritten past
@@ -3540,8 +3607,11 @@ async function openBotCanonicalChat(name, pinned, history) {
     saveBotMeta(name, { chat: recoveryId })
     return recoveryId
   }
-  saveBotMeta(name, { chat: null })
-  return createCanonicalChat(name)
+  // The pin is gone and there's no adoptable preview — but the real
+  // forever-chat is hidden from that preview. Adopt it (by title, from the
+  // hidden-inclusive listing) before reintroducing the bot on a new session.
+  await saveBotMeta(name, { chat: null })
+  return adoptOrCreateCanonicalChat(name)
 }
 
 async function prepareBotSource(bot, pinnedChat) {
