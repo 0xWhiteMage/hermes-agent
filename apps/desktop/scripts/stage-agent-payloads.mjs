@@ -353,7 +353,7 @@ function stageManagedRuntimes(target, outDir, pythonExe) {
     outDir,
     "--target",
     targetKey,
-    ...["git", "camoufox", "chromium", "chromium-headless-shell"]
+    ...["git", "chromium", "chromium-headless-shell"]
       .flatMap((tool) => ["--extras", tool]),
     "--archive-cache",
     path.join(REPO_ROOT, "apps", "desktop", "build", "pin-archives"),
