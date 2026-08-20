@@ -31,7 +31,7 @@ export interface McpSetupRequest {
 /** One connector's result inside a card's answer. */
 export interface McpConnectorOutcome {
   server: string
-  status: 'connected' | 'declined' | 'error' | 'skipped'
+  status: 'connected' | 'declined' | 'error'
   detail?: string
   /** Tool names the connector brought in, when the flow learned them. */
   tools?: string[]
