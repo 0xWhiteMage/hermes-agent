@@ -38,9 +38,9 @@ class TestFeatureExtraMapping:
         """
         declared = set(ld._optional_dependencies())
         missing = {
-            feature: extra
-            for feature, extra in ld.LAZY_DEPS.items()
-            if extra not in declared
+            feature: ld.feature_extra(feature)
+            for feature in ld.LAZY_DEPS
+            if ld.feature_extra(feature) not in declared
         }
         assert not missing, (
             f"LAZY_DEPS names extras that pyproject.toml does not declare: "
@@ -129,7 +129,8 @@ class TestAnchorSpec:
 
     def test_every_feature_has_an_anchor(self):
         missing = [
-            f for f in ld.LAZY_DEPS if ld._anchor_spec(ld.LAZY_DEPS[f]) is None
+            f for f in ld.LAZY_DEPS
+            if ld._anchor_spec(ld.feature_extra(f)) is None
         ]
         assert not missing, f"features with no anchor: {missing}"
 
@@ -142,7 +143,7 @@ class TestAnchorSpec:
         the user never enabled.
         """
         anchor_to_extra: dict[str, str] = {}
-        for extra in set(ld.LAZY_DEPS.values()):
+        for extra in {ld.feature_extra(f) for f in ld.LAZY_DEPS}:
             anchor = ld._anchor_spec(extra)
             assert anchor is not None
             name = ld._pkg_name_from_spec(anchor)
@@ -188,7 +189,7 @@ class TestWheelInstallFallsBackToDistMetadata:
         from importlib.metadata import metadata
 
         provided = set(metadata("hermes-agent").get_all("Provides-Extra") or [])
-        known = provided & set(ld.LAZY_DEPS.values())
+        known = provided & {ld.feature_extra(f) for f in ld.LAZY_DEPS}
         assert known, "no LAZY_DEPS extra appears in the installed metadata"
         missing = {e for e in known if e not in table}
         assert not missing, (

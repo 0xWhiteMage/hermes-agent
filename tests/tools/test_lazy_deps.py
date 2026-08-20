@@ -270,17 +270,17 @@ class TestRefreshActiveFeatures:
         # Matrix E2EE pulls python-olm, which has no native Windows wheel/build
         # path. `hermes update` must not retry that doomed install every run.
         #
-        # The subject here is the *consumer* — refresh_active_features honouring
-        # the gate before pip — so we monkeypatch lazy_deps' own platform probe
-        # instead of faking the host, which keeps this covered on Linux too.
-        monkeypatch.setattr(
-            ld,
-            "_unsupported_feature_reason",
-            lambda feature: (
+        # The subject here is the *consumer* — refresh_active_features runs
+        # the entry's own `supported` probe before pip — so we install a
+        # probe that raises, instead of faking the host. That keeps this
+        # covered on Linux too.
+        def _probe() -> None:
+            raise ld.UnsupportedFeature(
                 "unsupported on Windows: Matrix E2EE depends on python-olm"
-                if feature == "platform.matrix"
-                else None
-            ),
+            )
+
+        monkeypatch.setitem(
+            ld.LAZY_DEPS, "platform.matrix", ld.LazyDep("matrix", _probe)
         )
         monkeypatch.setattr(ld, "active_features", lambda: ["platform.matrix"])
         monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
@@ -300,9 +300,8 @@ class TestRefreshActiveFeatures:
     def test_matrix_probe_reports_unsupported_on_real_windows(self):
         # The probe itself keys off the real host: patching sys.platform only
         # proved the string, never that Windows actually hits this gate.
-        assert "unsupported on Windows" in (
-            ld._unsupported_feature_reason("platform.matrix") or ""
-        )
+        with pytest.raises(ld.UnsupportedFeature, match="unsupported on Windows"):
+            ld.check_supported("platform.matrix")
 
     def test_restore_snapshot_skips_telegram_with_lazy_installs_disabled(
         self, monkeypatch

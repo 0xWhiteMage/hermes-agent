@@ -66,7 +66,7 @@ def test_lazy_installable_extras_excluded_from_all():
     "skill deps that dev environments need". Those are enumerated here with a
     reason each; anything else overlapping is a bug.
     """
-    from tools.lazy_deps import LAZY_DEPS
+    from tools.lazy_deps import LAZY_DEPS, feature_extra
 
     optional_dependencies = _load_optional_dependencies()
 
@@ -83,7 +83,9 @@ def test_lazy_installable_extras_excluded_from_all():
         "youtube": "skill dep dev environments need",
     }
 
-    lazy_covered_extras = set(LAZY_DEPS.values()) - set(intentional_overlap)
+    lazy_covered_extras = {
+        feature_extra(f) for f in LAZY_DEPS
+    } - set(intentional_overlap)
     all_extra_specs = optional_dependencies["all"]
     for extra in sorted(lazy_covered_extras):
         offending = [

@@ -84,9 +84,11 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # Feature to extra map.
 #
-# Each key is a feature name with a dot ("namespace.backend"). Each value is
-# the name of the ``[project.optional-dependencies]`` extra in pyproject.toml
-# that holds the packages for that backend.
+# Each key is a feature name with a dot ("namespace.backend"). Each value
+# names the ``[project.optional-dependencies]`` extra in pyproject.toml
+# that holds the packages for that backend: a plain string for a feature
+# that works on every host, or a :class:`LazyDep` for a feature that
+# carries its own host-support probe.
 #
 # pyproject.toml holds the specs. No other file holds them. Do not add a
 # table of pins to this module. Such a table cannot read ``[tool.uv]
@@ -95,7 +97,44 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
-LAZY_DEPS: dict[str, str] = {
+class UnsupportedFeature(RuntimeError):
+    """This host can never run the feature.
+
+    A :class:`LazyDep` ``supported`` probe raises this. The message is the
+    reason that the user reads. Start it with "unsupported ", because
+    :func:`refresh_active_features` classifies that prefix as a skip, not
+    as a failure.
+    """
+
+
+@dataclass(frozen=True)
+class LazyDep:
+    """A LAZY_DEPS entry that carries its own host-support probe.
+
+    ``extra`` names the pyproject extra, exactly like a plain-string entry.
+
+    ``supported`` is a platform capability gate, not a security policy
+    gate. It raises :class:`UnsupportedFeature` when this host can never
+    run the feature, and returns None when it can. Both :func:`ensure` and
+    the ``hermes update`` lazy-refresh pass run the probe before pip, so a
+    known-impossible install never starts.
+    """
+
+    extra: str
+    supported: Callable[[], None]
+
+
+def _matrix_supported() -> None:
+    """Matrix E2EE cannot build on native Windows."""
+    if sys.platform == "win32":
+        raise UnsupportedFeature(
+            "unsupported on Windows: Matrix E2EE depends on python-olm, "
+            "which has no Windows wheel and requires make + libolm to build "
+            "from sdist. Run Hermes under WSL to use Matrix on Windows."
+        )
+
+
+LAZY_DEPS: dict[str, str | LazyDep] = {
     # ─── Inference providers ───────────────────────────────────────────────
     "provider.anthropic": "anthropic",
     "provider.bedrock": "bedrock",
@@ -142,7 +181,7 @@ LAZY_DEPS: dict[str, str] = {
     "platform.telegram": "telegram",
     "platform.discord": "discord",
     "platform.slack": "slack",
-    "platform.matrix": "matrix",
+    "platform.matrix": LazyDep("matrix", _matrix_supported),
     "platform.dingtalk": "dingtalk",
     "platform.feishu": "feishu",
     "platform.wecom_callback": "wecom",
@@ -670,20 +709,31 @@ def _allow_lazy_installs() -> bool:
     return True
 
 
-def _unsupported_feature_reason(feature: str) -> Optional[str]:
-    """Return why a lazy feature cannot work on this host, or ``None``.
+def feature_extra(feature: str) -> str:
+    """Return the pyproject extra that ``feature`` maps to.
 
-    This is a platform capability gate, not a security policy gate. It keeps
-    known-impossible installs out of both first-use lazy installation and the
-    ``hermes update`` lazy-refresh pass.
+    Raises KeyError for an unknown feature, exactly like ``LAZY_DEPS[...]``
+    did when every value was a string.
     """
-    if sys.platform == "win32" and feature == "platform.matrix":
-        return (
-            "unsupported on Windows: Matrix E2EE depends on python-olm, "
-            "which has no Windows wheel and requires make + libolm to build "
-            "from sdist. Run Hermes under WSL to use Matrix on Windows."
-        )
-    return None
+    entry = LAZY_DEPS[feature]
+    return entry.extra if isinstance(entry, LazyDep) else entry
+
+
+def check_supported(feature: str) -> None:
+    """Run the host-support probe of ``feature``, when it has one.
+
+    Raises :class:`UnsupportedFeature` when this host can never run the
+    feature. Returns None for a supported feature, for a plain-string
+    entry, and for an unknown feature (:func:`ensure` owns the allowlist
+    check, and reports that error better).
+
+    This is a platform capability gate, not a security policy gate. It
+    keeps known-impossible installs out of both first-use lazy
+    installation and the ``hermes update`` lazy-refresh pass.
+    """
+    entry = LAZY_DEPS.get(feature)
+    if isinstance(entry, LazyDep):
+        entry.supported()
 
 
 def _parse_spec(spec: str):
@@ -920,8 +970,10 @@ def _uv_sync_extra(feature: str) -> Optional[_InstallResult]:
     root = _project_root()
     if root is None or not (root / "uv.lock").is_file():
         return None
-    extra = LAZY_DEPS.get(feature)
-    if extra is None or extra not in _optional_dependencies():
+    if feature not in LAZY_DEPS:
+        return None
+    extra = feature_extra(feature)
+    if extra not in _optional_dependencies():
         return None
 
     try:
@@ -1058,7 +1110,7 @@ def feature_specs(feature: str) -> tuple[str, ...]:
     a stripped install with no pyproject) — failing loudly beats installing
     nothing and reporting success.
     """
-    extra = LAZY_DEPS[feature]
+    extra = feature_extra(feature)
     specs = extra_specs(extra)
     if not specs:
         raise FeatureUnavailable(
@@ -1101,9 +1153,10 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
         _record_feature_use(feature)
         return
 
-    unsupported = _unsupported_feature_reason(feature)
-    if unsupported:
-        raise FeatureUnavailable(feature, missing, unsupported)
+    try:
+        check_supported(feature)
+    except UnsupportedFeature as e:
+        raise FeatureUnavailable(feature, missing, str(e)) from e
 
     # A read-only site-packages (any nix build, or any other distro that
     # ships Hermes from a read-only store) cannot receive lazy pip installs:
@@ -1125,7 +1178,7 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
             raise FeatureUnavailable(
                 feature, missing,
                 "unsupported on a managed install: "
-                + managed_install_reason(feature, LAZY_DEPS.get(feature)),
+                + managed_install_reason(feature, feature_extra(feature)),
                 # The store is read-only. A `uv pip install` hint here
                 # fails with EROFS.
                 actionable=False,
@@ -1410,7 +1463,7 @@ def active_features() -> list[str]:
 
 def _feature_anchor_present(feature: str) -> bool:
     """Is the anchor package of ``feature`` installed, at any version?"""
-    anchor = _anchor_spec(LAZY_DEPS[feature])
+    anchor = _anchor_spec(feature_extra(feature))
     return anchor is not None and _is_present(anchor)
 
 
@@ -1499,9 +1552,10 @@ def _refresh_features(
             results[feature] = "current"
             continue
 
-        unsupported = _unsupported_feature_reason(feature)
-        if unsupported:
-            results[feature] = f"skipped: {unsupported}"
+        try:
+            check_supported(feature)
+        except UnsupportedFeature as e:
+            results[feature] = f"skipped: {e}"
             continue
 
         try:

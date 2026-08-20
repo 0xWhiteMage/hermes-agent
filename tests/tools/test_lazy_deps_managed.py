@@ -89,7 +89,7 @@ def test_nix_names_the_extra_and_both_ways_to_set_the_option(monkeypatch):
         lazy_deps.ensure(FEATURE, prompt=False)
 
     message = str(excinfo.value)
-    assert f'"{lazy_deps.LAZY_DEPS[FEATURE]}"' in message, (
+    assert f'"{lazy_deps.feature_extra(FEATURE)}"' in message, (
         "the message must name the extra to add, not just the feature"
     )
     assert "services.hermes-agent.extraDependencyGroups" in message
@@ -174,12 +174,16 @@ def test_durable_install_target_overrides_the_guard(monkeypatch, tmp_path):
 def test_platform_unsupported_takes_precedence(monkeypatch):
     """A platform-specific reason is more actionable than 'read-only install'.
 
-    Also required for consistency: refresh_active_features pre-checks
-    _unsupported_feature_reason before calling ensure().
+    Also required for consistency: refresh_active_features runs the entry's
+    `supported` probe before calling ensure().
     """
     monkeypatch.setattr(lazy_deps, "_site_packages_writable", lambda: False)
-    monkeypatch.setattr(
-        lazy_deps, "_unsupported_feature_reason", lambda _f: "unsupported on win32"
+
+    def _probe() -> None:
+        raise lazy_deps.UnsupportedFeature("unsupported on win32")
+
+    monkeypatch.setitem(
+        lazy_deps.LAZY_DEPS, FEATURE, lazy_deps.LazyDep("anthropic", _probe)
     )
 
     with pytest.raises(FeatureUnavailable) as excinfo:
