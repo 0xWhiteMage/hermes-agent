@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 
+import { ConnectorLogo } from '@/components/ui/connector-logo'
 import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
 import { Check, Loader2, Search } from '@/lib/icons'
-import { brandFor, brandGlyphStyle } from '@/lib/mcp-brands'
 import { type Connector, listLocalConnectors, searchConnectors } from '@/lib/mcp-connectors'
 import { cn } from '@/lib/utils'
 import { type OnboardingFlow, toggleOnboardingConnector } from '@/store/onboarding'
@@ -107,11 +107,14 @@ export function ConnectorsPanel({
         auth: 'unknown',
         description: '',
         docs: '',
+        homepage: '',
         name,
         needsInstall: false,
+        keywords: [],
         publisher: '',
         registryName: '',
         requiredEnv: [],
+        setup: [],
         source: 'registry',
         title: name,
         trust: 'community',
@@ -185,8 +188,6 @@ function ConnectorTile({
   connector: Connector
   onToggle: () => void
 }) {
-  const brand = brandFor(connector.name)
-
   return (
     <button
       aria-pressed={checked}
@@ -199,11 +200,7 @@ function ConnectorTile({
       onClick={onToggle}
       type="button"
     >
-      {brand ? (
-        <brand.Icon aria-hidden className="size-4 shrink-0" style={brandGlyphStyle(brand)} />
-      ) : (
-        <span aria-hidden className="size-4 shrink-0" />
-      )}
+      <ConnectorLogo className="size-5 rounded" connector={connector} />
       <span className="min-w-0 flex-1 truncate text-sm">{connector.title}</span>
       {checked && <Check aria-hidden className="size-3.5 shrink-0 text-primary" />}
     </button>

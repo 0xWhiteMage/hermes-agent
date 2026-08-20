@@ -187,7 +187,7 @@ async function connect(known: SuggestibleServer, sessionId: string | null, cance
     // Same engine the inline consent card runs, so a pill and a card connect
     // the same server identically — including the no-auth case, where this
     // resolves to a config write and a probe rather than a browser tab.
-    const [connector] = await resolveConnectors([known.server])
+    const [connector] = (await resolveConnectors([known.server])).connectors
 
     if (!connector) {
       throw new Error(`Could not resolve ${known.server}`)

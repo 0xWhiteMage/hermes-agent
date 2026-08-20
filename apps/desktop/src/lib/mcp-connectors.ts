@@ -9,12 +9,14 @@ import {
   listMcpServers,
   type McpCatalogEntry,
   type McpRegistryEntry,
+  type McpTestResult,
   removeMcpServer,
   setMcpServerEnabled,
   testMcpServer
 } from '@/hermes'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import { MCP_DIRECTORY } from '@/lib/mcp-directory'
+import { classifyProbe } from '@/lib/mcp-probe-cache'
 import { prettyName } from '@/lib/text'
 
 /**
@@ -60,6 +62,8 @@ export interface Connector {
   requiredEnv: { name: string; prompt: string; required: boolean }[]
   /** Vendor docs or website, when the source knows one. */
   docs: string
+  /** The product's own site, when the source names one explicitly. */
+  homepage: string
   /** Registrable domain the registry publisher proved it owns, or "". */
   publisher: string
   /** Registry identity ("com.notion/mcp") — shown so two connectors that slug
@@ -67,6 +71,71 @@ export interface Connector {
   registryName: string
   /** Catalog entries that clone + build rather than just writing config. */
   needsInstall: boolean
+  /** Ordered work only the user can do, elsewhere, before this can connect.
+   *  Empty for the ordinary case where signing in is the whole setup. */
+  setup: string[]
+  /** What people call this connector when they aren't reading its name.
+   *  Reused from the manifest's suggestion triggers. */
+  keywords: string[]
+}
+
+/**
+ * Match key for a connector name.
+ *
+ * The agent proposes connectors the way a person says them ("Unreal Engine",
+ * "Hugging Face") while catalog names are slugs (`unreal-engine`,
+ * `hugging_face`). Matching on lowercase alone drops those on the floor and
+ * the card reports a reviewed connector as not found, so separators are
+ * normalized on both sides of every comparison.
+ */
+export const connectorKey = (name: string): string =>
+  name
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, '-')
+
+/** The product name behind a slug: `unreal-engine` → "Unreal Engine". Every
+ *  surface shows this, never the raw config key. */
+export const connectorTitle = (name: string): string => prettyName(name.replace(/-/g, ' '))
+
+/** Hosts whose favicon would name the wrong thing: a bridge published on
+ *  GitHub is not GitHub, and a package page is not the product. */
+const NOT_A_LOGO =
+  /(^|\.)(github\.com|githubusercontent\.com|gitlab\.com|bitbucket\.org|npmjs\.com|pypi\.org|readthedocs\.io)$/
+
+const isLoopback = (host: string) =>
+  host === 'localhost' || host === '::1' || /^127\./.test(host) || /^(10|192\.168)\./.test(host)
+
+/**
+ * Where to read this connector's mark from.
+ *
+ * The product's own site first (the only source that is certainly the right
+ * logo), then the endpoint it talks to — `mcp.linear.app` is Linear — then
+ * vendor docs, which for most catalog entries is `docs.stripe.com` and friends.
+ * A local endpoint and a code host answer with the wrong mark or none, so
+ * they're skipped and the connector keeps its generic glyph.
+ */
+export function connectorLogoSource(connector: Partial<Pick<Connector, 'docs' | 'homepage' | 'url'>>): string {
+  for (const candidate of [connector.homepage, connector.url, connector.docs]) {
+    if (!candidate) {
+      continue
+    }
+
+    try {
+      const { hostname, origin } = new URL(candidate)
+
+      if (!NOT_A_LOGO.test(hostname) && !isLoopback(hostname)) {
+        // The origin, never the path: the icon lives on the site, and this
+        // way a not-yet-connected connector's MCP endpoint is never fetched
+        // just to draw its logo.
+        return origin
+      }
+    } catch {
+      // Not a URL (a bare repo path, a note) — nothing to read a mark from.
+    }
+  }
+
+  return ''
 }
 
 const CATALOG_TTL_MS = 5 * 60_000
@@ -97,13 +166,16 @@ function fromCatalog(entry: McpCatalogEntry): Connector {
     auth,
     description: entry.description,
     docs: entry.source,
+    homepage: entry.homepage ?? '',
+    keywords: entry.suggest?.keywords ?? [],
     name: entry.name,
     needsInstall: entry.needs_install,
     publisher: '',
     registryName: '',
     requiredEnv: entry.required_env,
+    setup: entry.setup ?? [],
     source: 'catalog',
-    title: prettyName(entry.name),
+    title: connectorTitle(entry.name),
     trust: 'catalog',
     url: entry.url
   }
@@ -118,6 +190,8 @@ function fromRegistry(entry: McpRegistryEntry): Connector {
     auth: secretHeaders.length > 0 ? 'api_key' : 'unknown',
     description: entry.description,
     docs: entry.website,
+    homepage: entry.website,
+    keywords: [],
     name: entry.name,
     needsInstall: false,
     publisher: entry.publisher,
@@ -127,8 +201,9 @@ function fromRegistry(entry: McpRegistryEntry): Connector {
       prompt: header.description || header.name,
       required: header.required
     })),
+    setup: [],
     source: 'registry',
-    title: entry.title || prettyName(entry.name),
+    title: entry.title || connectorTitle(entry.name),
     trust: entry.trust,
     url: entry.url
   }
@@ -143,41 +218,80 @@ function fromRegistry(entry: McpRegistryEntry): Connector {
  * only for names the two local rungs didn't answer, so the common case costs
  * one cached catalog read.
  */
-export async function resolveConnectors(names: string[]): Promise<Connector[]> {
-  const wanted = [...new Set(names.map(name => name.trim().toLowerCase()).filter(Boolean))]
+/**
+ * Find a reviewed connector by the name a person would say for it.
+ *
+ * The agent asks for "Unreal"; the manifest is `unreal-engine`. Exact match
+ * first, then a segment-subset match in either direction, so "Unreal" and
+ * "Hugging Face MCP" both land. An ambiguous near-match resolves to nothing
+ * — connecting the wrong server is worse than reporting a miss — and this
+ * only ever runs against the local reviewed rungs, never the registry.
+ *
+ * The last rung is the manifest's own keywords, which exist because a
+ * connector's name is frequently not what anyone calls it: `google-workspace`
+ * is the thing you reach for when you say "google docs", and no amount of
+ * string surgery on the two names finds that. The manifest already lists
+ * those phrases to trigger composer suggestions; they are just as true here.
+ */
+export function matchLocalConnector(wanted: string, entries: Connector[]): Connector | undefined {
+  const exact = entries.find(entry => connectorKey(entry.name) === wanted)
 
-  if (wanted.length === 0) {
-    return []
+  if (exact) {
+    return exact
   }
 
-  const resolved = new Map<string, Connector>()
+  const parts = wanted.split('-').filter(Boolean)
 
-  const catalog = await loadCatalog().catch((): McpCatalogEntry[] => [])
+  const near = entries.filter(entry => {
+    const entryParts = connectorKey(entry.name).split('-').filter(Boolean)
 
-  for (const entry of catalog) {
-    if (wanted.includes(entry.name.toLowerCase()) && !resolved.has(entry.name.toLowerCase())) {
-      resolved.set(entry.name.toLowerCase(), fromCatalog(entry))
+    return entryParts.every(part => parts.includes(part)) || parts.every(part => entryParts.includes(part))
+  })
+
+  if (near.length === 1) {
+    return near[0]
+  }
+
+  const byKeyword = entries.filter(entry => entry.keywords.some(keyword => connectorKey(keyword) === wanted))
+
+  return byKeyword.length === 1 ? byKeyword[0] : undefined
+}
+
+export interface ConnectorResolution {
+  /** Distinct connectors, in the order they were asked for. Two spellings of
+   *  one connector ("Unreal", "Unreal Engine") collapse to a single entry. */
+  connectors: Connector[]
+  /** Names nothing answered to, spelled as the caller wrote them. */
+  unresolved: string[]
+}
+
+export async function resolveConnectors(names: string[]): Promise<ConnectorResolution> {
+  // Keyed by the normalized name but remembering how it was asked, because
+  // the answer for a miss is shown to the user in their own words.
+  const asked = new Map<string, string>()
+
+  for (const name of names) {
+    const key = connectorKey(name)
+
+    if (key && !asked.has(key)) {
+      asked.set(key, name)
     }
   }
 
-  for (const entry of MCP_DIRECTORY) {
-    const key = entry.name.toLowerCase()
+  const wanted = [...asked.keys()]
 
-    if (wanted.includes(key) && !resolved.has(key)) {
-      resolved.set(key, {
-        auth: 'oauth',
-        description: entry.description,
-        docs: entry.docs,
-        name: entry.name,
-        needsInstall: false,
-        publisher: '',
-        registryName: '',
-        requiredEnv: [],
-        source: 'directory',
-        title: prettyName(entry.name),
-        trust: 'verified',
-        url: entry.url
-      })
+  if (wanted.length === 0) {
+    return { connectors: [], unresolved: [] }
+  }
+
+  const resolved = new Map<string, Connector>()
+  const local = await listLocalConnectors().catch((): Connector[] => [])
+
+  for (const name of wanted) {
+    const hit = matchLocalConnector(name, local)
+
+    if (hit) {
+      resolved.set(name, hit)
     }
   }
 
@@ -190,7 +304,7 @@ export async function resolveConnectors(names: string[]): Promise<Connector[]> {
       // Only an exact name hit counts here. The card is about to offer this
       // by name; silently substituting the registry's best fuzzy guess for
       // "notion" would connect something the agent never named.
-      const match = found[index]?.find(candidate => candidate.name.toLowerCase() === name)
+      const match = found[index]?.find(candidate => connectorKey(candidate.name) === name)
 
       if (match) {
         resolved.set(name, match)
@@ -198,8 +312,25 @@ export async function resolveConnectors(names: string[]): Promise<Connector[]> {
     })
   }
 
-  // Preserve the caller's order — it's the order the agent asked in.
-  return wanted.map(name => resolved.get(name)).filter((entry): entry is Connector => Boolean(entry))
+  // Preserve the caller's order — it's the order the agent asked in — and
+  // report the miss against the name that was asked, not the one we matched:
+  // "Unreal" resolving to `unreal-engine` is a hit, not a miss.
+  const connectors: Connector[] = []
+  const seen = new Set<string>()
+
+  for (const name of wanted) {
+    const hit = resolved.get(name)
+
+    if (hit && !seen.has(connectorKey(hit.name))) {
+      seen.add(connectorKey(hit.name))
+      connectors.push(hit)
+    }
+  }
+
+  return {
+    connectors,
+    unresolved: wanted.filter(name => !resolved.has(name)).map(name => asked.get(name) ?? name)
+  }
 }
 
 /** Every connector we can offer without a network round-trip: the reviewed
@@ -217,13 +348,16 @@ export async function listLocalConnectors(): Promise<Connector[]> {
         auth: 'oauth',
         description: entry.description,
         docs: entry.docs,
+        homepage: '',
+        keywords: [],
         name: entry.name,
         needsInstall: false,
         publisher: '',
         registryName: '',
         requiredEnv: [],
+        setup: [],
         source: 'directory',
-        title: prettyName(entry.name),
+        title: connectorTitle(entry.name),
         trust: 'verified',
         url: entry.url
       })
@@ -326,6 +460,76 @@ export class ConnectorCancelled extends Error {
   }
 }
 
+/**
+ * The connector is reachable and refusing us.
+ *
+ * Worth its own type because the answer is different in kind: a wrong URL or
+ * a dead endpoint is retried, while a rejected credential needs the user to
+ * grant something. A scope the OAuth grant never asked for lands here too —
+ * the server is happy to talk, it just will not run the tools we want.
+ */
+export class ConnectorNeedsAuth extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ConnectorNeedsAuth'
+  }
+}
+
+/**
+ * Ask the connector for its tools, and treat silence as failure.
+ *
+ * A connect that only proves we wrote a config stanza is worth very little.
+ * The key can be wrong, the endpoint can be down, an OAuth grant can be
+ * missing the scope the tools actually need — and every one of those is
+ * indistinguishable from success until the model calls a tool three messages
+ * later and the user reads an error instead of an answer. So the paths that
+ * used to return an empty, unexamined success end here instead, and the tool
+ * names this returns are the receipt the card shows.
+ */
+async function verify(connector: Connector): Promise<ConnectResult> {
+  const probe = await testMcpServer(connector.name).catch((error: unknown): McpTestResult => ({
+    error: error instanceof Error ? error.message : String(error),
+    ok: false,
+    tools: []
+  }))
+
+  if (classifyProbe(probe) === 'needs-auth') {
+    throw new ConnectorNeedsAuth(probe.error || `${connector.title} refused the credentials`)
+  }
+
+  if (!probe.ok) {
+    throw new Error(probe.error || `${connector.title} did not answer`)
+  }
+
+  return { tools: probe.tools.map(tool => tool.name) }
+}
+
+/**
+ * What a finished sign-in actually bought.
+ *
+ * The handshake reports the tool list when it can, and when it can't the
+ * honest thing is to ask rather than to claim a connector that brought in
+ * nothing. A probe that merely fails is not allowed to sink a sign-in that
+ * genuinely completed — but a probe that comes back *unauthorized* is the
+ * insufficient-scope case, where the grant went through and still doesn't
+ * cover the tools, and that one has to reach the user.
+ */
+async function signedIn(connector: Connector, flow: { tools?: { name: string }[] }): Promise<ConnectResult> {
+  const tools = (flow.tools ?? []).map(tool => tool.name)
+
+  if (tools.length > 0) {
+    return { tools }
+  }
+
+  return verify(connector).catch((error: unknown) => {
+    if (error instanceof ConnectorNeedsAuth) {
+      throw error
+    }
+
+    return { tools: [] }
+  })
+}
+
 const CATALOG_INSTALL_POLL_MS = 1500
 
 const oauth = (name: string, cancelled: () => boolean) =>
@@ -370,17 +574,39 @@ export async function connectConnector(
   if (state === 'disabled') {
     onPhase?.('enabling')
     await setMcpServerEnabled(connector.name, true)
+    abortIfCancelled()
+    onPhase?.('probing')
 
-    return { tools: [] }
+    // Enabling stands even if the probe then fails: the user asked for this
+    // connector on, and switching it back off would hide the reason it isn't
+    // working behind a control that looks untouched.
+    return verify(connector)
   }
 
   if (state === 'needs_auth' || state === 'connected') {
-    // Already in config — this is a re-auth, so a failure must NOT remove the
-    // server the user already had.
+    // Already in config — a retry, or an explicit re-auth. A failure here must
+    // NOT remove the server the user already had.
+    if (connector.auth === 'api_key' || connector.auth === 'none') {
+      // A corrected credential has to be written before it can be tested, and
+      // the install endpoint is what owns writing one. Skipping this is how a
+      // wrong key becomes permanent: the card re-probes the same stored value
+      // forever and every retry fails identically.
+      if (connector.source === 'catalog' && Object.keys(env).length > 0) {
+        onPhase?.('installing')
+        await installMcpCatalogEntry(connector.name, env)
+        abortIfCancelled()
+      }
+
+      // Nothing to sign into. The useful question is whether it answers now.
+      onPhase?.('probing')
+
+      return verify(connector)
+    }
+
     onPhase?.('signing_in')
     const flow = await oauth(connector.name, cancelled)
 
-    return { tools: (flow.tools ?? []).map(tool => tool.name) }
+    return signedIn(connector, flow)
   }
 
   // Not configured. Catalog entries with a git bootstrap or declared
@@ -413,10 +639,17 @@ export async function connectConnector(
       onPhase?.('signing_in')
       const flow = await oauth(connector.name, cancelled)
 
-      return { tools: (flow.tools ?? []).map(tool => tool.name) }
+      return signedIn(connector, flow)
     }
 
-    return { tools: [] }
+    abortIfCancelled()
+    onPhase?.('probing')
+
+    // The key the user just typed either works or it doesn't, and this is the
+    // only moment they still have the context to fix it. No rollback on
+    // failure: the install is reviewed and the credential may be one
+    // character out, so a retry re-probes rather than starting over.
+    return verify(connector)
   }
 
   if (!connector.url) {
@@ -428,7 +661,9 @@ export async function connectConnector(
 
   try {
     if (connector.auth === 'none') {
-      return { tools: [] }
+      onPhase?.('probing')
+
+      return verify(connector)
     }
 
     if (connector.auth === 'unknown') {
@@ -446,7 +681,7 @@ export async function connectConnector(
     onPhase?.('signing_in')
     const flow = await oauth(connector.name, cancelled)
 
-    return { tools: (flow.tools ?? []).map(tool => tool.name) }
+    return signedIn(connector, flow)
   } catch (error) {
     // Decline means "no connector", not an unauthorized entry left behind.
     // The rollback is best-effort and must never replace the original error:
