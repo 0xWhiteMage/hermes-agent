@@ -8536,6 +8536,9 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     profile: key,
     remoteAuthMode: authMode,
     remoteComputerUseBridge: mode === 'remote' && block.computerUseBridge !== false,
+    // A Desktop with no local agent runtime cannot run the bridge sidecar. Say
+    // that in Settings rather than letting the toggle look like it worked.
+    remoteComputerUseBridgeUnavailable: computerUseBridge.unsupported(),
     remoteOauthConnected,
     remoteUrl,
     // The persisted Hermes Cloud org (slug/id) for a cloud connection, or '' for

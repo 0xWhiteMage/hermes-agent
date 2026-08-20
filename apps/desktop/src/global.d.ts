@@ -722,6 +722,9 @@ export interface DesktopConnectionConfig {
   profile: null | string
   remoteAuthMode: 'oauth' | 'token'
   remoteComputerUseBridge: boolean
+  // Why the Computer Use bridge cannot run on this install at all (no local
+  // agent runtime to host the sidecar), or null while it can.
+  remoteComputerUseBridgeUnavailable: string | null
   remoteOauthConnected: boolean
   remoteTokenPreview: string | null
   remoteTokenSet: boolean

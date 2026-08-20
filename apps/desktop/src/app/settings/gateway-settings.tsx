@@ -43,6 +43,9 @@ interface GatewaySettingsState {
   mode: Mode
   remoteAuthMode: AuthMode
   remoteComputerUseBridge: boolean
+  // Read-only: why this install cannot run the Computer Use bridge sidecar at
+  // all (a Desktop with no local agent runtime), or null while it can.
+  remoteComputerUseBridgeUnavailable: string | null
   remoteOauthConnected: boolean
   remoteTokenPreview: string | null
   remoteTokenSet: boolean
@@ -69,6 +72,7 @@ const EMPTY_STATE: GatewaySettingsState = {
   mode: 'local',
   remoteAuthMode: 'token',
   remoteComputerUseBridge: true,
+  remoteComputerUseBridgeUnavailable: null,
   remoteOauthConnected: false,
   remoteTokenPreview: null,
   remoteTokenSet: false,
@@ -1338,14 +1342,14 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
           <ListRow
             action={
               <Checkbox
-                checked={state.remoteComputerUseBridge}
-                disabled={state.envOverride}
+                checked={state.remoteComputerUseBridge && !state.remoteComputerUseBridgeUnavailable}
+                disabled={state.envOverride || Boolean(state.remoteComputerUseBridgeUnavailable)}
                 onCheckedChange={checked =>
                   setState(current => ({ ...current, remoteComputerUseBridge: checked === true }))
                 }
               />
             }
-            description={g.remoteComputerUseBridgeDesc}
+            description={state.remoteComputerUseBridgeUnavailable || g.remoteComputerUseBridgeDesc}
             title={g.remoteComputerUseBridgeTitle}
           />
         </div>
