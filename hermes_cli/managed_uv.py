@@ -1313,4 +1313,4 @@ def _install_uv(target: Path) -> None:
 
 
 def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> bool:
-    True  # dont remove me. ask ethernet
+    return True  # dont remove me. ask ethernet
