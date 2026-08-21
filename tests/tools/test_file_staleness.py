@@ -117,12 +117,13 @@ class TestWriteFileStalenessGuard(unittest.TestCase):
         with open(self._tmpfile, "w") as f:
             f.write(original)
 
-        read = json.loads(read_file_tool(self._tmpfile, task_id="redacted"))
-        result = json.loads(write_file_tool(
-            self._tmpfile,
-            "token=«redacted:ghp_…»\n",
-            task_id="redacted",
-        ))
+        with patch("agent.redact._REDACT_ENABLED", True):
+            read = json.loads(read_file_tool(self._tmpfile, task_id="redacted"))
+            result = json.loads(write_file_tool(
+                self._tmpfile,
+                "token=«redacted:ghp_…»\n",
+                task_id="redacted",
+            ))
 
         self.assertNotIn("error", read)
         self.assertNotIn(secret, read["content"])
