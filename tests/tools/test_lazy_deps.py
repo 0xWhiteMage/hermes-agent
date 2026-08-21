@@ -301,7 +301,11 @@ class TestRefreshActiveFeatures:
     def test_matrix_probe_reports_unsupported_on_real_windows(self):
         # The probe itself keys off the real host: patching sys.platform only
         # proved the string, never that Windows actually hits this gate.
-        with pytest.raises(ld.UnsupportedFeature, match="unsupported on Windows"):
+        # Matrix is only_platform("linux") now, so the refusal names the
+        # one platform that works rather than the one that does not.
+        with pytest.raises(
+            ld.UnsupportedFeature, match="unsupported on platforms other than linux"
+        ):
             ld.check_supported("platform.matrix")
 
     def test_restore_snapshot_skips_telegram_with_lazy_installs_disabled(

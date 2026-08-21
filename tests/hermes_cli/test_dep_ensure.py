@@ -97,14 +97,15 @@ def test_ensure_dependency_provisions_pinned_node_without_powershell(tmp_path):
     ``windows_only``: the assertion is about the Windows arm of the ensure
     path, where the shell-out used to be the mechanism."""
     from hermes_cli.dep_ensure import ensure_dependency
+    from installation.provisioner import ToolResult
 
-    class _Result:
-        ok = True
-        detail = None
+    # The real result type, not a stub: dep_ensure reads .provisioned,
+    # and a hand-rolled fake drifts the moment ToolResult grows a field.
+    result = ToolResult("node", "downloaded", version="26.7.0")
 
     checks = iter([False, True])  # missing before provisioning, present after
     with patch("hermes_cli.dep_ensure._DEP_CHECKS", {"node": lambda: next(checks)}), \
-         patch("installation.provisioner.provision_tool", return_value=_Result()) as prov, \
+         patch("installation.provisioner.provision_tool", return_value=result) as prov, \
          patch("subprocess.run") as mock_run, \
          patch("sys.stdin") as mock_stdin:
         mock_stdin.isatty.return_value = False

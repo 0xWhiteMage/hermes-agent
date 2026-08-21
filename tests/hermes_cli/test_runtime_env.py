@@ -1,6 +1,7 @@
 """Tests for installation.env — the single PATH/env assembler."""
 
 import os
+import sys
 
 from installation import env as re_mod
 from installation import registry as rr
@@ -80,6 +81,63 @@ class TestManagedToolEnv:
         _provision(tmp_path, "node", "node/bin/node")
         env = re_mod.managed_tool_env(tmp_path)
         assert env["npm_config_cache"] == str(tmp_path / "cache" / "npm")
+
+    def test_a_managed_git_exports_the_portable_contract(self, tmp_path):
+        # A relocated git resolves helpers/templates/config against its
+        # BUILD-time prefix, so the env must point every one of these
+        # INSIDE the store entry. Layout is synthetic: the contract is
+        # env-assembly behaviour, not the artifact (win32's PortableGit
+        # is the one real managed git; POSIX uses the system lane).
+        _provision(tmp_path, "git", "git/bin/git")
+        root = tmp_path / "git"
+        (root / "libexec" / "git-core").mkdir(parents=True)
+        (root / "share" / "git-core" / "templates").mkdir(parents=True)
+        (root / "etc").mkdir()
+        (root / "etc" / "gitconfig").write_text("")
+        (root / "ssl").mkdir()
+        (root / "ssl" / "cacert.pem").write_text("")
+
+        env = re_mod.managed_tool_env(tmp_path)
+
+        assert env["GIT_EXEC_PATH"] == str(root / "libexec" / "git-core")
+        assert env["GIT_TEMPLATE_DIR"] == str(root / "share" / "git-core" / "templates")
+        assert env["GIT_CONFIG_SYSTEM"] == str(root / "etc" / "gitconfig")
+        assert env["GIT_SSL_CAINFO"] == str(root / "ssl" / "cacert.pem")
+        # dugite exports PREFIX on linux only; elsewhere the name is
+        # generic enough to collide with unrelated build tooling.
+        if sys.platform.startswith("linux"):
+            assert env["PREFIX"] == str(root)
+        else:
+            assert "PREFIX" not in env
+
+    def test_only_the_pieces_that_exist_are_exported(self, tmp_path):
+        # Existence-probed per key: a layout without templates must not
+        # export a GIT_TEMPLATE_DIR pointing at nothing.
+        _provision(tmp_path, "git", "git/bin/git")
+        (tmp_path / "git" / "libexec" / "git-core").mkdir(parents=True)
+
+        env = re_mod.managed_tool_env(tmp_path)
+
+        assert env["GIT_EXEC_PATH"] == str(tmp_path / "git" / "libexec" / "git-core")
+        assert "GIT_TEMPLATE_DIR" not in env
+        assert "GIT_CONFIG_SYSTEM" not in env
+        assert "GIT_SSL_CAINFO" not in env
+
+    def test_a_system_git_fact_gets_no_git_env(self, tmp_path):
+        # That env is the RELOCATED-git contract. Exporting GIT_EXEC_PATH
+        # at a git we do not own breaks it.
+        system_git = tmp_path / "usr-bin-git"
+        system_git.write_text("#!/bin/sh\n")
+        facts = rr.load_facts(tmp_path)
+        facts["git"] = rr.RuntimeFact(
+            version="2.44.1", path=str(system_git), source="system"
+        )
+        rr.save_facts(facts, tmp_path)
+
+        env = re_mod.managed_tool_env(tmp_path)
+
+        assert "GIT_EXEC_PATH" not in env
+        assert "GIT_SSL_CAINFO" not in env
 
 
 class TestWithManagedRuntimes:
