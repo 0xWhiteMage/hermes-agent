@@ -49,7 +49,10 @@ def _mk_bundle(tmp_path: Path, with_feed=True, exe_name="Hermes.exe") -> Path:
 class TestLayoutAndFeed:
     def test_resolves_bundle_layout(self, tmp_path):
         repo = _mk_bundle(tmp_path)
-        layout = resolve_app_layout(repo)
+        # A Windows bundle shape. The layout is pure path arithmetic, so
+        # naming the platform resolves it from any host (the sealed
+        # updater itself is Windows-only at runtime).
+        layout = resolve_app_layout(repo, platform="win32")
         assert layout["app_root"] == tmp_path / "HermesBundled"
         assert layout["feed_file"].name == "app-update.yml"
         # The launcher, never the uninstaller.

@@ -319,6 +319,7 @@ def step_expose_cli() -> dict:
         logger.debug("Could not read cli.expose_on_path: %s", exc)
 
     from installation.paths import get_install_root
+    from installation.tree import is_bundled_payload
 
     root = get_install_root()
 
@@ -333,7 +334,7 @@ def step_expose_cli() -> dict:
     # never reaches here (win32 returned above); a Linux AppImage mounts
     # at a transient path a symlink to which would dangle the moment the
     # app exits.
-    if _is_bundled_payload_tree(root):
+    if is_bundled_payload(root):
         if sys.platform == "darwin":
             return _symlink_sealed_launchers(root.parent / "bin")
         return {"ok": True, "skipped": "bundle-owns-launchers"}
@@ -398,24 +399,6 @@ def step_expose_cli() -> dict:
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
     return {"ok": True, "written": written}
-
-
-def _is_bundled_payload_tree(root) -> bool:
-    """True when ``root`` is a bundled desktop payload's ``repo/`` tree.
-
-    The build stamp is the shape authority (the same fact the desktop
-    shell's installShape() gates on): staging bakes ``payload: bundled``
-    into install-stamp.json at repo/. Missing stamp, foreign stamp, or a
-    stamp read error all mean NOT a bundle — filesystem coincidences
-    like a sibling bin/ directory must never promote a checkout into
-    the sealed branch.
-    """
-    try:
-        from installation.tree import read_build_info
-
-        return read_build_info(root).get("payload") == "bundled"
-    except Exception:  # noqa: BLE001 — a bad stamp must not kill the step
-        return False
 
 
 def _symlink_sealed_launchers(payload_bin) -> dict:

@@ -48,34 +48,34 @@ class SealedUpdateUnavailable(Exception):
     the caller falls back to the steward refusal message."""
 
 
-def resolve_app_layout(project_root: Path) -> dict:
+def resolve_app_layout(project_root: Path, *, platform: Optional[str] = None) -> dict:
     """Locate the app root, resources dir, feed config, and app exe from
     the payload repo root (``<app>/resources/agent-payload/repo``).
+
+    *platform* (default the running host) selects the launcher-naming rule
+    — the same passthrough :func:`hermes_cli.bundled_app.resolve_bundle_layout`
+    offers, so a Windows layout can be resolved from any host.
 
     Raises SealedUpdateUnavailable when the tree does not look like a
     bundled desktop app (e.g. a docker/nix sealed tree).
     """
-    repo = Path(project_root).resolve()
-    payload = repo.parent
-    resources = payload.parent
-    app_root = resources.parent
-    feed_file = resources / "app-update.yml"
-    if payload.name != "agent-payload" or not feed_file.is_file():
+    from hermes_cli.bundled_app import NotBundledApp, resolve_bundle_layout
+
+    try:
+        layout = resolve_bundle_layout(project_root, platform=platform)
+    except NotBundledApp as exc:
+        raise SealedUpdateUnavailable(str(exc)) from exc
+    feed_file = layout.resources / "app-update.yml"
+    if not feed_file.is_file():
         raise SealedUpdateUnavailable(
-            f"no app-update.yml above {repo} — not a bundled desktop payload"
+            f"no app-update.yml above {project_root} — not a bundled desktop payload"
         )
-    exe = _find_app_exe(app_root)
-    return {"app_root": app_root, "resources": resources, "feed_file": feed_file, "exe": exe}
-
-
-def _find_app_exe(app_root: Path) -> Optional[Path]:
-    """The launcher exe: the one top-level .exe that is not the uninstaller."""
-    candidates = [
-        p
-        for p in app_root.glob("*.exe")
-        if not p.name.lower().startswith("uninstall")
-    ]
-    return candidates[0] if len(candidates) == 1 else None
+    return {
+        "app_root": layout.app_root,
+        "resources": layout.resources,
+        "feed_file": feed_file,
+        "exe": layout.launcher,
+    }
 
 
 def read_feed_config(feed_file: Path) -> dict:

@@ -269,6 +269,8 @@ Running `hermes uninstall --gui` from a **source checkout** (a `hermes desktop` 
 
 To launch via the CLI, simply run `hermes desktop`. By default it installs workspace Node dependencies, builds the current OS's unpacked Electron app, then launches that packaged artifact.
 
+On a **bundled install** (the download from the website) there is nothing to build: the `hermes` command lives inside the app, so `hermes desktop` starts that app directly and returns — the app keeps running after the terminal closes, and a second run focuses the window that is already open. The build flags below (`--source`, `--build-only`, `--force-build`) do not apply there and are refused rather than ignored.
+
 | Flag                 | Description                                                                               |
 | -------------------- | ----------------------------------------------------------------------------------------- |
 | `--skip-build`       | Skip npm install/package and launch the existing unpacked app from `apps/desktop/release` |

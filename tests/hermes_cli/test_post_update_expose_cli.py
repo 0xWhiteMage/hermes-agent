@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import post_update
+from installation.tree import is_bundled_payload
 
 
 def _write_bundled_stamp(repo_root: Path) -> None:
@@ -130,7 +131,7 @@ class TestExposeCli:
         monkeypatch.setenv("HERMES_INSTALL_ROOT", str(checkout))
         result = post_update.step_expose_cli()
         assert result == {"ok": True, "skipped": "no-venv-layout"}
-        assert post_update._is_bundled_payload_tree(checkout) is False
+        assert is_bundled_payload(checkout) is False
 
     def test_replaces_a_dangling_symlink_from_old_installs(self, fake_install):
         """#21454: `cat >` used to follow an old symlink into the venv and
