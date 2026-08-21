@@ -321,11 +321,30 @@ def step_expose_cli() -> dict:
     from installation.paths import get_install_root
 
     root = get_install_root()
+
+    # Shape FIRST, capability second. The stamp is the shape authority
+    # (the same fact the desktop shell's installShape() gates on): a
+    # bundled payload never gets installer-written wrappers — its
+    # launchers SHIP in agent-payload/bin as prebuilt signed shims.
+    # macOS is the one platform where nothing at install time can expose
+    # them (a dragged .app runs no installer), so there — and only there
+    # — link the user's bin dir at the bundle's own shims. Windows
+    # bundled exposure is installer-owned (NSIS PATH / MSIX aliases) and
+    # never reaches here (win32 returned above); a Linux AppImage mounts
+    # at a transient path a symlink to which would dangle the moment the
+    # app exits.
+    if _is_bundled_payload_tree(root):
+        if sys.platform == "darwin":
+            return _symlink_sealed_launchers(root.parent / "bin")
+        return {"ok": True, "skipped": "bundle-owns-launchers"}
+
+    # Capability probe for the checkout shape: the wrapper bodies bake
+    # these two paths into text, so both must exist to have anything to
+    # point at. A checkout with a nuked venv lands here — skip; the
+    # installer/bootstrap owns venv repair, not this step.
     venv_python = root / "venv" / "bin" / "python"
     entrypoint = root / "hermes"
     if not venv_python.is_file() or not entrypoint.is_file():
-        # Sealed/bundled trees have no venv to point wrappers at; their
-        # launchers ship with the payload. Nothing to maintain here.
         return {"ok": True, "skipped": "no-venv-layout"}
 
     link_dir = Path.home() / ".local" / "bin"
@@ -379,6 +398,70 @@ def step_expose_cli() -> dict:
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
     return {"ok": True, "written": written}
+
+
+def _is_bundled_payload_tree(root) -> bool:
+    """True when ``root`` is a bundled desktop payload's ``repo/`` tree.
+
+    The build stamp is the shape authority (the same fact the desktop
+    shell's installShape() gates on): staging bakes ``payload: bundled``
+    into install-stamp.json at repo/. Missing stamp, foreign stamp, or a
+    stamp read error all mean NOT a bundle — filesystem coincidences
+    like a sibling bin/ directory must never promote a checkout into
+    the sealed branch.
+    """
+    try:
+        from installation.tree import read_build_info
+
+        return read_build_info(root).get("payload") == "bundled"
+    except Exception:  # noqa: BLE001 — a bad stamp must not kill the step
+        return False
+
+
+def _symlink_sealed_launchers(payload_bin) -> dict:
+    """Link ~/.local/bin/{hermes,hermes-agent,hermes-acp} at a sealed
+    bundle's own prebuilt shims (macOS only).
+
+    Symlinks, not copies: the shims are signed as part of the app bundle,
+    and a copy would both orphan the signature's context and go stale on
+    every app update — a symlink into the .app follows the bundle's
+    content wherever Squirrel.Mac swaps it. The shim resolves its own
+    REAL path (canonicalized), so the sidecar lookup happens inside the
+    bundle, not in ~/.local/bin.
+
+    Ownership guard mirrors step_expose_cli's wrapper logic: an existing
+    entry is replaced only when it is ours — a symlink into THIS app
+    bundle's payload — or missing/broken. A user's own `hermes` (pipx,
+    another checkout's wrapper) is never touched.
+    """
+    link_dir = Path.home() / ".local" / "bin"
+    payload_root = payload_bin.parent
+    written: list[str] = []
+    try:
+        link_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("hermes", "hermes-agent", "hermes-acp"):
+            source = payload_bin / name
+            if not source.is_file():
+                continue
+            target = link_dir / name
+            if target.is_symlink():
+                current = os.readlink(target)
+                if current == str(source):
+                    continue  # already ours and current
+                # Ours if it points into this payload (stale app path from
+                # a previous version counts — resolve() of a dangling link
+                # still yields the old path text) — or dangling entirely.
+                points_into_payload = str(Path(current)).startswith(str(payload_root) + os.sep)
+                if not points_into_payload and target.exists():
+                    continue  # a live foreign link — user's arrangement
+            elif target.exists():
+                continue  # a real file we did not write — never clobber
+            target.unlink(missing_ok=True)
+            target.symlink_to(source)
+            written.append(name)
+    except OSError as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "written": written, "mode": "sealed-symlinks"}
 
 
 # ---------------------------------------------------------------------------

@@ -275,6 +275,18 @@ jobs:
         shell: bash
         run: npm i -g npm@${{ steps.pins.outputs.npm }}
 
+      # ── Rust (CLI shims) ──────────────────────────────────────────────
+      # stage-agent-payloads builds the payload's CLI shims
+      # (apps/desktop/shim, zero-dep) natively with cargo.
+      - name: Ensure Rust toolchain
+        shell: bash
+        run: |
+          if ! command -v cargo >/dev/null 2>&1; then
+            rustup default stable
+          fi
+          cargo --version
+          rustc --version
+
       # No npm ci here: the build script runs it as its own first step, and
       # a second install would delete and recreate node_modules (~10 min on
       # the Windows runners).

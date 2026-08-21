@@ -255,6 +255,64 @@ export function resolveTag(argv, describeFn) {
 }
 
 /**
+ * The three CLI program names of [project.scripts] in pyproject.toml, with
+ * the platform's executable suffix. One Rust binary serves all of them
+ * (basename dispatch); staging copies it once per name.
+ */
+export function shimFileNames(platform = process.platform) {
+  const suffix = platform === "win32" ? ".exe" : ""
+  return ["hermes", "hermes-agent", "hermes-acp"].map((name) => name + suffix)
+}
+
+/**
+ * The one-line body of bin/shim-target.txt: the payload CPython path
+ * rebased from payload-relative to bin-relative. Forward slashes on every
+ * platform (the shim splits on '/', same convention as the manifest).
+ * The shim binary itself stays byte-identical across targets whose python
+ * layout differs — the sidecar carries the layout, and a sidecar write is
+ * data, not code, so no signature is at stake.
+ */
+export function shimSidecarBody(pythonRelPath) {
+  if (!pythonRelPath || path.isAbsolute(pythonRelPath) || pythonRelPath.includes("\\")) {
+    throw new Error(`shim sidecar needs a forward-slash payload-relative python path, got: ${pythonRelPath}`)
+  }
+  return `../${pythonRelPath}\n`
+}
+
+/**
+ * Build the self-relative CLI shim (apps/desktop/shim, zero-dep Rust) and
+ * stage it under bin/ once per program name, plus the sidecar naming the
+ * payload interpreter. Cargo builds NATIVELY on the target runner — the
+ * same arrangement as wheels (win32-arm64 already requires Rust for its
+ * sdist builds). The binaries are ordinary PEs / Mach-Os inside the packed
+ * tree, so the existing signing walks cover them; being byte-identical,
+ * the content-addressed Windows signing cache pays for ONE of them.
+ */
+function stageCliShims(outDir, pythonRelPath) {
+  const shimCrate = path.join(DESKTOP_ROOT, "shim")
+  run("cargo", ["build", "--release", "--quiet"], { cwd: shimCrate })
+  const suffix = process.platform === "win32" ? ".exe" : ""
+  const built = path.join(shimCrate, "target", "release", `hermes-shim${suffix}`)
+  if (!fs.existsSync(built)) {
+    throw new Error(`cargo build produced no shim at ${built}`)
+  }
+  const binDir = path.join(outDir, "bin")
+  fs.rmSync(binDir, { recursive: true, force: true })
+  fs.mkdirSync(binDir, { recursive: true })
+  for (const name of shimFileNames()) {
+    fs.copyFileSync(built, path.join(binDir, name))
+    fs.chmodSync(path.join(binDir, name), 0o755)
+  }
+  fs.writeFileSync(path.join(binDir, "shim-target.txt"), shimSidecarBody(pythonRelPath))
+  // Prove the staged shim actually reaches the payload interpreter — the
+  // same "run the real thing" bar every other stage holds itself to.
+  const probeOut = probe(path.join(binDir, shimFileNames()[0]), ["-c", "import sys; print(sys.executable)"])
+  if (!probeOut.trim()) {
+    throw new Error("staged hermes shim launched no interpreter")
+  }
+}
+
+/**
  * Build the manifest that marks a complete embedded payload. The Electron
  * main process treats its presence (schemaVersion match, external: absent)
  * as the payload-present sentinel. Completeness is a build-time invariant:
@@ -1119,6 +1177,11 @@ function main() {
   // digests, writing the runtimes.json the desktop reads at launch.
   console.log(`[stage-agent-payloads] staging: managed runtimes (${target.key}, ${tag})`)
   stageManagedRuntimes(target, OUT_DIR, payloadPython)
+  // The CLI shims that let a terminal reach the bundled runtime. After the
+  // interpreter exists (the staging probe launches THROUGH the shim),
+  // before prune/sanitize so those passes see the final bin/ tree.
+  console.log(`[stage-agent-payloads] staging: cli shims (${target.key}, ${tag})`)
+  stageCliShims(OUT_DIR, path.relative(OUT_DIR, payloadPython).split(path.sep).join("/"))
   // Prune AFTER every stage and probe has seen its full tree, and on the
   // cache-reuse path too (deletions are idempotent — a pruned tree just
   // yields zero). The import backstop already proved the heavy natives

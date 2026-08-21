@@ -5051,44 +5051,58 @@ function createEmbeddedBackend(backendArgs) {
   }
 }
 
-function resolveHermesBackend(backendArgs) {
-  // 0. The install shape decides the whole ladder (A.6): the stamp is
-  //    the authority, filesystem probes are only integrity checks
-  //    INSIDE the chosen shape. A bundled artifact ALWAYS runs the
-  //    backend out of its own resources — no checkout examination, no
-  //    contest. Checkouts on the machine belong to the CLI and are
-  //    never consulted here. The HERMES_DESKTOP_HERMES_ROOT escape
-  //    hatch still wins — it exists precisely to point a packaged app
-  //    at a developer checkout.
+// resolveHermesBackend — ONE ordered ladder (A.6 + AGENTS.md "observable
+// ladder"): the install shape decides the whole chain, each rung is a
+// named function returning a backend or null, and the first non-null
+// wins. The stamp is the authority; filesystem probes are integrity
+// checks INSIDE a rung, never shape probes.
+//
+// The bundled rung NEVER falls through. A bundled artifact runs the
+// backend out of its own resources or reports damage — in particular it
+// must never resolve the `hermes` its OWN installer put on PATH (that is
+// this app's payload shim: trampolining through it would be recursion
+// with extra steps, and a stale shim from a previous install would be
+// worse). Checkouts on the machine belong to the CLI and are never
+// consulted for a bundled artifact either: a silent fallback hides the
+// build defect the user needs to hear about.
+//
+// There is no stampless-bundle rung: no bundled artifact ever shipped
+// without a stamp, so a payload without one is a broken build, not a
+// legacy install.
+function resolveHermesBackend(backendArgs: string[]) {
+  // The HERMES_DESKTOP_HERMES_ROOT escape hatch outranks even the
+  // bundled shape — it exists precisely to point a packaged app at a
+  // developer checkout.
   const overrideRoot = process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT)
 
-  if (!overrideRoot && installShape() === 'bundled') {
-    // Integrity check within the shape — NOT a shape probe. The stamp
-    // says bundled; a payload that fails to resolve or yields no
-    // runnable interpreter is a damaged artifact. Do NOT fall through
-    // to a checkout: a silent fallback hides the build defect.
-    const payload = embeddedPayload()
+  if (overrideRoot) {
+    rememberLog('[resolve] HERMES_DESKTOP_HERMES_ROOT override; skipping the embedded payload')
 
-    if (payload) {
-      const backend = createEmbeddedBackend(backendArgs)
+    const backend = resolveOverrideBackend(overrideRoot, backendArgs)
 
-      if (backend) {
-        rememberLog(`[embedded] running from the app bundle (${payload.tag || 'untagged'})`)
-
-        return backend
-      }
+    if (backend) {
+      return backend
     }
-
-    throw new Error(
-      `The embedded runtime at ${payload ? payload.dir : path.join(process.resourcesPath, 'agent-payload')} is damaged ` +
-        '(missing payload or no runnable CPython). Reinstall Hermes from the website.'
-    )
+    // An override that does not resolve falls into the external chain:
+    // the developer asked for a tree that is not a Hermes root, and the
+    // external rungs surface that the same way they always have.
+  } else if (installShape() === 'bundled') {
+    return resolveBundledBackend(backendArgs)
   }
 
-  // Pre-stamp bundled artifacts (or stampless dev runs of one): the
-  // payload probe still recognises them so an old artifact keeps
-  // booting, but new artifacts are expected to carry the stamp.
-  const payload = overrideRoot || installShape() === 'bundled' ? null : embeddedPayload()
+  return (
+    resolveDevSourceBackend(backendArgs) ??
+    resolveActiveInstallBackend(backendArgs) ??
+    resolvePathCliBackend(backendArgs) ??
+    resolveSystemPythonBackend(backendArgs) ??
+    bootstrapSentinel(backendArgs)
+  )
+}
+
+// Rung 0 (bundled shape): the embedded payload or a damage report.
+// Throwing is the contract — every later rung would mask a build defect.
+function resolveBundledBackend(backendArgs: string[]) {
+  const payload = embeddedPayload()
 
   if (payload) {
     const backend = createEmbeddedBackend(backendArgs)
@@ -5098,182 +5112,186 @@ function resolveHermesBackend(backendArgs) {
 
       return backend
     }
-
-    // A payload that resolves but yields no runnable interpreter is a
-    // damaged artifact. Do NOT fall through to a checkout: a silent
-    // fallback hides the build defect. Surface the failure instead.
-    throw new Error(
-      `The embedded runtime at ${payload.dir} is damaged (no runnable CPython). ` +
-        'Reinstall Hermes from the website.'
-    )
   }
 
-  if (overrideRoot) {
-    rememberLog('[embedded] skipped: HERMES_DESKTOP_HERMES_ROOT override')
+  throw new Error(
+    `The embedded runtime at ${payload ? payload.dir : path.join(process.resourcesPath, 'agent-payload')} is damaged ` +
+      '(missing payload or no runnable CPython). Reinstall Hermes from the website.'
+  )
+}
+
+// Rung 1: explicit developer override. Honored as-is (no bootstrap; the
+// user is driving).
+function resolveOverrideBackend(overrideRoot: string, backendArgs: string[]) {
+  if (!isHermesSourceRoot(overrideRoot)) {
+    return null
   }
 
-  // 1. Explicit override -- HERMES_DESKTOP_HERMES_ROOT points at a developer
-  //    checkout. Honor it as-is (no bootstrap; the user is driving).
-  if (overrideRoot && isHermesSourceRoot(overrideRoot)) {
-    const backend = createPythonBackend(overrideRoot, `Hermes source at ${overrideRoot}`, backendArgs, { source: { type: 'hermes-root', root: overrideRoot } })
+  return createPythonBackend(overrideRoot, `Hermes source at ${overrideRoot}`, backendArgs, {
+    source: { type: 'hermes-root', root: overrideRoot }
+  })
+}
 
-    if (backend) {
-      return backend
-    }
+// Rung 2: development source — `npm run dev` from a checkout exercises
+// local Python edits, so SOURCE_REPO_ROOT outranks ACTIVE and PATH.
+// `source` — a git checkout outside a managed install root — is the
+// install method Python's runtime_tree reports for such a tree.
+function resolveDevSourceBackend(backendArgs: string[]) {
+  if (IS_PACKAGED || !isHermesSourceRoot(SOURCE_REPO_ROOT)) {
+    return null
   }
 
-  // 2. Development source -- when running `npm run dev` from a checkout, the
-  //    cloned repo at SOURCE_REPO_ROOT takes precedence over ACTIVE and any
-  //    installed `hermes` on PATH so local Python edits are actually exercised.
-  //    (In dev with no checkout, SOURCE_REPO_ROOT won't pass isHermesSourceRoot.)
-  //    `source` — a git checkout outside a managed install root — is the
-  //    install method Python's runtime_tree reports for such a tree.
-  if (!IS_PACKAGED && isHermesSourceRoot(SOURCE_REPO_ROOT)) {
-    const backend = createPythonBackend(SOURCE_REPO_ROOT, `Hermes source at ${SOURCE_REPO_ROOT}`, backendArgs, { source: { type: 'source', root: SOURCE_REPO_ROOT } })
+  return createPythonBackend(SOURCE_REPO_ROOT, `Hermes source at ${SOURCE_REPO_ROOT}`, backendArgs, {
+    source: { type: 'source', root: SOURCE_REPO_ROOT }
+  })
+}
 
-    if (backend) {
-      return backend
-    }
-  }
-
-  // 3. ACTIVE_HERMES_ROOT — the canonical install at
-  //    %LOCALAPPDATA%\\hermes\\hermes-agent (Windows) or ~/.hermes/hermes-agent.
-  //    A valid bootstrap marker proves Desktop finished the first-run install
-  //    flow, but marker provenance is NOT the same thing as runtime usability:
-  //    the CLI can create the exact same repo+venv layout, and older desktop
-  //    builds could leave a healthy install behind without the marker. If the
-  //    active runtime is usable, launch it directly; only fall through to
-  //    bootstrap when the runtime itself is unusable.
+// Rung 3: ACTIVE_HERMES_ROOT — the canonical install at
+// %LOCALAPPDATA%\\hermes\\hermes-agent (Windows) or ~/.hermes/hermes-agent.
+// A valid bootstrap marker proves Desktop finished the first-run install
+// flow, but marker provenance is NOT the same thing as runtime usability:
+// the CLI can create the exact same repo+venv layout, and older desktop
+// builds could leave a healthy install behind without the marker. If the
+// active runtime is usable, launch it directly; only fall through to
+// bootstrap when the runtime itself is unusable.
+function resolveActiveInstallBackend(backendArgs: string[]) {
   const activeRuntime = activeRuntimeState()
 
-  if (activeRuntime.shouldUseActiveRuntime && !bootstrapRepairRequested) {
-    if (!activeRuntime.hasValidMarker) {
-      rememberLog(
-        `[bootstrap] Active Hermes runtime at ${ACTIVE_HERMES_ROOT} is usable but the bootstrap marker is missing or stale; skipping first-run bootstrap.`
-      )
-    }
-
-    return createActiveBackend(backendArgs)
+  if (!activeRuntime.shouldUseActiveRuntime) {
+    return null
   }
 
   if (bootstrapRepairRequested) {
     rememberLog('[bootstrap] repair requested; bypassing the usable active runtime to re-run the installer')
+
+    return null
   }
 
-  // 4. Existing `hermes` on PATH -- installed via install.ps1 / install.sh from
-  //    a previous tool-only setup, or pip-installed system-wide. Use it but
-  //    do NOT write a bootstrap marker; the user did this themselves and we
-  //    don't want to take ownership of an install we didn't perform.
-  //    HERMES_DESKTOP_IGNORE_EXISTING=1 forces the bootstrap path for testing.
-  if (process.env.HERMES_DESKTOP_IGNORE_EXISTING !== '1') {
-    let hermesCommand = null
-    const hermesOverride = process.env.HERMES_DESKTOP_HERMES
+  if (!activeRuntime.hasValidMarker) {
+    rememberLog(
+      `[bootstrap] Active Hermes runtime at ${ACTIVE_HERMES_ROOT} is usable but the bootstrap marker is missing or stale; skipping first-run bootstrap.`
+    )
+  }
 
-    if (hermesOverride) {
-      const resolvedOverride = findOnPath(hermesOverride)
+  return createActiveBackend(backendArgs)
+}
 
-      if (resolvedOverride) {
-        hermesCommand = resolvedOverride
-      } else if (!isWindowsBinaryPathInWsl(hermesOverride, { isWsl: IS_WSL })) {
-        hermesCommand = hermesOverride
-      } else {
-        rememberLog(`Ignoring Windows Hermes override under WSL: ${hermesOverride}`)
-      }
+// Rung 4: existing `hermes` on PATH — installed via install.ps1 /
+// install.sh from a previous tool-only setup, or pip-installed
+// system-wide. Use it but do NOT write a bootstrap marker; the user did
+// this themselves and we don't want to take ownership of an install we
+// didn't perform. HERMES_DESKTOP_IGNORE_EXISTING=1 forces the bootstrap
+// path for testing.
+function resolvePathCliBackend(backendArgs: string[]) {
+  if (process.env.HERMES_DESKTOP_IGNORE_EXISTING === '1') {
+    return null
+  }
+
+  let hermesCommand = null
+  const hermesOverride = process.env.HERMES_DESKTOP_HERMES
+
+  if (hermesOverride) {
+    const resolvedOverride = findOnPath(hermesOverride)
+
+    if (resolvedOverride) {
+      hermesCommand = resolvedOverride
+    } else if (!isWindowsBinaryPathInWsl(hermesOverride, { isWsl: IS_WSL })) {
+      hermesCommand = hermesOverride
     } else {
-      hermesCommand = findOnPath('hermes')
+      rememberLog(`Ignoring Windows Hermes override under WSL: ${hermesOverride}`)
     }
+  } else {
+    hermesCommand = findOnPath('hermes')
+  }
 
-    if (hermesCommand) {
-      if (looksLikeDesktopAppBinary(hermesCommand)) {
-        rememberLog(`Ignoring desktop app executable on PATH while resolving Hermes CLI: ${hermesCommand}`)
-        hermesCommand = null
-      }
-    }
+  if (hermesCommand && looksLikeDesktopAppBinary(hermesCommand)) {
+    rememberLog(`Ignoring desktop app executable on PATH while resolving Hermes CLI: ${hermesCommand}`)
+    hermesCommand = null
+  }
 
-    if (hermesCommand) {
-      const unwrapped = unwrapWindowsVenvHermesCommand(hermesCommand, backendArgs)
+  if (!hermesCommand) {
+    return null
+  }
 
-      if (unwrapped) {
-        return unwrapped
-      }
+  const unwrapped = unwrapWindowsVenvHermesCommand(hermesCommand, backendArgs)
 
-      // Smoke-test the candidate before trusting it. A `hermes` shim
-      // left behind by a half-uninstalled pip install (or a venv
-      // entry-point pointing at a deleted interpreter) still resolves
-      // via findOnPath but explodes on spawn -- the user then sees a
-      // dead backend instead of the first-launch installer. The cheap
-      // `--version` probe (see backend-probes.ts) catches that case
-      // and lets the resolver fall through to step 6 / bootstrap.
-      const shellForProbe = isCommandScript(hermesCommand)
+  if (unwrapped) {
+    return unwrapped
+  }
 
-      // HERMES_DESKTOP_HERMES is an explicit deployment override (used by
-      // the Nix wrapper), not a discovered PATH candidate. It must not fall
-      // through to the install-script bootstrap if the optional probe times
-      // out under load; the pinned backend is the only valid runtime there.
-      if (shouldTrustHermesOverride(hermesOverride) || verifyHermesCli(hermesCommand, { shell: shellForProbe })) {
-        // `unwrapped` above already answered "is this a Windows venv shim?" —
-        // it was null (not a shim, or its import probe failed). Do NOT re-run
-        // unwrapWindowsVenvHermesCommand here: the second call repeats the
-        // same un-memoized import probe, costing up to another full probe
-        // timeout on the boot path for an answer we already have.
-        return {
-          label: `existing Hermes CLI at ${hermesCommand}`,
-          command: hermesCommand,
-          args: backendArgs,
-          bootstrap: false,
-          env: {},
-          kind: 'command',
-          source: { type: 'path', command: hermesCommand },
-          shell: shellForProbe
-        }
-      }
+  // Smoke-test the candidate before trusting it. A `hermes` shim
+  // left behind by a half-uninstalled pip install (or a venv
+  // entry-point pointing at a deleted interpreter) still resolves
+  // via findOnPath but explodes on spawn -- the user then sees a
+  // dead backend instead of the first-launch installer. The cheap
+  // `--version` probe (see backend-probes.ts) catches that case
+  // and lets the resolver fall through to the next rung.
+  const shellForProbe = isCommandScript(hermesCommand)
 
-      rememberLog(
-        `Ignoring existing Hermes CLI at ${hermesCommand}: --version probe failed; falling through to bootstrap.`
-      )
+  // HERMES_DESKTOP_HERMES is an explicit deployment override (used by
+  // the Nix wrapper), not a discovered PATH candidate. It must not fall
+  // through to the install-script bootstrap if the optional probe times
+  // out under load; the pinned backend is the only valid runtime there.
+  if (shouldTrustHermesOverride(hermesOverride) || verifyHermesCli(hermesCommand, { shell: shellForProbe })) {
+    // `unwrapped` above already answered "is this a Windows venv shim?" —
+    // it was null (not a shim, or its import probe failed). Do NOT re-run
+    // unwrapWindowsVenvHermesCommand here: the second call repeats the
+    // same un-memoized import probe, costing up to another full probe
+    // timeout on the boot path for an answer we already have.
+    return {
+      label: `existing Hermes CLI at ${hermesCommand}`,
+      command: hermesCommand,
+      args: backendArgs,
+      bootstrap: false,
+      env: {},
+      kind: 'command',
+      source: { type: 'path', command: hermesCommand },
+      shell: shellForProbe
     }
   }
 
-  // 5. Last-ditch: pip-installed hermes_cli module via system Python.
-  //    Same rationale as #4 -- the user installed this; we use it but don't
-  //    take ownership.
+  rememberLog(`Ignoring existing Hermes CLI at ${hermesCommand}: --version probe failed; falling through to bootstrap.`)
+
+  return null
+}
+
+// Rung 5: pip-installed hermes_cli module via system Python. Same
+// ownership rationale as rung 4. The import probe matters: a system
+// Python in the SUPPORTED_VERSIONS range can be registered (PEP 514)
+// without having hermes_cli installed -- common on dev boxes with a
+// python.org install from prior unrelated work. Returning that backend
+// hands the spawn step a guaranteed ModuleNotFoundError; on probe
+// failure the ladder reaches bootstrap, which pulls a uv-managed 3.11
+// into %LOCALAPPDATA%\\hermes\\hermes-agent\\venv.
+function resolveSystemPythonBackend(backendArgs: string[]) {
   const python = findSystemPython()
 
-  if (python) {
-    // Same smoke-test rationale as step 4: a system Python in the
-    // SUPPORTED_VERSIONS range can be registered (PEP 514) without
-    // having hermes_cli installed -- common on dev boxes that have
-    // a python.org install from prior unrelated work. Returning that
-    // backend hands the spawn step a guaranteed ModuleNotFoundError.
-    // Verify the import works before trusting the candidate; on
-    // failure, fall through to step 6 so the bootstrap runner pulls
-    // a uv-managed 3.11 into %LOCALAPPDATA%\hermes\hermes-agent\venv.
-    if (canImportHermesCli(python)) {
-      return {
-        kind: 'python',
-        label: `installed hermes_cli module via ${python}`,
-        command: python,
-        args: ['-m', 'hermes_cli.main', ...backendArgs],
-        bootstrap: false,
-        env: {},
-        source: { type: 'system-python', command: python },
-        shell: false
-      }
-    }
-
-    rememberLog(`Ignoring system Python ${python}: hermes_cli is not importable; falling through to bootstrap.`)
+  if (!python) {
+    return null
   }
 
-  // 6. Nothing usable yet -- signal the bootstrap runner that we need to
-  //    clone+install. Phase 1D's bootstrap-runner consumes this sentinel
-  //    and drives install.ps1 stages with a progress UI. Until 1D lands,
-  //    callers see the sentinel and surface it as a user-facing error
-  //    explaining what's missing.
-  //
-  //    We deliberately do NOT throw here -- throwing inside
-  //    resolveHermesBackend was the old "no payload" path and forced the
-  //    user into a dead end. With the bootstrap protocol, "no install yet"
-  //    is a recoverable state the GUI can drive through.
+  if (!canImportHermesCli(python)) {
+    rememberLog(`Ignoring system Python ${python}: hermes_cli is not importable; falling through to bootstrap.`)
+
+    return null
+  }
+
+  return {
+    kind: 'python',
+    label: `installed hermes_cli module via ${python}`,
+    command: python,
+    args: ['-m', 'hermes_cli.main', ...backendArgs],
+    bootstrap: false,
+    env: {},
+    source: { type: 'system-python', command: python },
+    shell: false
+  }
+}
+
+// Rung 6: nothing usable yet — signal the bootstrap runner that we need
+// to clone+install. Deliberately NOT a throw: "no install yet" is a
+// recoverable state the GUI drives through with a progress UI.
+function bootstrapSentinel(backendArgs: string[]) {
   return {
     kind: 'bootstrap-needed',
     label: 'Hermes Agent not installed yet; bootstrap required',

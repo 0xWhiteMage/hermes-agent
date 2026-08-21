@@ -168,6 +168,21 @@ installer-side on purpose: a boot-time step must not edit rc files on
 every update. Windows is a no-op, because the installer already
 persists the venv Scripts on User PATH.
 
+**Bundled installs own their launchers.** A sealed payload ships
+prebuilt, signed CLI shims in `agent-payload/bin` (one zero-dependency
+Rust binary staged under all three names; it dispatches on its invoked
+name and resolves the payload interpreter through the `shim-target.txt`
+sidecar beside itself). Nothing is generated post-install — that is the
+point: install-time byte generation is what a signed artifact cannot
+have. Exposure is per-platform: the NSIS installer adds the payload bin
+dir to the user PATH (EnVar, removed on uninstall), the MSIX manifest
+registers the three names as AppExecutionAliases, and on macOS — where
+a dragged .app runs no installer — `step_expose_cli` symlinks
+`~/.local/bin/{hermes,hermes-agent,hermes-acp}` at the bundle's shims
+(symlinks only; the bundle's bytes are never copied out of their
+signature's context). Linux AppImages skip exposure: the payload mounts
+at a transient path, so a persistent link would dangle.
+
 ## Boot bootstrap
 
 `hermes_cli/boot_bootstrap.py` runs the same post-update steps at boot,

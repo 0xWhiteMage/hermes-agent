@@ -179,7 +179,7 @@ module.exports = {
     // Copilot hardware key floor anyway.
     minVersion: '10.0.22621.0',
     maxVersionTested: '10.0.26100.0',
-    customExtensionsPath: copilotKeyFragmentPath(),
+    customExtensionsPath: msixExtensionsPath(),
     // Without this the Start tile renders logo-only, no app name.
     showNameOnTiles: true
   },
@@ -198,11 +198,12 @@ module.exports = {
     shortcutName: displayName,
     uninstallDisplayName: displayName,
     warningsAsErrors: false,
-    // customInit arch guard: a wrong-arch NSIS installer must refuse to run
-    // instead of installing an emulated app (x64-on-arm64) or an empty dir
-    // (arm64-on-x64 — the stock identify_package macro matches nothing and
-    // "succeeds"). The path resolves relative to the project dir.
-    include: 'electron/nsis-arch-guard.nsh'
+    // Combined NSIS include (electron-builder's nsis.include takes ONE
+    // file): customInit arch guard (refuse wrong-arch installs) +
+    // customInstall/customUnInstall PATH exposure of the payload's
+    // prebuilt CLI shims (resources\agent-payload\bin). See the .nsh for
+    // the full rationale; the path resolves relative to the project dir.
+    include: 'electron/nsis-include.nsh'
   }
 }
 
@@ -241,7 +242,7 @@ function stageMsixAssets() {
 }
 stageMsixAssets()
 
-// ── copilot key provider fragment ───────────────────────────────────────────
+// ── copilot key provider fragment + CLI execution aliases ───────────────────
 
 // The uap3:AppExtension fragment that registers the app as a Windows
 // Copilot hardware key provider.
@@ -254,7 +255,33 @@ stageMsixAssets()
 //     NOT what 0x80080204 was about; msix.minVersion was).
 //   * children of uap3:Properties are UNPREFIXED (xs:any content, per
 //     Microsoft's copilot-key-state sample).
-function copilotKeyFragmentPath() {
+//
+// The same customExtensionsPath file also carries the CLI execution
+// aliases for the bundled variant: MSIX payloads live under WindowsApps
+// where registry PATH edits do not reach, and AppExecutionAlias is the
+// platform's own answer — the alias is part of the sealed package
+// manifest, covered by the package signature by construction. All three
+// aliases point at the ONE packaged shim (hermes.exe in the payload bin);
+// the shim dispatches on argv[0], which carries the alias name. The light
+// variant ships no payload, so it gets no aliases.
+function msixExtensionsPath() {
+  const shimExecutable = 'app\\resources\\agent-payload\\bin\\hermes.exe'
+  const aliasNames = ['hermes.exe', 'hermes-agent.exe', 'hermes-acp.exe']
+  const aliasFragment = light
+    ? ''
+    : `<uap3:Extension
+    xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+    xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+    xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+    Category="windows.appExecutionAlias"
+    Executable="${shimExecutable}"
+    EntryPoint="Windows.FullTrustApplication"
+    desktop4:Subsystem="console">
+  <uap3:AppExecutionAlias desktop4:Subsystem="console">
+${aliasNames.map((alias) => `    <uap5:ExecutionAlias Alias="${alias}" />`).join('\n')}
+  </uap3:AppExecutionAlias>
+</uap3:Extension>
+`
   const fragment = `<uap3:Extension
     xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
     Category="windows.appExtension">
@@ -271,7 +298,7 @@ function copilotKeyFragmentPath() {
     </uap3:Properties>
   </uap3:AppExtension>
 </uap3:Extension>
-`
+${aliasFragment}`
   const rel = path.join('build', 'msix-copilot-key-extensions.xml')
   const abs = path.join(__dirname, rel)
   fs.mkdirSync(path.dirname(abs), { recursive: true })

@@ -17,8 +17,31 @@ import {
   probeMachOArch,
   resolveTag,
   resolveTargets,
+  shimFileNames,
+  shimSidecarBody,
   stageCacheKey
 } from '../scripts/stage-agent-payloads.mjs'
+
+// ─── cli shims ─────────────────────────────────────────────────────
+
+test('shimFileNames yields the three [project.scripts] names, .exe only on win32', () => {
+  assert.deepEqual(shimFileNames('linux'), ['hermes', 'hermes-agent', 'hermes-acp'])
+  assert.deepEqual(shimFileNames('darwin'), ['hermes', 'hermes-agent', 'hermes-acp'])
+  assert.deepEqual(shimFileNames('win32'), ['hermes.exe', 'hermes-agent.exe', 'hermes-acp.exe'])
+})
+
+test('shimSidecarBody rebases the manifest python path from payload- to bin-relative', () => {
+  // Invariant: the sidecar and the manifest describe the SAME interpreter;
+  // the sidecar just resolves from one directory deeper (bin/).
+  assert.equal(shimSidecarBody('python/cpython-3.11/bin/python3'), '../python/cpython-3.11/bin/python3\n')
+  assert.equal(shimSidecarBody('python/cpython-3.11/python.exe'), '../python/cpython-3.11/python.exe\n')
+})
+
+test('shimSidecarBody rejects absolute and backslash paths', () => {
+  assert.throws(() => shimSidecarBody('/abs/python3'))
+  assert.throws(() => shimSidecarBody('python\\cpython\\python.exe'))
+  assert.throws(() => shimSidecarBody(''))
+})
 
 // ─── resolveTargets ────────────────────────────────────────────────
 
