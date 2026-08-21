@@ -55,7 +55,7 @@ import uuid
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Callable, Optional
 
 from installation.git import SYSTEM_GIT_FLOOR
@@ -319,40 +319,127 @@ def _flatten_single_dir(dest: Path) -> None:
 
 
 def _probe_version(
-    binary: Path, args: list[str] | None = None, env: dict[str, str] | None = None
+    binary: Path,
+    args: list[str] | None = None,
+    env: dict[str, str] | None = None,
+    timeout: int = 30,
 ) -> Optional[str]:
     """Run `<binary> --version` and return the first version-shaped token.
 
     None when the binary does not run — callers treat that as
     unprovisioned, never as fatal.
 
-    On Windows a GUI-subsystem binary prints nothing to stdout —
-    chrome.exe --version is the canonical case — so an empty exec probe
-    falls back to the PE VERSIONINFO resource. The fallback still
-    answers the probe's real question ("is this a working binary for
-    this host?") for that shape: a cross-arch or truncated PE has no
-    readable version resource.
+    Two Windows shapes defeat the exec probe alone, and the pinned
+    Chromium pair is one of each (measured against the 145.0.7632.6 CfT
+    payload on Windows 11):
+
+    * ``chrome.exe`` is a GUI-subsystem binary. ``--version`` is not a
+      console command there — it OPENS THE BROWSER and never exits, so
+      the probe burns its whole timeout and leaks the process tree. Its
+      PE carries a VERSIONINFO resource, so the version comes from the
+      file instead of from the process.
+    * ``chrome-headless-shell.exe`` is the mirror image: ``--version``
+      prints and exits, and its PE VERSIONINFO is EMPTY.
+
+    So the probe runs the exec rung first, then the file rung. A binary
+    that never exits is not spawned at all. See ``_version_probe_plan``.
     """
+    plan = _version_probe_plan(binary, args, sys.platform == "win32")
     out = ""
-    try:
-        out = subprocess.run(
-            [str(binary)] + (args or ["--version"]),
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-            env=env,
-        ).stdout
-    except (OSError, subprocess.SubprocessError):
-        return None
+    if plan.exec_args is not None:
+        try:
+            out = subprocess.run(
+                [str(binary)] + plan.exec_args,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+                env=env,
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            # TimeoutExpired IS a SubprocessError. Returning here would
+            # skip the file-resource rung for the exact shape that needs
+            # it most, so fall through instead of reporting no version.
+            out = ""
     import re as _re
 
     m = _re.search(r"\d+(?:\.\d+)+", out or "")
     if m:
         return m.group(0)
-    if sys.platform == "win32":
+    if plan.read_file_version:
         return _windows_file_version(binary)
     return None
+
+
+@dataclass(frozen=True)
+class _ProbePlan:
+    """How to ask ONE binary for its version.
+
+    ``exec_args`` is None for a binary that must not be spawned with
+    ``--version`` because it does not exit.
+    """
+
+    exec_args: Optional[list[str]]
+    read_file_version: bool
+
+
+def _version_probe_plan(
+    binary: Path, args: list[str] | None, windows: bool
+) -> _ProbePlan:
+    """Pick the version rungs that fit this binary.
+
+    An explicit ``args`` from the caller always wins: it is a statement
+    that these arguments do terminate.
+    """
+    if args is not None:
+        return _ProbePlan(exec_args=args, read_file_version=windows)
+    # chrome.exe --version opens the browser instead of printing, on
+    # Windows only: the POSIX builds print and exit like any console
+    # tool. The skipped spawn also stops a timed-out probe from leaving
+    # an orphaned browser behind on the build machine.
+    if windows and _is_gui_chrome(binary):
+        return _ProbePlan(exec_args=None, read_file_version=True)
+    return _ProbePlan(exec_args=["--version"], read_file_version=windows)
+
+
+def _is_gui_chrome(binary: Path) -> bool:
+    """The full browser, as opposed to the headless shell beside it.
+
+    PureWindowsPath splits on both separators, so a Windows path stays
+    readable to a POSIX host that reasons about a Windows payload.
+    """
+    return PureWindowsPath(str(binary)).name.lower() == "chrome.exe"
+
+
+def _renders_a_page(binary: Path, env: dict[str, str] | None = None) -> bool:
+    """Prove a browser RUNS, for one that cannot answer ``--version``.
+
+    A version out of the PE resource is a file read: it says nothing
+    about whether the binary executes, which is the question the
+    provisioning probe exists to answer. A headless about:blank render
+    is the cheapest real answer — it starts the browser, prints the DOM,
+    and exits by itself (measured at 0.9s against the pinned CfT
+    payload, and it leaves no stray process).
+    """
+    try:
+        proc = subprocess.run(
+            [
+                str(binary),
+                "--headless",
+                "--disable-gpu",
+                "--no-sandbox",
+                "--dump-dom",
+                "about:blank",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+            env=env,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0 and "<html" in (proc.stdout or "").lower()
 
 
 def _windows_file_version(binary: Path) -> Optional[str]:
@@ -1111,8 +1198,18 @@ def _provision_one(
 
         # Verify by RUNNING it, not by trusting the archive: a cross-arch
         # or half-extracted binary fails here rather than at first use.
-        if _probe_version(binary, env=_probe_env(entry, facts_dir, store)) is None:
+        probe_env = _probe_env(entry, facts_dir, store)
+        if _probe_version(binary, env=probe_env) is None:
             return ToolResult(tool, "failed", detail="provisioned binary does not run")
+        # A binary whose version came out of its PE resource was never
+        # executed, so it has not been verified yet — the file read
+        # cannot tell a working browser from a cross-arch one. Render a
+        # page to close that gap.
+        if sys.platform == "win32" and _is_gui_chrome(binary):
+            if not _renders_a_page(binary, env=probe_env):
+                return ToolResult(
+                    tool, "failed", detail="provisioned browser does not render"
+                )
 
         facts[tool] = RuntimeFact(
             version=version,
