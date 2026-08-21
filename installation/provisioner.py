@@ -644,6 +644,44 @@ class _StageContext:
     npm_cache: Path  # install-scoped npm cache (mutable state, not bytes)
 
 
+def _prune_foreign_agent_browser_binaries(dest: Path, target: str) -> None:
+    """Drop every agent-browser binary that is not this target's.
+
+    One registry tarball ships all seven platform binaries side by side
+    (~69MB of bin/), and a sealed payload runs exactly one of them --
+    ``_binary_rel`` names it. The other six are bytes no code path on
+    this machine can reach: the fact records the native binary directly,
+    so the JS shim that would select among them at runtime is never the
+    entry point.
+
+    They are not merely dead weight. A wrong-arch binary inside a packed
+    desktop artifact is what ``audit-bundle-arch.mjs`` exists to catch,
+    and exempting them there would blind the audit to a genuinely
+    mis-staged driver -- the same reasoning that keeps dugite-native out
+    of the audit's PortableGit exemption. Deleting them keeps the audit
+    honest instead of teaching it to look away.
+
+    Keeps the JS shim and the sidecars: they are kilobytes, they carry no
+    architecture, and they are what an operator reads when debugging
+    which binary the upstream package would have picked.
+    """
+    bin_dir = dest / "bin"
+    if not bin_dir.is_dir():
+        raise RuntimeError(
+            f"agent-browser staged without a bin/ directory in {dest}"
+        )
+    keep = Path(_binary_rel("agent-browser", target)).name
+    if not (bin_dir / keep).is_file():
+        raise RuntimeError(
+            f"agent-browser: {keep} missing from the staged tarball -- "
+            "the upstream bin/ layout changed and the pruner would delete "
+            "every binary"
+        )
+    for item in bin_dir.iterdir():
+        if item.is_file() and item.name.startswith("agent-browser-") and item.name != keep:
+            item.unlink()
+
+
 def _stage(
     tool: str,
     pin: PinnedFile,
@@ -672,6 +710,8 @@ def _stage(
         return
 
     _stage_archive(pin, dest, tmp, archive_dir=archive_dir)
+    if tool == "agent-browser":
+        _prune_foreign_agent_browser_binaries(dest, target)
     if tool == "git" and not target.startswith("win32"):
         # dugite ships Windows remote-helper DLLs in every build. They
         # are dead weight on POSIX (~40MB) and now cost store space that
