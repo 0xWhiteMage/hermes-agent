@@ -306,9 +306,14 @@ function stageCliShims(outDir, pythonRelPath) {
   fs.writeFileSync(path.join(binDir, "shim-target.txt"), shimSidecarBody(pythonRelPath))
   // Prove the staged shim actually reaches the payload interpreter — the
   // same "run the real thing" bar every other stage holds itself to.
-  const probeOut = probe(path.join(binDir, shimFileNames()[0]), ["-c", "import sys; print(sys.executable)"])
-  if (!probeOut.trim()) {
-    throw new Error("staged hermes shim launched no interpreter")
+  // The probe must be a HERMES argv, not a python one: the shim prepends
+  // `-m hermes_cli.main`, so a bare `-c` would be parsed by the CLI
+  // (where it means "continue the named session") and exit 1.
+  // `--version` takes the CLI's stdlib-only fast path and proves the
+  // whole chain: shim → sidecar → payload python → hermes_cli import.
+  const probeOut = probe(path.join(binDir, shimFileNames()[0]), ["--version"])
+  if (!probeOut.includes("Hermes Agent v")) {
+    throw new Error(`staged hermes shim printed no version banner: ${JSON.stringify(probeOut.trim())}`)
   }
 }
 
