@@ -44,6 +44,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -197,7 +198,19 @@ def _extract(archive: Path, dest: Path) -> None:
             tf.extractall(dest, filter="data")
     elif name.endswith(".zip"):
         with zipfile.ZipFile(archive) as zf:
+            symlinks: list[tuple[zipfile.ZipInfo, str]] = []
             for info in zf.infolist():
+                mode = info.external_attr >> 16
+                if stat.S_ISLNK(mode):
+                    # A symlink entry's file content IS its target path.
+                    # zipfile.extract() would write that path out as a
+                    # regular file, which shatters any layout built on
+                    # links — a macOS .framework loses Versions/Current
+                    # and codesign refuses the whole bundle, even for a
+                    # fresh re-sign (proven against the chromium CfT
+                    # archive on a real mac).
+                    symlinks.append((info, zf.read(info).decode("utf-8")))
+                    continue
                 # extract() RETURNS the path it actually wrote, with the
                 # entry name already sanitized (".." stripped, absolute
                 # paths made relative). Chmod that, never info.filename:
@@ -205,11 +218,58 @@ def _extract(archive: Path, dest: Path) -> None:
                 # destination, which is an arbitrary chmod +x for anyone
                 # who can serve us an archive.
                 written = Path(zf.extract(info, dest))
-                mode = info.external_attr >> 16
                 if mode & 0o111 and written.is_file():
                     written.chmod(mode & 0o777)
+            # Links are recreated AFTER every regular entry, so no entry
+            # is ever written THROUGH a link — the link-then-file shape
+            # of a zip-slip archive dies here: the file lands first as a
+            # real path, and the later link then fails on the collision.
+            for info, target in symlinks:
+                _zip_symlink(info.filename, target, dest)
     else:
         raise ValueError(f"unsupported archive: {archive.name}")
+
+
+def _zip_symlink(member: str, target: str, dest: Path) -> None:
+    """Recreate one zip symlink entry under *dest*, or skip it.
+
+    Skipping (not raising) mirrors how the rest of extraction treats
+    malformed entries: one bad member must not kill a 600-file tool
+    install. Three shapes are refused:
+
+    - a LINK PATH that escapes dest ("../victim") — same rule
+      zipfile.extract() applies to regular entries;
+    - an absolute TARGET ("/etc/passwd") — meaningless inside a staged
+      tree, dangerous outside it;
+    - a relative TARGET that walks above dest from the link's own dir
+      (lib/x -> ../../../victim). Links that stay inside the tree
+      (Current -> A, Resources -> Versions/Current/Resources) pass.
+
+    On hosts where os.symlink itself fails (Windows without the
+    SeCreateSymbolicLink privilege), the entry degrades to the OLD
+    behavior — the target path as a plain file — rather than failing
+    the tool. Nothing that RUNS on such a host needs the links; the
+    macOS bundles that do are never staged for it.
+    """
+    rel = Path(member)
+    if rel.is_absolute() or ".." in rel.parts:
+        logger.warning("skipping zip symlink with escaping path: %r", member)
+        return
+    if Path(target).is_absolute():
+        logger.warning("skipping zip symlink %r: absolute target %r", member, target)
+        return
+    link_path = dest / rel
+    link_dir = (dest / rel.parent).resolve()
+    resolved = Path(os.path.normpath(link_dir / target))
+    if not resolved.is_relative_to(dest.resolve()):
+        logger.warning("skipping zip symlink %r: target %r escapes the tree", member, target)
+        return
+    link_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.symlink(target, link_path)
+    except OSError as exc:
+        logger.warning("zip symlink %r unsupported here (%s); writing target as file", member, exc)
+        link_path.write_text(target, encoding="utf-8")
 
 
 # Directory names that are part of a tool's OWN layout. An archive whose
