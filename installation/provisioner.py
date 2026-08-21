@@ -74,6 +74,7 @@ from installation.registry import (
     load_pins,
     path_order,
     pinned_file,
+    requires_closure,
     save_facts,
     store_entry_name,
 )
@@ -165,8 +166,8 @@ def prune_archive_cache(archive_dir: Path, pins: dict[str, dict]) -> None:
     """Drop archive-cache entries no pin references any more.
 
     Membership is by DIGEST across the whole table, not by target or
-    tool: camoufox aliases win32-arm64 to the x64 artifact, so one
-    digest legitimately serves two targets. An entry survives iff the
+    tool: one digest may legitimately serve several targets when a pin
+    aliases them to the same artifact. An entry survives iff the
     ``<sha256>`` prefix of its name appears anywhere in the pin table —
     everything else (old pins, orphaned tmp files) is dead weight the
     cache would otherwise carry forever.
@@ -455,17 +456,12 @@ def _binary_rel(tool: str, target: str) -> str:
         "git": "cmd/git.exe" if win else "bin/git",
         "gh": f"bin/gh{ext}",
         "ripgrep": f"rg{ext}",
-        # camoufox-js's own LAUNCH_FILE map: the zip unpacks flat and the
-        # launcher sits at its root (mac keeps the .app bundle layout).
-        "camoufox": (
-            "camoufox.exe"
-            if win
-            else (
-                "Camoufox.app/Contents/MacOS/camoufox"
-                if target.startswith("darwin")
-                else "camoufox-bin"
-            )
-        ),
+        # One registry tarball ships every platform's binary side by side
+        # (bin/agent-browser-<platform>-<arch>); the fact records the
+        # HOST's native binary so running it needs no node. The JS shim
+        # (bin/agent-browser.js) is deliberately NOT the fact: it would
+        # drag a node dependency into a tool that has none.
+        "agent-browser": f"bin/agent-browser-{target}{ext}",
         # playwright-core's EXECUTABLE_PATHS, verbatim: the archives keep
         # their internal layout and playwright resolves these inside the
         # entry, so the fact records the same path playwright will run.
@@ -635,44 +631,6 @@ def _stage_npm(
         raise RuntimeError(f"npm install exited {proc.returncode}: {proc.stderr[-400:]}")
 
 
-def _camoufox_version_json(pinned_version: str) -> dict[str, str]:
-    """Split a pin like ``152.0.4-beta.28`` the way camoufox-js does.
-
-    Its fetcher matches ``camoufox-(.+)-(.+)-<os>.<arch>.zip`` GREEDILY
-    against the asset name and builds ``Version(match[2], match[1])`` —
-    release second, version first — so ``152.0.4-beta.28`` is version
-    ``152.0.4``, release ``beta.28``. ``Version.fromPath`` reads the two
-    keys back out of version.json, and ``fullString`` re-joins them as
-    ``<version>-<release>``, so a wrong split shows up as a browser that
-    reports the wrong version rather than as a crash.
-    """
-    version, sep, release = pinned_version.partition("-")
-    if not sep:
-        raise ValueError(
-            f"camoufox pin {pinned_version!r} is not <version>-<release>; "
-            "camoufox-js cannot read a version.json without both halves"
-        )
-    return {"version": version, "release": release}
-
-
-def _stage_camoufox(
-    pin: PinnedFile, dest: Path, tmp: Path, archive_dir: Path | None = None
-) -> None:
-    """The Camoufox browser, plus the version file camoufox-js expects.
-
-    The zip unpacks flat (707 entries, ``camoufox-bin`` at the root), but
-    it does NOT contain ``version.json`` — camoufox-js writes that itself
-    after its own download, and ``Version.fromPath()`` raises
-    ``FileNotFoundError: Version information not found`` without it,
-    which its postinstall reports as a broken install. Writing it here is
-    what makes a provisioned browser look installed to the library.
-    """
-    _stage_archive(pin, dest, tmp, archive_dir=archive_dir)
-    (dest / "version.json").write_text(
-        json.dumps(_camoufox_version_json(pin.version)), encoding="utf-8"
-    )
-
-
 @dataclass(frozen=True)
 class _StageContext:
     """What a staging routine may need beyond its own archive.
@@ -707,10 +665,6 @@ def _stage(
 
     if tool == "npm":
         _stage_npm(pin, dest, tmp, ctx, target, archive_dir=archive_dir)
-        return
-
-    if tool == "camoufox":
-        _stage_camoufox(pin, dest, tmp, archive_dir=archive_dir)
         return
 
     if tool in PLAYWRIGHT_BROWSER_TOOLS:
@@ -819,7 +773,7 @@ def _provision_termux(
     """
     spec = TERMUX_TOOLS.get(tool)
     if spec is None:
-        # A tool with no Termux mapping (camoufox, chromium): explicitly
+        # A tool with no Termux mapping (chromium, agent-browser): explicitly
         # unsupported there — a declared gap, not a failure to cure.
         return ToolResult(
             tool, "unavailable", detail=f"{tool} is not available on Termux"
@@ -1162,9 +1116,13 @@ def provision_tool(
     target = current_target()
     order = path_order(pins)
     # install_order is the full dependency-respecting order; keep the
-    # prefix this tool actually needs (itself plus what it transitively
-    # extends) rather than restating the traversal here.
-    needed = extends_closure(tool, pins)
+    # prefix this tool actually needs — itself, what it transitively
+    # extends (staging may RUN those), and what it requires (a driver
+    # without its browser is not a state the lazy path may produce
+    # either), with each required tool's own extends chain in turn.
+    needed: set[str] = set()
+    for name in requires_closure(tool, pins):
+        needed |= extends_closure(name, pins)
     chain = [name for name in install_order(pins) if name in needed]
 
     result = ToolResult(tool, "failed", detail=f"{tool} was not provisioned")
@@ -1184,7 +1142,6 @@ def provision_runtimes(
     runtime_dir: Path | None = None,
     install_root: Path | None = None,
     emit: Callable[[dict], None] | None = None,
-    only: list[str] | None = None,
     store_dir: Path | None = None,
     archive_dir: Path | None = None,
     extras: list[str] | None = None,
@@ -1198,21 +1155,20 @@ def provision_runtimes(
     that extends another is staged after it — npm is unpacked by running
     the node it extends, which has to exist first.
 
-    Three selections, and they answer different questions:
+    Two selections, and they answer different questions:
 
     * default — every REQUIRED tool, plus optional tools this install has
       already recorded (that is what carries a pin bump onto an install
       which uses the capability).
-    * *extras* — the default sweep PLUS these optional tools by name. For
-      a caller that wants a full install and some capabilities with it,
-      the desktop payload being the one that does.
-    * *only* — exactly these tools and nothing else, optional or not. The
-      self-heal paths that need one runtime without paying for a sweep.
+    * *extras* — the default sweep PLUS these optional tools by name,
+      each expanded through its ``requires`` closure (a driver without
+      the browser it launches is not a state anyone wants to ask for).
+      For a caller that wants a full install and some capabilities with
+      it: the desktop payload and the install scripts.
 
-    *only* and *extras* are mutually exclusive: "exactly these" and "the
-    sweep plus these" cannot both be the selection. An unknown name in
-    either raises ``ValueError`` rather than silently matching nothing —
-    a typo must not look like a successful run that provisioned nothing.
+    An unknown name raises ``ValueError`` rather than silently matching
+    nothing — a typo must not look like a successful run that
+    provisioned nothing.
 
     Provisioning is always for THIS host. A tool is never recorded until
     the staged binary has answered a version probe here, so a pin that
@@ -1231,14 +1187,8 @@ def provision_runtimes(
     results: list[ToolResult] = []
     order = path_order(pins)
 
-    requested = set(only or ())
     extra = set(extras or ())
-    if requested and extra:
-        raise ValueError(
-            "provision_runtimes: 'only' and 'extras' are different selections "
-            "(exactly these vs the sweep plus these); pass one"
-        )
-    unknown = sorted((requested | extra) - set(pins))
+    unknown = sorted(extra - set(pins))
     if unknown:
         # A name that matches nothing would otherwise skip the loop body
         # entirely and report success having provisioned nothing — the
@@ -1246,12 +1196,15 @@ def provision_runtimes(
         raise ValueError(
             f"provision_runtimes: not in the pin table: {', '.join(unknown)}"
         )
+    # Expand each requested extra through its requires closure BEFORE the
+    # sweep: --extras agent-browser must stage the chromium pair it
+    # launches, not just the driver (selection only — order and PATH stay
+    # the pin table's business).
+    for name in list(extra):
+        extra |= requires_closure(name, pins)
 
     for tool in install_order(pins):
-        if requested:
-            if tool not in requested:
-                continue
-        elif is_optional(tool, pins) and tool not in facts and tool not in extra:
+        if is_optional(tool, pins) and tool not in facts and tool not in extra:
             # An optional tool is provisioned on demand (provision_tool or
             # an explicit extras request), not for everyone. Once the facts
             # record it, though, the sweep owns it like any other tool.
@@ -1423,17 +1376,11 @@ def main(argv: list[str] | None = None) -> int:
         "A mismatch exits 2.",
     )
     parser.add_argument(
-        "--only",
-        action="append",
-        help="Provision EXACTLY this tool and nothing else (repeatable). "
-        "Optional tools are included when named. Mutually exclusive with "
-        "--extras.",
-    )
-    parser.add_argument(
         "--extras",
         action="append",
         help="Provision the default sweep PLUS this optional tool "
-        "(repeatable). What a payload build wants: every required tool, "
+        "(repeatable), expanded through the pin table's 'requires' edges. "
+        "What a payload build wants: every required tool, "
         "and the capabilities this artifact ships with. A target the pin "
         "table declares no build for is reported 'unavailable' and does "
         "not fail the run, so the caller never has to filter by platform.",
@@ -1481,14 +1428,13 @@ def main(argv: list[str] | None = None) -> int:
             runtime_dir=ns.runtime_dir,
             store_dir=ns.store_dir,
             emit=emit,
-            only=ns.only,
             extras=ns.extras,
             archive_dir=ns.archive_cache,
         )
     except ValueError as exc:
-        # A bad selection (both flags, or a name no pin table row matches).
-        # Exit 2 like the target mismatch above: the caller asked for
-        # something impossible, which is not the same as a tool failing.
+        # A bad selection (a name no pin table row matches). Exit 2 like
+        # the target mismatch above: the caller asked for something
+        # impossible, which is not the same as a tool failing.
         print(f"runtime_provisioner: {exc}", file=sys.stderr)
         return 2
     # Exit 1 only for HARD failures. An "unavailable" tool is a declared

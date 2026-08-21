@@ -599,7 +599,12 @@ class TestPublishRetry:
 
 
 class TestSelectiveProvisioning:
-    def test_only_provisions_the_named_tool(self, served, tmp_path, target):
+    def test_provision_tool_stages_the_named_tool_without_a_sweep(
+        self, served, tmp_path, target
+    ):
+        """The narrow "just this one" path is provision_tool — the broken
+        ripgrep row proves the sweep was NOT paid (a sweep would fail on
+        it)."""
         root, base = served
         sha = _make_tar(root, "sel.tar.gz", {"bin/gh": _script()})
         pins = _pins_file(tmp_path / "repo", {
@@ -608,12 +613,12 @@ class TestSelectiveProvisioning:
             "ripgrep": {"version": "1.0.0", "files": {
                 target: {"url": f"{base}/absent.tar.gz", "sha256": "c" * 64}}},
         })
+        rt = tmp_path / "rt"
 
-        results = rp.provision_runtimes(
-            runtime_dir=tmp_path / "rt", install_root=pins, only=["gh"]
-        )
+        result = rp.provision_tool("gh", runtime_dir=rt, install_root=pins)
 
-        assert [r.tool for r in results] == ["gh"]
+        assert result.provisioned, result.detail
+        assert set(rr.load_facts(rt)) == {"gh"}
 
 
 class TestSealedInstallStalenessGate:
@@ -1079,31 +1084,17 @@ class TestOptionalTools:
         assert set(facts) == {"gh", "ripgrep"}
 
 
-class TestCamoufoxPin:
-    """The real pin-table entry, not a fixture.
+class TestOptionalToolSelection:
+    """The required set is what every install pays for."""
 
-    camoufox is the Camoufox BROWSER binary (~650MB of Firefox), the
-    first optional tool. The npm module that drives it is not pinned
-    here — it lives in scripts/camofox-browser with its own
-    package-lock.json, because npm already pins a dependency tree by
-    integrity hash and this table cannot express one.
-    """
-
-    def test_is_optional_and_needs_no_other_tool(self):
-        pins = rr.load_pins()
-        assert rr.is_optional("camoufox", pins), (
-            "camoufox must stay optional: an install that never browses "
-            "must not download a 650MB browser"
-        )
-        # A self-contained archive, unlike an npm package: nothing has to
-        # be provisioned before it can be unpacked.
-        assert pins["camoufox"].get("extends", []) == []
-
-    def test_the_sweep_leaves_it_alone_until_it_is_installed(self):
-        """The required set is what every install pays for."""
+    def test_the_sweep_leaves_optional_tools_alone_until_installed(self):
         pins = rr.load_pins()
         required = [t for t in rr.install_order(pins) if not rr.is_optional(t, pins)]
-        assert "camoufox" not in required
+        for browser in rr.PLAYWRIGHT_BROWSER_TOOLS:
+            assert browser not in required, (
+                f"{browser} must stay optional: an install that never "
+                "browses must not download a browser"
+            )
         # git is deliberately absent: it is optional because macOS and
         # Linux use the machine's git rather than paying a 147MB dugite
         # download (installation/git.py). Windows still gets the managed
@@ -1112,40 +1103,6 @@ class TestCamoufoxPin:
         assert rr.is_optional("git", pins), (
             "git must stay optional: POSIX installs use the system git"
         )
-
-    def test_every_target_is_pinned_including_emulated_windows_arm(self):
-        """Upstream ships no win arm64 build; ARM runs the x64 one."""
-        pins = rr.load_pins()
-        files = pins["camoufox"]["files"]
-        assert set(files) == {
-            "linux-x64", "linux-arm64",
-            "darwin-x64", "darwin-arm64",
-            "win32-x64", "win32-arm64",
-        }
-        assert files["win32-arm64"]["url"] == files["win32-x64"]["url"]
-
-    def test_binary_layout_matches_the_launcher_camoufox_js_expects(self):
-        """camoufox-js's LAUNCH_FILE map, per platform — inside the entry."""
-        assert rp._binary_rel("camoufox", "linux-x64") == "camoufox-bin"
-        assert rp._binary_rel("camoufox", "win32-x64") == "camoufox.exe"
-        assert (
-            rp._binary_rel("camoufox", "darwin-arm64")
-            == "Camoufox.app/Contents/MacOS/camoufox"
-        )
-
-    def test_version_json_is_split_the_way_camoufox_js_reads_it(self):
-        """Its fetcher greedily matches camoufox-(.+)-(.+)-<os>.<arch>.zip
-        and builds Version(match[2], match[1]) — version first, release
-        second. version.json must carry that same split back."""
-        assert rp._camoufox_version_json("152.0.4-beta.28") == {
-            "version": "152.0.4",
-            "release": "beta.28",
-        }
-
-    def test_a_pin_without_a_release_half_is_rejected(self):
-        """A malformed pin must fail loudly, not write a broken version.json."""
-        with pytest.raises(ValueError, match="version.*release"):
-            rp._camoufox_version_json("152.0.4")
 
 
 class TestStaleReportingForOptionalTools:
@@ -1493,7 +1450,7 @@ class TestTermuxLane:
     def test_an_unmapped_tool_is_explicitly_unsupported(
         self, tmp_path, monkeypatch
     ):
-        """camoufox has no bionic build and no pkg package. Saying so
+        """chromium has no bionic build and no pkg package. Saying so
         beats a download that segfaults at first launch.
 
         UNAVAILABLE, not failed: nothing was attempted and nothing is
@@ -1502,14 +1459,14 @@ class TestTermuxLane:
         """
         self._termux(monkeypatch, tmp_path)
         target = rr.current_target()
-        pins = _pins_file(tmp_path / "repo2", {"camoufox": {
+        pins = _pins_file(tmp_path / "repo2", {"chromium": {
             "version": "1.0.0", "optional": True,
             "files": {target: {
                 "url": "https://example.com/x.tar.gz", "sha256": "0" * 64,
             }}}})
 
         result = rp.provision_tool(
-            "camoufox", runtime_dir=tmp_path / "rt",
+            "chromium", runtime_dir=tmp_path / "rt",
             install_root=pins, store_dir=tmp_path / "store",
         )
 
@@ -1551,7 +1508,7 @@ class TestDeclaredGapsAreNotFailures:
         rt = tmp_path / "rt"
 
         results = {r.tool: r for r in rp.provision_runtimes(
-            runtime_dir=rt, install_root=pins, only=["chromium"])}
+            runtime_dir=rt, install_root=pins, extras=["chromium"])}
 
         assert results["chromium"].action == "unavailable"
         assert results["chromium"].detail == "no upstream build for this target"
@@ -1566,7 +1523,7 @@ class TestDeclaredGapsAreNotFailures:
         rt = tmp_path / "rt-mixed"
 
         results = {r.tool: r.action for r in rp.provision_runtimes(
-            runtime_dir=rt, install_root=pins, only=["gh", "chromium"])}
+            runtime_dir=rt, install_root=pins, extras=["chromium"])}
 
         assert results == {"gh": "downloaded", "chromium": "unavailable"}
         assert "gh" in rr.load_facts(rt)
@@ -1601,12 +1558,12 @@ class TestDeclaredGapsAreNotFailures:
 
         monkeypatch.setenv("HERMES_RUNTIME_PINS", str(gap / rr.PINS_FILENAME))
         assert rp.main([
-            "--runtime-dir", str(tmp_path / "cli-rt-gap"), "--only", "chromium",
+            "--runtime-dir", str(tmp_path / "cli-rt-gap"), "--extras", "chromium",
         ]) == 0
 
         monkeypatch.setenv("HERMES_RUNTIME_PINS", str(broken / rr.PINS_FILENAME))
         assert rp.main([
-            "--runtime-dir", str(tmp_path / "cli-rt-broken"), "--only", "chromium",
+            "--runtime-dir", str(tmp_path / "cli-rt-broken"), "--extras", "chromium",
         ]) == 1
 
     def test_the_reason_is_carried_by_the_type_not_the_message(self, target):
@@ -1630,31 +1587,34 @@ class TestDeclaredGapsAreNotFailures:
 
 
 class TestSelectionSemantics:
-    """Three selections, three questions.
+    """Two selections, two questions.
 
     default  = required tools + optional ones this install already has
-    extras   = the default sweep PLUS named optional tools
-    only     = exactly these and nothing else
+    extras   = the default sweep PLUS named optional tools, expanded
+               through the pin table's `requires` edges
 
-    The distinction earns its keep in the payload build: it wants a full
-    install AND some capabilities, which used to take two subprocess runs
-    plus a platform conditional in JavaScript restating what the pin table
-    already says.
+    `--only` is gone on purpose: "exactly these, and nothing else" could
+    produce a driver with none of its required tools, and no production
+    caller ever passed it (the lazy paths use provision_tool, which walks
+    the closures itself).
     """
 
     def _pins(self, served, tmp_path, target):
         root, base = served
         gh = _make_tar(root, "sel-gh.tar.gz", {"bin/gh": _script()})
         rg = _make_tar(root, "sel-rg.tar.gz", {"rg": _script()})
-        cam = _make_tar(root, "sel-cam.tar.gz", {"camoufox-bin": _script()})
+        git = _make_tar(root, "sel-git.tar.gz", {"bin/git": _script()})
         return _pins_file(tmp_path / "sel-repo", {
             "gh": {"version": "2.97.0", "files": {
                 target: {"url": f"{base}/sel-gh.tar.gz", "sha256": gh}}},
             "ripgrep": {"version": "14.1.0", "files": {
                 target: {"url": f"{base}/sel-rg.tar.gz", "sha256": rg}}},
-            "camoufox": {
-                "version": "152.0.4-beta.28", "optional": True, "onPath": False,
-                "files": {target: {"url": f"{base}/sel-cam.tar.gz", "sha256": cam}}},
+            # git doubles as the synthetic OPTIONAL tool: it is optional in
+            # the real table too, and _binary_rel knows its layout (a made-up
+            # name would KeyError during staging).
+            "git": {
+                "version": "2.53.0", "optional": True, "onPath": False,
+                "files": {target: {"url": f"{base}/sel-git.tar.gz", "sha256": git}}},
         })
 
     def _run(self, tmp_path, pins, name, **kwargs):
@@ -1676,20 +1636,11 @@ class TestSelectionSemantics:
         """The whole point: required tools AND a named capability, one call."""
         pins = self._pins(served, tmp_path, target)
 
-        results = self._run(tmp_path, pins, "rt-extras", extras=["camoufox"])
+        results = self._run(tmp_path, pins, "rt-extras", extras=["git"])
 
         assert results == {
-            "gh": "downloaded", "ripgrep": "downloaded", "camoufox": "downloaded",
+            "gh": "downloaded", "ripgrep": "downloaded", "git": "downloaded",
         }
-
-    def test_only_stays_exactly_those_tools(self, served, tmp_path, target):
-        """`only` must NOT have become "sweep plus" — the self-heal paths
-        depend on it not paying for a full sweep."""
-        pins = self._pins(served, tmp_path, target)
-
-        results = self._run(tmp_path, pins, "rt-only", only=["camoufox"])
-
-        assert results == {"camoufox": "downloaded"}
 
     def test_an_extra_that_is_already_recorded_is_kept_not_refetched(
         self, served, tmp_path, target
@@ -1700,20 +1651,27 @@ class TestSelectionSemantics:
         rt = tmp_path / "rt-twice"
 
         first = {r.tool: r.action for r in rp.provision_runtimes(
-            runtime_dir=rt, install_root=pins, extras=["camoufox"])}
+            runtime_dir=rt, install_root=pins, extras=["git"])}
         second = {r.tool: r.action for r in rp.provision_runtimes(
-            runtime_dir=rt, install_root=pins, extras=["camoufox"])}
+            runtime_dir=rt, install_root=pins, extras=["git"])}
 
-        assert first["camoufox"] == "downloaded"
-        assert second == {"gh": "kept", "ripgrep": "kept", "camoufox": "kept"}
+        assert first["git"] == "downloaded"
+        assert second == {"gh": "kept", "ripgrep": "kept", "git": "kept"}
 
-    def test_the_two_selections_cannot_be_combined(self, served, tmp_path, target):
+    def test_only_is_gone_from_function_and_cli(self, served, tmp_path, target, monkeypatch):
+        """The "exactly these, nothing else" selection was deleted: a tree
+        holding an optional tool without its required ones is not a state
+        anyone should be able to ask for, and no production caller passed
+        it. The flag must error as unknown, not silently no-op."""
+        import inspect
+        assert "only" not in inspect.signature(rp.provision_runtimes).parameters
+
         pins = self._pins(served, tmp_path, target)
-
-        with pytest.raises(ValueError, match="only.*extras|extras.*only"):
-            rp.provision_runtimes(
-                runtime_dir=tmp_path / "rt-both", install_root=pins,
-                only=["gh"], extras=["camoufox"])
+        monkeypatch.setenv("HERMES_RUNTIME_PINS", str(pins / rr.PINS_FILENAME))
+        with pytest.raises(SystemExit) as exc:
+            rp.main(["--runtime-dir", str(tmp_path / "rt-only-gone"),
+                     "--only", "gh"])
+        assert exc.value.code == 2  # argparse: unrecognized arguments
 
     def test_a_typo_is_refused_rather_than_silently_provisioning_nothing(
         self, served, tmp_path, target
@@ -1727,10 +1685,6 @@ class TestSelectionSemantics:
             rp.provision_runtimes(
                 runtime_dir=tmp_path / "rt-typo", install_root=pins,
                 extras=["chromiun"])
-        with pytest.raises(ValueError, match="ripgrepp"):
-            rp.provision_runtimes(
-                runtime_dir=tmp_path / "rt-typo2", install_root=pins,
-                only=["ripgrepp"])
 
     def test_the_cli_exits_two_for_a_bad_selection(
         self, served, tmp_path, target, monkeypatch
@@ -1745,10 +1699,6 @@ class TestSelectionSemantics:
         assert rp.main([
             "--runtime-dir", str(tmp_path / "cli-typo"), "--extras", "nope",
         ]) == 2
-        assert rp.main([
-            "--runtime-dir", str(tmp_path / "cli-both"),
-            "--only", "gh", "--extras", "camoufox",
-        ]) == 2
 
     def test_the_cli_stages_extras_alongside_the_sweep(
         self, served, tmp_path, target, monkeypatch
@@ -1759,6 +1709,147 @@ class TestSelectionSemantics:
         rt = tmp_path / "cli-extras"
 
         assert rp.main([
-            "--runtime-dir", str(rt), "--extras", "camoufox",
+            "--runtime-dir", str(rt), "--extras", "git",
         ]) == 0
-        assert set(rr.load_facts(rt)) == {"gh", "ripgrep", "camoufox"}
+        assert set(rr.load_facts(rt)) == {"gh", "ripgrep", "git"}
+
+
+class TestRequiresEdge:
+    """`requires` drives selection and NOTHING else.
+
+    agent-browser without a Chromium is not a configuration anyone wants:
+    naming the driver must select the browser it launches, on the sweep
+    path and the lazy provision_tool path alike. But unlike `extends`,
+    the edge must not touch install order or PATH.
+    """
+
+    def _pins(self, served, tmp_path, target):
+        root, base = served
+        gh = _make_tar(root, "req-gh.tar.gz", {"bin/gh": _script()})
+        drv = _make_tar(root, "req-drv.tar.gz", {"rg": _script()})
+        git = _make_tar(root, "req-git.tar.gz", {"bin/git": _script()})
+        # Real tool names only (_binary_rel is a hardcoded map): gh plays
+        # the required tool, git plays the driver that requires it.
+        return _pins_file(tmp_path / "req-repo", {
+            "ripgrep": {"version": "14.1.0", "files": {
+                target: {"url": f"{base}/req-drv.tar.gz", "sha256": drv}}},
+            "gh": {"version": "2.97.0", "optional": True, "files": {
+                target: {"url": f"{base}/req-gh.tar.gz", "sha256": gh}}},
+            "git": {
+                "version": "2.53.0", "optional": True,
+                "requires": ["gh"],
+                "files": {target: {"url": f"{base}/req-git.tar.gz", "sha256": git}}},
+        })
+
+    def test_extras_expands_the_requires_closure(self, served, tmp_path, target):
+        """--extras <driver> stages the driver AND what it requires —
+        the literal-set-membership bug this edge exists to fix."""
+        pins = self._pins(served, tmp_path, target)
+
+        results = {r.tool: r.action for r in rp.provision_runtimes(
+            runtime_dir=tmp_path / "rt-req", install_root=pins,
+            extras=["git"])}
+
+        assert results == {
+            "ripgrep": "downloaded", "gh": "downloaded", "git": "downloaded",
+        }
+
+    def test_provision_tool_walks_requires_on_the_lazy_path(
+        self, served, tmp_path, target
+    ):
+        """The on-demand path must not produce a driver with no browser
+        either."""
+        pins = self._pins(served, tmp_path, target)
+        rt = tmp_path / "rt-lazy"
+
+        result = rp.provision_tool("git", runtime_dir=rt, install_root=pins)
+
+        assert result.provisioned, result.detail
+        assert {"git", "gh"}.issubset(set(rr.load_facts(rt)))
+
+    def test_requires_names_must_be_pinned(self, tmp_path):
+        pins_dir = tmp_path / "bad-req"
+        pins_dir.mkdir()
+        (pins_dir / rr.PINS_FILENAME).write_text(json.dumps({
+            "schemaVersion": 2,
+            "tools": {"gh": {
+                "version": "1.0.0",
+                "requires": ["ghost"],
+                "files": {"any": {
+                    "url": "https://example.com/x.tgz", "sha256": "0" * 64}},
+            }},
+        }))
+
+        with pytest.raises(ValueError, match="requires 'ghost'"):
+            rr.load_pins(pins_dir)
+
+    def test_requires_self_reference_is_rejected(self, tmp_path):
+        pins_dir = tmp_path / "self-req"
+        pins_dir.mkdir()
+        (pins_dir / rr.PINS_FILENAME).write_text(json.dumps({
+            "schemaVersion": 2,
+            "tools": {"gh": {
+                "version": "1.0.0",
+                "requires": ["gh"],
+                "files": {"any": {
+                    "url": "https://example.com/x.tgz", "sha256": "0" * 64}},
+            }},
+        }))
+
+        with pytest.raises(ValueError, match="requires itself"):
+            rr.load_pins(pins_dir)
+
+    def test_requires_does_not_touch_path_order(self):
+        """The whole reason this is not `extends`: co-selection must not
+        drag PATH precedence along (chromium is onPath: false on purpose)."""
+        pins = {
+            "gh": {"version": "1.0.0", "files": {}},
+            "git": {"version": "2.0.0", "requires": ["gh"], "files": {}},
+        }
+        # requires present vs absent: identical PATH order either way.
+        bare = {
+            "gh": {"version": "1.0.0", "files": {}},
+            "git": {"version": "2.0.0", "files": {}},
+        }
+        assert rr.path_order(pins) == rr.path_order(bare)
+
+
+class TestAnyTargetWithDeclaredGap:
+    """One 'any' artifact plus a declared per-target gap — the
+    agent-browser shape (its registry tarball ships every binary except
+    win32-arm64)."""
+
+    def test_gap_row_overrides_the_any_artifact(self):
+        pins = {"agent-browser": {
+            "version": "0.26.0", "optional": True,
+            "files": {
+                "any": {"url": "https://example.com/x.tgz", "sha256": "0" * 64},
+                "win32-arm64": {"missing": "no upstream build"},
+            },
+        }}
+
+        resolved = rr.pinned_file("agent-browser", "linux-x64", pins=pins)
+        assert resolved.version == "0.26.0"
+
+        with pytest.raises(rr.UnavailableOnTarget) as exc:
+            rr.pinned_file("agent-browser", "win32-arm64", pins=pins)
+        assert exc.value.reason == "no upstream build"
+
+    def test_any_plus_artifact_row_is_still_a_contradiction(self, tmp_path):
+        """Only a declared GAP may sit beside 'any' — a second artifact
+        row is two answers to one question."""
+        pins_dir = tmp_path / "mix"
+        pins_dir.mkdir()
+        (pins_dir / rr.PINS_FILENAME).write_text(json.dumps({
+            "schemaVersion": 2,
+            "tools": {"gh": {
+                "version": "1.0.0",
+                "files": {
+                    "any": {"url": "https://example.com/a.tgz", "sha256": "0" * 64},
+                    "linux-x64": {"url": "https://example.com/b.tgz", "sha256": "1" * 64},
+                },
+            }},
+        }))
+
+        with pytest.raises(ValueError, match="mixes"):
+            rr.load_pins(pins_dir)

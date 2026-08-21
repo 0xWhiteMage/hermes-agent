@@ -1478,10 +1478,16 @@ function Invoke-RuntimeProvisioning {
     # registry hiccup. Retrying costs seconds; failing the install costs the
     # user a reinstall. The provisioner is idempotent and skips tools already
     # at their pinned version, so a retry only re-fetches what is missing.
+    #
+    # The browser rides the same sweep: --extras agent-browser stages the
+    # driver AND (through the pin table's requires edge) the pinned Chromium
+    # pair, digest-verified into the shared store -- replacing the old
+    # `npx playwright install chromium` download into
+    # %LOCALAPPDATA%\ms-playwright.
     foreach ($attempt in 1..3) {
         Push-Location $InstallDir
         try {
-            & $script:UvCmd run --no-project python -m installation.provisioner
+            & $script:UvCmd run --no-project python -m installation.provisioner --extras agent-browser
             $code = $LASTEXITCODE
         } finally {
             Pop-Location
@@ -3084,106 +3090,13 @@ function Install-NodeDeps {
         $browserLog = "$env:TEMP\hermes-npm-browser-$(Get-Random).log"
         $browserNpmOk = _Run-NpmInstall "Browser tools" $InstallDir $browserLog $npmExe
 
-        # Install Playwright Chromium (mirrors scripts/install.sh behaviour for
-        # Linux).  Without this, tools/browser_tool.py::check_browser_requirements
-        # returns False (no Chromium under %LOCALAPPDATA%\ms-playwright), and the
-        # browser_* tools are silently filtered out of the agent's tool schema.
-        # System Chrome at "C:\Program Files\Google\Chrome\..." is NOT used by
-        # agent-browser -- it expects a Playwright-managed Chromium.
-        if ($browserNpmOk) {
-            Write-Info "Installing browser engine (Playwright Chromium)..."
-            # npx lives next to npm in the same bin dir.  Prefer .cmd to dodge
-            # the same execution-policy gotcha that affects npm.ps1 (see above).
-            $npmDir = Split-Path $npmExe -Parent
-            $npxExe = $null
-            foreach ($cand in @("npx.cmd", "npx.exe", "npx")) {
-                $try = Join-Path $npmDir $cand
-                if (Test-Path $try) { $npxExe = $try; break }
-            }
-            if (-not $npxExe) {
-                $npxCmd = Get-Command npx -ErrorAction SilentlyContinue
-                if ($npxCmd) { $npxExe = $npxCmd.Source }
-            }
-            if (-not $npxExe) {
-                Write-Warn "npx not found -- cannot install Playwright Chromium."
-                Write-Info "Run manually later: cd `"$InstallDir`"; npx playwright install chromium"
-            } else {
-                $pwLog = "$env:TEMP\hermes-playwright-install-$(Get-Random).log"
-                Push-Location $InstallDir
-                # Capture EAP outside the try block so the catch's restore call
-                # always has a meaningful value (see Install-Uv for the full
-                # rationale).
-                $prevEAP = $ErrorActionPreference
-                try {
-                    # Playwright Chromium is ~170MB compressed and the
-                    # download regularly takes 3-10 minutes on a fresh
-                    # VM.  Tee the output to console + log so the user
-                    # sees download progress in real time instead of
-                    # staring at a silent prompt that looks hung.  See
-                    # _Run-NpmInstall above for the same pattern and
-                    # the rationale behind 2>&1 before the pipe.
-                    Write-Info "(this can take several minutes -- streaming progress below)"
-                    # --yes auto-accepts npx's "Need to install playwright@X.Y.Z"
-                    # confirmation prompt.  Without it, npx 7+ blocks on stdin
-                    # waiting for a y/N answer that never comes when this is
-                    # invoked through a pipeline (Tee-Object disconnects stdin
-                    # from the user's TTY), and the install hangs indefinitely
-                    # after printing "Need to install the following packages:
-                    # playwright@X.Y.Z".
-                    #
-                    # Relax EAP around the playwright invocation: playwright
-                    # emits a "Chromium downloaded to ..." success banner to
-                    # stderr after a successful install.  The launcher merges
-                    # stderr into the log natively, but keep EAP relaxed so
-                    # stray plumbing stderr can't fire the catch block with a
-                    # mangled banner even though the install succeeded.  Check
-                    # the returned exit code instead, which is the reliable
-                    # signal.
-                    #
-                    # The wall-clock ceiling is the #76222 / #84614 fix: the
-                    # Chromium download reaches 100% and the extraction wedges
-                    # (or the registry fetch stalls), and without a bound the
-                    # installer sits on this line forever.  bash has carried
-                    # the same 600s guard via run_playwright_install since
-                    # #39219.
-                    $ErrorActionPreference = "Continue"
-                    $pwCode = _Invoke-NativeWithTimeout $npxExe "--yes playwright install chromium" `
-                        $InstallDir $pwLog $nodeDepsTimeoutSec
-                    $ErrorActionPreference = $prevEAP
-                    if ($pwCode -eq 0) {
-                        Write-Success "Playwright Chromium installed (browser tools ready)"
-                        Remove-Item -Force $pwLog -ErrorAction SilentlyContinue
-                    } elseif ($pwCode -eq 124) {
-                        Write-Warn "Playwright Chromium install timed out after $([math]::Round($nodeDepsTimeoutSec / 60)) minutes."
-                        Write-Warn "This usually means a stalled download or a wedged archive extraction (a locked previous browser version can also cause it)."
-                        Write-Warn "Browser tools will not work until Chromium is installed."
-                        if (Test-Path $pwLog) { Write-Info "  Partial log: $pwLog" }
-                        Write-Info "Run manually later: cd `"$InstallDir`"; npx playwright install chromium"
-                    } else {
-                        Write-Warn "Playwright Chromium install failed -- exit code $pwCode"
-                        Write-Warn "Browser tools will not work until Chromium is installed."
-                        if (Test-Path $pwLog) {
-                            $pwErr = Get-Content $pwLog -Raw -ErrorAction SilentlyContinue
-                            if ($pwErr) {
-                                $snippet = if ($pwErr.Length -gt 1200) { $pwErr.Substring(0, 1200) + "..." } else { $pwErr }
-                                Write-Info "  playwright output:"
-                                foreach ($line in $snippet -split "`n") {
-                                    Write-Host "    $line" -ForegroundColor DarkGray
-                                }
-                                Write-Info "  Full log: $pwLog"
-                            }
-                        }
-                        Write-Info "Run manually later: cd `"$InstallDir`"; npx playwright install chromium"
-                    }
-                } catch {
-                    if ($prevEAP) { $ErrorActionPreference = $prevEAP }
-                    Write-Warn "Playwright Chromium install could not be launched: $_"
-                    Write-Info "Run manually later: cd `"$InstallDir`"; npx playwright install chromium"
-                } finally {
-                    Pop-Location
-                }
-            }
-        }
+        # The Chromium BINARY is staged by the provisioner sweep
+        # (--extras agent-browser expands to the pinned Chromium pair via
+        # the pin table's requires edge, into the shared tool store) --
+        # the old `npx playwright install chromium` download into
+        # %LOCALAPPDATA%\ms-playwright is gone. Windows needs no system-
+        # library step: Chromium ships its dependencies on this platform.
+        [void]$browserNpmOk
     }
 
     # TUI

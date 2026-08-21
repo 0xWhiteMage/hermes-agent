@@ -19,29 +19,45 @@ def test_install_script_honors_explicit_browser_override_only() -> None:
     text = INSTALL_SH.read_text()
 
     assert 'override="${AGENT_BROWSER_EXECUTABLE_PATH:-}"' in text
-    # An explicit override still skips the bundled download (override, not fallback).
-    assert "Skipping bundled Chromium download" in text
+    # An explicit override means the system-library step is moot (the system
+    # browser brought its own libraries) — the lane says so.
+    assert "libraries are already present" in text
 
 
 
 
 def test_playwright_installs_are_timeout_guarded() -> None:
+    """The one surviving playwright invocation (install-deps, the system-
+    library half) stays timeout-guarded. The browser DOWNLOAD half is gone:
+    the provisioner sweep stages the pinned Chromium via
+    --extras agent-browser, so no `playwright install chromium` may return."""
     text = INSTALL_SH.read_text()
 
     # The timeout wrapper still exists and is used internally by the install
-    # wrapper, so every Playwright download remains bounded.
+    # wrapper, so the system-library step remains bounded.
     assert "run_browser_install_with_timeout()" in text
-    # Playwright installs now go through run_playwright_install(), which wraps
-    # run_browser_install_with_timeout (timeout-guarded) and adds an
-    # unrecognized-platform fallback retry.
-    assert "run_playwright_install 600 npx playwright install chromium" in text
-    # --with-deps is still invoked on apt-based systems, but only when sudo
-    # is available non-interactively (root or passwordless sudo). Non-sudo
-    # service users fall back to the browser-only install — see
-    # install_node_deps() in install.sh.
-    assert "run_playwright_install 600 npx playwright install --with-deps chromium" in text
-    # The wrapper still bounds the download with the timeout helper.
+    assert "run_playwright_install 600 npx playwright install-deps chromium" in text
+    # The wrapper still bounds the run with the timeout helper.
     assert 'run_browser_install_with_timeout "$timeout_seconds" "$@"' in text
+    # The download half must NOT come back: a second Chromium in
+    # ~/.cache/ms-playwright next to the store's pinned one.
+    assert "playwright install chromium" not in text.replace(
+        "playwright install-deps chromium", "")
+
+
+def test_browser_rides_the_provisioner_sweep_gated_by_skip_browser() -> None:
+    """The pinned browser arrives through the SAME provisioner call the
+    install already makes — one argument, gated by --skip-browser. Deleting
+    the script's download lane without this request would silently strip
+    browsing from every source install (chromium is optional; the bare
+    sweep skips it)."""
+    text = INSTALL_SH.read_text()
+
+    assert "provisioner_args+=(--extras agent-browser)" in text
+    assert 'if [ "$SKIP_BROWSER" != true ]; then' in text
+    assert (
+        'python -m installation.provisioner "${provisioner_args[@]}"' in text
+    )
 
 
 
@@ -52,7 +68,7 @@ def test_install_script_supports_skip_browser_flag() -> None:
     assert "--skip-browser|--no-playwright)" in text
     assert "SKIP_BROWSER=true" in text
     assert 'if [ "$SKIP_BROWSER" = true ]; then' in text
-    assert "--skip-browser Skip Playwright/Chromium install" in text
+    assert "--skip-browser Skip staging the pinned browser" in text
 
 
 
@@ -224,9 +240,10 @@ def test_agent_browser_is_never_eagerly_npm_installed() -> None:
 
 def test_camofox_npm_module_is_not_installed_by_the_installer() -> None:
     """0583e3a720 ('pin the browser BINARY; the npm module gets a lockfile')
-    moved camoufox acquisition to the pin table precisely because the npm
+    moved browser acquisition to the pin table precisely because the npm
     module's caret range and release-scraping postinstall were unpinned.
-    The installer must not resurrect the npm path."""
+    Camoufox provisioning is gone entirely now (camofox is a self-hosted
+    opt-in via CAMOFOX_URL); the installer must not resurrect the npm path."""
     text = INSTALL_SH.read_text()
 
     assert "@askjo/camofox-browser" not in text

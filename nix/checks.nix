@@ -82,9 +82,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             allPins = (builtins.fromJSON (builtins.readFile ../installation/runtime-pins.json)).tools;
             # Only what the sealed bundle actually contains: optional
             # tools are staged on demand into a writable runtime dir, so
-            # there is nothing here to probe. (They also have no probe to
-            # write — camofox-browser is a server with no run-and-exit
-            # mode, which is why the provisioner verifies it by presence.)
+            # there is nothing here to probe.
             pins = lib.filterAttrs (_: entry: !(entry.optional or false)) allPins;
             # "How do I ask your version" is genuinely per-tool; the TOOLS
             # come from the table, so a new pin surfaces here as a missing

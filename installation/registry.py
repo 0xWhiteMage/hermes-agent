@@ -229,14 +229,38 @@ def load_pins(install_root: Path | None = None) -> dict[str, dict]:
                 )
             if dep == name:
                 raise ValueError(f"{path}: tool {name!r} extends itself")
+        requires = entry.get("requires", [])
+        if not isinstance(requires, list) or not all(
+            isinstance(dep, str) for dep in requires
+        ):
+            raise ValueError(
+                f"{path}: tool {name!r} 'requires' must be a list of names"
+            )
+        for dep in requires:
+            if dep not in tools:
+                raise ValueError(
+                    f"{path}: tool {name!r} requires {dep!r}, which is not pinned"
+                )
+            if dep == name:
+                raise ValueError(f"{path}: tool {name!r} requires itself")
         files = entry.get("files")
         if not isinstance(files, dict) or not files:
             raise ValueError(f"{path}: tool {name!r} has no 'files' table")
         if ANY_TARGET in files and len(files) > 1:
-            raise ValueError(
-                f"{path}: tool {name!r} mixes {ANY_TARGET!r} with per-target files; "
-                f"one artifact serves every target, or each target names its own"
-            )
+            # The one legal mix: 'any' plus DECLARED GAPS. The artifact is
+            # target-independent, but a target can still be excluded from
+            # it (agent-browser's registry tarball ships every platform's
+            # binary EXCEPT win32-arm64). Any other per-target row next to
+            # 'any' is a contradiction.
+            for extra_target, spec in files.items():
+                if extra_target == ANY_TARGET:
+                    continue
+                if not (isinstance(spec, dict) and "missing" in spec):
+                    raise ValueError(
+                        f"{path}: tool {name!r} mixes {ANY_TARGET!r} with per-target files; "
+                        f"one artifact serves every target, or each target names its own "
+                        f"(only a declared gap may sit beside {ANY_TARGET!r})"
+                    )
         declared_missing = {
             target for target, spec in files.items()
             if isinstance(spec, dict) and "missing" in spec
@@ -328,6 +352,31 @@ def extends_closure(tool: str, pins: dict[str, dict]) -> set[str]:
             continue
         seen.add(name)
         stack.extend(_extends(name, pins))
+    return seen
+
+
+def requires_closure(tool: str, pins: dict[str, dict]) -> set[str]:
+    """*tool* plus every tool it transitively requires.
+
+    ``requires`` drives SELECTION and nothing else: asking for a tool
+    means asking for what it cannot function without (agent-browser
+    launches a Chromium; a driver with no browser is not a configuration
+    anyone wants). Deliberately a separate walk from ``extends_closure``
+    — same shape, different meaning. ``extends`` also drives install
+    order and PATH precedence (the extender supersedes a copy the
+    extended tool ships); merging the two edges is how those
+    consequences would leak onto tools that only need co-selection.
+    The walk tolerates a hypothetical cycle (seen-set) rather than
+    relying on table validation for termination.
+    """
+    seen: set[str] = set()
+    stack = [tool]
+    while stack:
+        name = stack.pop()
+        if name in seen or name not in pins:
+            continue
+        seen.add(name)
+        stack.extend(pins[name].get("requires", []))
     return seen
 
 
@@ -443,7 +492,12 @@ def pinned_file(
 
     files = entry["files"]
     key = target or current_target()
-    spec = files.get(ANY_TARGET) if ANY_TARGET in files else files.get(key)
+    # An explicit row for the key wins over 'any': the only legal mix is
+    # 'any' + declared gaps, so this is how a target-independent artifact
+    # still excludes a target it does not serve.
+    spec = files.get(key)
+    if spec is None:
+        spec = files.get(ANY_TARGET)
     if spec is None:
         raise KeyError(f"{tool!r} has no pinned download for {key}")
     if "missing" in spec:

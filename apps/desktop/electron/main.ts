@@ -5014,10 +5014,11 @@ function createEmbeddedBackend(backendArgs) {
   // interpreter — a live collision, not a theoretical one.
   const desktopStateDir = app.getPath('userData')
 
-  const env = {
+  const env: Record<string, string> = {
     ...buildDesktopBackendEnv({
       hermesHome: HERMES_HOME,
       runtimeDir: payload.dir,
+      installRoot: repoRoot,
       pythonPathEntries: [],
       venvRoot: null
     }),

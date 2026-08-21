@@ -409,6 +409,10 @@ function stageManagedRuntimes(target, outDir, pythonExe) {
   // silently add several hundred MB to the installer, so bundling a
   // capability stays an edit to this list. A real failure — broken
   // download, bad digest — exits non-zero and fails the build.
+  //
+  // agent-browser expands through the pin table's `requires` edge to the
+  // chromium pair it launches — one name selects the whole browsing
+  // capability, so the driver and its browser cannot drift apart here.
   run(pythonExe, [
     "-m",
     "installation.provisioner",
@@ -416,7 +420,7 @@ function stageManagedRuntimes(target, outDir, pythonExe) {
     outDir,
     "--target",
     targetKey,
-    ...["git", "chromium", "chromium-headless-shell"]
+    ...["git", "agent-browser"]
       .flatMap((tool) => ["--extras", tool]),
     "--archive-cache",
     path.join(REPO_ROOT, "apps", "desktop", "build", "pin-archives"),

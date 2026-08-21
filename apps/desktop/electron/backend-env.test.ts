@@ -460,3 +460,55 @@ test('appendUniquePathEntries flattens arrays and strings alike', () => {
     '/a:/b:/c'
   )
 })
+
+test('a self-contained runtime dir is named to the Python child as HERMES_RUNTIME_DIR', () => {
+  // The embedded payload shape: facts and bytes in ONE directory, no
+  // storeDir. installation.paths reads this var for get_runtime_dir() AND
+  // get_tool_store(), so without it the spawned backend derives paths for
+  // a source checkout and every registry lookup returns None — the staged
+  // Chromium exists on disk and is invisible to the process that needs it.
+  const env = buildDesktopBackendEnv({
+    hermesHome: '/Users/test/.hermes',
+    runtimeDir: '/resources/agent-payload',
+    installRoot: '/resources/agent-payload/repo',
+    currentEnv: { PATH: '/usr/bin' },
+    platform: 'darwin',
+    pathModule: path.posix,
+    fsImpl: fakeFs({})
+  })
+
+  assert.equal(env.HERMES_RUNTIME_DIR, '/resources/agent-payload')
+  assert.equal(env.HERMES_INSTALL_ROOT, '/resources/agent-payload/repo')
+})
+
+test('a split facts/store shape must NOT export HERMES_RUNTIME_DIR', () => {
+  // The source-install shape: facts in <checkout>/.hermes-runtime, bytes in
+  // the machine-wide store. HERMES_RUNTIME_DIR collapses bytes into the
+  // facts dir on the Python side (get_tool_store returns the override), so
+  // exporting it here would point the backend's store at a directory that
+  // holds only runtimes.json.
+  const env = buildDesktopBackendEnv({
+    hermesHome: '/Users/test/.hermes',
+    runtimeDir: '/install/.hermes-runtime',
+    storeDir: '/Users/test/.hermes/tools',
+    currentEnv: { PATH: '/usr/bin' },
+    platform: 'darwin',
+    pathModule: path.posix,
+    fsImpl: fakeFs({})
+  })
+
+  assert.equal(env.HERMES_RUNTIME_DIR, undefined)
+  assert.equal(env.HERMES_INSTALL_ROOT, undefined)
+})
+
+test('no runtime dir at all exports neither marker', () => {
+  const env = buildDesktopBackendEnv({
+    hermesHome: '/Users/test/.hermes',
+    currentEnv: { PATH: '/usr/bin' },
+    platform: 'darwin',
+    pathModule: path.posix
+  })
+
+  assert.equal(env.HERMES_RUNTIME_DIR, undefined)
+  assert.equal(env.HERMES_INSTALL_ROOT, undefined)
+})

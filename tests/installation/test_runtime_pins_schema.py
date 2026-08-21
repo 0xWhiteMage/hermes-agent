@@ -79,13 +79,13 @@ class Fault:
 
 
 def _gap_without_a_reason(doc: Document) -> None:
-    doc["tools"]["camoufox"]["files"]["win32-arm64"] = {"missing": ""}
+    doc["tools"]["chromium"]["files"]["win32-arm64"] = {"missing": ""}
 
 
 def _gap_and_artifact_at_once(doc: Document) -> None:
-    doc["tools"]["camoufox"]["files"]["win32-arm64"] = {
+    doc["tools"]["chromium"]["files"]["win32-arm64"] = {
         "missing": "no upstream build",
-        "url": "https://example.invalid/camoufox.zip",
+        "url": "https://example.invalid/chromium.zip",
         "sha256": "a" * 64,
     }
 

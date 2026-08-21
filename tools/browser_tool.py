@@ -908,8 +908,8 @@ def _browser_install_hint() -> str:
 # changes.
 NPX_AGENT_BROWSER_SENTINEL = "npx agent-browser"
 
-# Pinned to match scripts/install.sh / scripts/install.ps1's
-# "agent-browser@^0.26.0" managed install so a git-clone install resolving
+# Pinned to match the runtime registry's agent-browser pin
+# (installation/runtime-pins.json) so a git-clone install resolving
 # agent-browser via bare npx gets the same version as a managed install,
 # instead of floating latest with no integrity check. Update both together.
 AGENT_BROWSER_NPX_SPEC = "agent-browser@^0.26.0"
@@ -2494,6 +2494,26 @@ def _find_agent_browser(*, validate: bool = True) -> str:
     # exit 127 (issue #48521). Validating lets a dead candidate fall through to
     # the next working resolution (extended PATH → local .bin → npx) instead of
     # caching the broken one and silently killing every browser tool.
+
+    # The PINNED copy from the runtime registry, first: a sealed bundle has
+    # no network for npx and nothing on PATH, so the staged fact is the only
+    # rung that can answer there. It is a native binary (no node needed) and
+    # digest-verified at staging. Fail-open like every registry consult —
+    # a broken runtime dir falls through to the base ladder below.
+    try:
+        from installation.registry import tool_path as _registry_tool_path
+
+        pinned = _registry_tool_path("agent-browser")
+    except Exception:
+        pinned = None
+    if pinned is not None:
+        pinned_str = str(pinned)
+        if agent_browser_runnable(pinned_str) if validate else _agent_browser_candidate_present(pinned_str):
+            if not validate:
+                return pinned_str
+            _cached_agent_browser = pinned_str
+            _agent_browser_resolved = True
+            return pinned_str
 
     # Check if it's in PATH (global install)
     which_result = shutil.which("agent-browser")
@@ -5042,15 +5062,32 @@ def _chromium_search_roots() -> List[str]:
 
     1. ``PLAYWRIGHT_BROWSERS_PATH`` when set (Docker image sets this to
        ``/opt/hermes/.playwright``).
-    2. ``~/.cache/ms-playwright`` — Playwright's default on Linux/macOS.
-    3. ``~/Library/Caches/ms-playwright`` — Playwright's default on macOS.
-    4. ``%USERPROFILE%\\AppData\\Local\\ms-playwright`` — Playwright's default
+    2. The managed tool store, when the runtime registry records a browser
+       fact. Children spawned through ``hermes_subprocess_env`` get this as
+       ``PLAYWRIGHT_BROWSERS_PATH``, but THIS process was not spawned that
+       way — without the registry consult here, ``_chromium_installed()``
+       misses a staged browser and ``_maybe_autoinstall_chromium`` re-downloads
+       ~170MB that is already in the store.
+    3. ``~/.cache/ms-playwright`` — Playwright's default on Linux/macOS.
+    4. ``~/Library/Caches/ms-playwright`` — Playwright's default on macOS.
+    5. ``%USERPROFILE%\\AppData\\Local\\ms-playwright`` — Playwright's default
        on Windows.
     """
     roots: List[str] = []
     env_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
     if env_path and env_path != "0":
         roots.append(env_path)
+    # Fail-open, resolved per call: a managed tree can appear mid-process
+    # (a heal, a first provisioner run), and a broken runtime dir must not
+    # break the browser tool. Same posture as _apply_managed_runtime_tool_env.
+    try:
+        from installation.env import managed_tool_env
+
+        managed = managed_tool_env().get("PLAYWRIGHT_BROWSERS_PATH", "")
+        if managed and managed not in roots:
+            roots.append(managed)
+    except Exception:
+        pass
     home = os.path.expanduser("~")
     roots.append(os.path.join(home, ".cache", "ms-playwright"))
     if sys.platform == "darwin":

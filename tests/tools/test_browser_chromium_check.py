@@ -33,6 +33,37 @@ class TestChromiumSearchRoots:
         home = os.path.expanduser("~")
         assert any(r == os.path.join(home, ".cache", "ms-playwright") for r in roots)
 
+    def test_managed_store_included_when_browser_fact_exists(
+        self, monkeypatch, tmp_path
+    ):
+        """A staged chromium fact makes the tool store a search root — the
+        parent process consults the registry directly, since nothing spawned
+        IT with PLAYWRIGHT_BROWSERS_PATH set."""
+        from installation import registry as rr
+
+        rel = "chromium-1208/chrome-linux64/chrome"
+        binary = tmp_path / rel
+        binary.parent.mkdir(parents=True)
+        binary.write_text("#!/bin/sh\n")
+        facts = {"chromium": rr.RuntimeFact(version="1208", path=rel)}
+        rr.save_facts(facts, tmp_path)
+
+        monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path))
+
+        roots = bt._chromium_search_roots()
+
+        assert str(tmp_path) in roots
+        # env var (rung 1) outranks the registry consult (rung 2)
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "/explicit")
+        assert bt._chromium_search_roots()[0] == "/explicit"
+
+    def test_no_browser_fact_means_no_store_root(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path))
+        roots = bt._chromium_search_roots()
+        assert str(tmp_path) not in roots
+
 
 class TestChromiumInstalled:
     def test_true_when_plain_chromium_on_path(self, monkeypatch):

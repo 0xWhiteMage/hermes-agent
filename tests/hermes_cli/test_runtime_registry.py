@@ -285,7 +285,10 @@ class TestRealPinTable:
         for tool, entry in rr.load_pins().items():
             files = entry["files"]
             for target in expected:
-                spec = files.get(rr.ANY_TARGET) or files.get(target, {})
+                # Mirror the resolver's precedence: an explicit row for the
+                # target (which can only be a declared gap when 'any' is
+                # present) wins over the target-independent artifact.
+                spec = files.get(target) or files.get(rr.ANY_TARGET, {})
                 if "missing" in spec:
                     # The gap is allowed ONLY as an explicit, reasoned
                     # declaration — and the resolver must surface it as
@@ -325,11 +328,11 @@ class TestRealPinTable:
         uniqueness -- one url has one digest, and one digest belongs to
         one url.
 
-        Two targets legitimately share a row when upstream ships no build
-        for one of them: camoufox has no Windows arm64 artifact, so
-        win32-arm64 points at the x86_64 zip and runs it emulated. Same
-        url, same digest, deliberately -- the aliasing is visible in the
-        url, which is exactly what a copy-paste error is not.
+        Two targets may legitimately share a row when upstream ships no
+        build for one of them and the pin aliases it to another target's
+        artifact (run emulated). Same url, same digest, deliberately --
+        the aliasing is visible in the url, which is exactly what a
+        copy-paste error is not.
         """
         for tool, entry in rr.load_pins().items():
             by_url: dict[str, str] = {}

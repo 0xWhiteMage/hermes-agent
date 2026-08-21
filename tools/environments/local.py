@@ -644,6 +644,15 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     # Windows UTF-8 safety for spawned processes (#31420).
     env.setdefault("PYTHONUTF8", "1")
 
+    # Managed runtime tool env (PLAYWRIGHT_BROWSERS_PATH, the portable-git
+    # GIT_EXEC_PATH contract, npm cache) — the same application _make_run_env
+    # does for terminal children. Without it the two spawn surfaces diverge:
+    # a terminal child finds the store's pinned Chromium while the browser
+    # worker (which builds its env HERE) re-downloads ~170MB into
+    # ~/.cache/ms-playwright. setdefault-only inside, so an explicit caller
+    # or user value always wins.
+    _apply_managed_runtime_tool_env(env)
+
     _inject_context_hermes_home(env)
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(env)

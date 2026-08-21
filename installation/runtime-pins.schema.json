@@ -69,6 +69,12 @@
           "items": { "type": "string" },
           "uniqueItems": true
         },
+        "requires": {
+          "type": "array",
+          "description": "Tools this one cannot function without. Drives SELECTION only: asking for this tool (--extras, provision_tool) also asks for these, transitively. No install-order or PATH consequence — that is what separates it from 'extends'. agent-browser requires the chromium pair it launches.",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
         "files": {
           "type": "object",
           "description": "Map of '<platform>-<arch>' targets to their pinned artifact, or to a declared gap saying why no artifact exists there. The single key 'any' replaces the whole map when one artifact serves every target. Otherwise every target is named: a silently absent row and a deliberate gap look identical to a reader, and only one of them is a bug.",
@@ -80,7 +86,15 @@
           "oneOf": [
             {
               "required": ["any"],
-              "maxProperties": 1
+              "properties": {
+                "any": { "$ref": "#/$defs/artifact" },
+                "darwin-arm64": { "$ref": "#/$defs/missing" },
+                "darwin-x64": { "$ref": "#/$defs/missing" },
+                "linux-arm64": { "$ref": "#/$defs/missing" },
+                "linux-x64": { "$ref": "#/$defs/missing" },
+                "win32-arm64": { "$ref": "#/$defs/missing" },
+                "win32-x64": { "$ref": "#/$defs/missing" }
+              }
             },
             {
               "required": [

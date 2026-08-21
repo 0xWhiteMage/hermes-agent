@@ -4,8 +4,8 @@ History: Install-AgentBrowser once eagerly npm-installed agent-browser and
 later @askjo/camofox-browser@^1.5.2 (PR #44772 review trimmed the former).
 Commit 0583e3a720 ("pin the browser BINARY; the npm module gets a lockfile")
 then removed the function entirely: browser provisioning became a pinned-
-binary concern (camoufox in the pin table / provisioner), and the default
-browser backend on Windows is Install-BrowserUseCli (uv tool install).
+binary concern (the provisioner's browser pins), and the default browser
+backend on Windows is Install-BrowserUseCli (uv tool install).
 
 These tests guard the properties that outlived the refactor:
 - no eager npm install of agent-browser anywhere in the installer,
@@ -46,10 +46,11 @@ def test_agent_browser_is_never_eagerly_npm_installed() -> None:
 
 
 def test_camofox_npm_module_is_not_installed_by_the_installer() -> None:
-    """0583e3a720 moved camoufox acquisition to the pinned-binary provisioner
-    (runtime-pins.json optional tool) precisely because the npm module's
-    caret range and release-scraping postinstall were unpinned. The installer
-    must not resurrect the npm path."""
+    """0583e3a720 moved browser acquisition to the pinned-binary provisioner
+    precisely because the npm module's caret range and release-scraping
+    postinstall were unpinned. Camoufox provisioning is gone entirely now
+    (camofox is a self-hosted opt-in via CAMOFOX_URL); the installer must
+    not resurrect the npm path."""
     text = INSTALL_PS1.read_text()
 
     assert "@askjo/camofox-browser" not in text
