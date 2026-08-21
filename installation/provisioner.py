@@ -324,7 +324,15 @@ def _probe_version(
 
     None when the binary does not run — callers treat that as
     unprovisioned, never as fatal.
+
+    On Windows a GUI-subsystem binary prints nothing to stdout —
+    chrome.exe --version is the canonical case — so an empty exec probe
+    falls back to the PE VERSIONINFO resource. The fallback still
+    answers the probe's real question ("is this a working binary for
+    this host?") for that shape: a cross-arch or truncated PE has no
+    readable version resource.
     """
+    out = ""
     try:
         out = subprocess.run(
             [str(binary)] + (args or ["--version"]),
@@ -333,6 +341,36 @@ def _probe_version(
             timeout=30,
             check=False,
             env=env,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    import re as _re
+
+    m = _re.search(r"\d+(?:\.\d+)+", out or "")
+    if m:
+        return m.group(0)
+    if sys.platform == "win32":
+        return _windows_file_version(binary)
+    return None
+
+
+def _windows_file_version(binary: Path) -> Optional[str]:
+    """The PE VERSIONINFO product version, or None.
+
+    PowerShell reads the resource without executing the binary. The
+    path travels in an environment variable, never spliced into the
+    script text — a path containing quotes cannot change the command.
+    """
+    cmd = "(Get-Item -LiteralPath $env:HERMES_PROBE_PATH).VersionInfo.ProductVersion"
+    probe_env = dict(os.environ, HERMES_PROBE_PATH=str(binary))
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=probe_env,
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return None
