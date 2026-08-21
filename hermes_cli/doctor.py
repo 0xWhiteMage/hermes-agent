@@ -332,8 +332,14 @@ def _check_managed_runtimes() -> None:
         if fact is None:
             # An OPTIONAL tool nobody installed is a capability nobody
             # asked for, not drift (same rule as provisioner.stale_tools).
+            # Say only what this sweep knows — that no PIN was staged. The
+            # capability itself may still resolve another way (agent-browser
+            # through npx, chromium through a system browser), and the
+            # capability checks further down own that verdict. A line here
+            # reading "not installed" contradicts the "✓ agent-browser"
+            # those checks print in the same run.
             if is_optional(tool, pins):
-                check_info(f"{tool} not installed (optional)")
+                check_info(f"{tool} not staged from the pin table (optional)")
                 continue
             system = _safe_which("rg" if tool == "ripgrep" else tool)
             if system:

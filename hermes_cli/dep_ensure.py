@@ -5,9 +5,11 @@ Detection and prompting live here in Python — not in install.sh — because:
   2. Detection is instant; spawning bash for a "is node installed?" check is waste.
   3. Python controls the UX (rich prompts, non-interactive fallback, TTY detection).
 
-install.sh is still the *installation* backend because it has 1900 lines of
-battle-tested OS detection and package-manager logic (apt/brew/pacman/dnf/
-zypper/…).  Reimplementing that in Python would be huge duplication.
+install.sh is still the *installation* backend for deps whose install is
+OS package-manager work, because it has 1900 lines of battle-tested OS
+detection (apt/brew/pacman/dnf/zypper/…).  Reimplementing that in Python
+would be huge duplication.  A dep that is a PINNED tool never reaches a
+shell at all: the provisioner stages it digest-verified and records it.
 
 Deps that degrade gracefully (ripgrep → grep fallback, ffmpeg → skip conversion)
 don't need ensure_dependency wired in — only hard-fail sites do (TUI needs node,
@@ -21,7 +23,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from hermes_constants import agent_browser_runnable
 from tools.environments.local import hermes_subprocess_env
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -39,14 +40,26 @@ _DEP_CHECKS = {
     # PATH, so which() would report Node missing on an install that has one and
     # trigger a redundant re-install.
     "node": _node_present,
-    "browser": lambda: (
-        agent_browser_runnable(shutil.which("agent-browser"))
-        or _has_system_browser()
-        or _has_hermes_agent_browser()
-        or _has_npx_agent_browser()
-    ),
+    "browser": lambda: _agent_browser_resolves() or _has_system_browser(),
     "ripgrep": lambda: shutil.which("rg") is not None,
     "ffmpeg": lambda: shutil.which("ffmpeg") is not None,
+}
+
+# Deps whose whole install is "stage this pinned tool". The provisioner
+# downloads the exact pinned artifact, verifies its digest before
+# extraction, brings up whatever it extends and requires, and records it
+# in the install's runtimes.json — so a second ensure_dependency() call
+# is a no-op and `hermes update`'s sweep keeps it at the pin from then
+# on. Deps NOT listed here still shell out to install.sh/install.ps1,
+# which owns the OS package-manager work Python has no business
+# restating.
+# "browser" maps to the driver, not to a browser engine: the pin table
+# records agent-browser as requiring the Chromium pair, so the closure
+# walk stages the engine with it.
+_PINNED_DEPS = {
+    "node": "node",
+    "ripgrep": "ripgrep",
+    "browser": "agent-browser",
 }
 
 _DEP_DESCRIPTIONS = {
@@ -55,6 +68,30 @@ _DEP_DESCRIPTIONS = {
     "ripgrep": "ripgrep (fast file search)",
     "ffmpeg": "ffmpeg (TTS voice messages)",
 }
+
+
+def _agent_browser_resolves() -> bool:
+    """True when the browser driver resolves to anything runnable.
+
+    ONE call into ``tools.browser_tool._find_agent_browser``, which owns
+    the whole cascade: the pinned copy from the runtime registry, PATH,
+    the managed Node tree, the repo node_modules, and the npx sentinel.
+    A check that restates any of those rungs here answers differently
+    from the tool it gates — the pinned copy is the proof. Its recorded
+    name carries the host target (``agent-browser-linux-x64``), so a
+    probe that looks for a file called ``agent-browser`` misses a staged
+    driver and reports a successful provision as a failure.
+
+    ``validate=False`` keeps this a cheap existence check: no subprocess
+    spawn, and no lazy install (only ``validate=True`` calls back into
+    ``ensure_dependency``, so the recursion stays bounded).
+    """
+    try:
+        from tools.browser_tool import _find_agent_browser
+
+        return bool(_find_agent_browser(validate=False))
+    except Exception:
+        return False
 
 
 def _has_system_browser() -> bool:
@@ -66,34 +103,6 @@ def _has_system_browser() -> bool:
         if shutil.which(name):
             return True
     return False
-
-
-def _has_npx_agent_browser() -> bool:
-    """agent-browser resolves lazily via npx on the default install (#43564),
-    invisible to the PATH/managed-dir probes above. Mirror
-    tools.browser_tool.check_browser_requirements so this check can't diverge
-    from what browser tools actually find."""
-    try:
-        from tools.browser_tool import (
-            _find_agent_browser,
-            _is_npx_agent_browser_sentinel,
-        )
-        browser_cmd = _find_agent_browser(validate=False)
-    except Exception:
-        return False
-    return _is_npx_agent_browser_sentinel(browser_cmd)
-
-
-def _has_hermes_agent_browser() -> bool:
-    from installation import env as runtime_env
-
-    # The managed Node tree is install-scoped; managed_path_dirs owns
-    # where it lives and the per-platform layout order (npm -g --prefix
-    # drops .cmd shims in the prefix root on Windows, bin/ on POSIX).
-    name = "agent-browser.cmd" if _IS_WINDOWS else "agent-browser"
-    return any(
-        (directory / name).is_file() for directory in runtime_env.managed_path_dirs()
-    )
 
 
 def _find_install_script(
@@ -148,6 +157,28 @@ def ensure_dependency(
             return False
         if reply not in ("", "y", "yes"):
             return False
+
+    # A pinned tool needs no shell: the provisioner IS the installer, and
+    # it is the same engine the installers and `hermes update` run, so the
+    # tool arrives digest-verified and recorded rather than at whatever
+    # version a package manager happened to offer. install.sh and
+    # install.ps1 reject these names outright, so the shell-out below can
+    # never install them.
+    pinned = _PINNED_DEPS.get(dep)
+    if pinned is not None:
+        try:
+            from installation.provisioner import provision_tool
+
+            result = provision_tool(pinned)
+        except Exception as exc:
+            if interactive:
+                print(f"  Could not provision {pinned}: {exc}")
+            return False
+        if not result.provisioned:
+            if interactive:
+                print(f"  Could not provision {pinned}: {result.detail}")
+            return False
+        return check()
 
     script, shell = _find_install_script()
     if script is None:
