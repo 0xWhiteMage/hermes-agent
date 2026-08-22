@@ -358,8 +358,14 @@ RUN mkdir -p /opt/hermes/bin && \
 # `distribution` field. The stamp lives next to the code (NOT in $HERMES_HOME,
 # a shared data volume that may be bind-mounted from a host that has its own
 # install) — see hermes_cli/runtime_tree.py.
+#
+# updateMechanism is REQUIRED: both installation.tree.read_build_info() and
+# the stdlib fast path in hermes_cli/_startup_fast.py hard-fail on a stamp
+# that lacks it, so a fallback without the field made `hermes --version`
+# crash in every locally-built image. `external` is the truth for Docker —
+# the image is rebuilt and re-pulled, it never updates itself.
 RUN if [ ! -f /opt/hermes/install-stamp.json ]; then \
-        printf '{"schemaVersion":2,"commit":"0000000000000000000000000000000000000000","distribution":"docker","source":"fallback"}\n' \
+        printf '{"schemaVersion":2,"commit":"0000000000000000000000000000000000000000","distribution":"docker","source":"fallback","updateMechanism":"external"}\n' \
             > /opt/hermes/install-stamp.json; \
     fi
 # Start as root so the s6-overlay stage2 hook can usermod/groupmod and chown

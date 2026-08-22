@@ -39,18 +39,38 @@ def test_dockerfile_does_not_chown_install_trees_to_hermes() -> None:
         )
 
 
-def test_dockerfile_guarantees_code_scoped_install_stamp() -> None:
-    """The image always carries /opt/hermes/install-stamp.json.
+def test_dockerfile_fallback_stamp_is_readable_by_the_runtime() -> None:
+    """The image always carries a USABLE /opt/hermes/install-stamp.json.
 
     detect_install_method() reads the stamp's ``distribution`` field from
     the code tree; keeping it code-scoped self-identifies the image as
     'docker' WITHOUT writing into the shared $HERMES_HOME data volume
     (which a host install may also use). CI COPYs a full-provenance stamp;
-    a local build without CI must get the distribution-only fallback.
+    a local build without CI must get the fallback.
+
+    The fallback JSON is extracted from the Dockerfile and fed to the real
+    reader, rather than compared against a frozen string literal. The
+    literal version of this test is how the bug it now covers shipped: the
+    fallback omitted ``updateMechanism``, both stamp readers hard-fail
+    without it, and every locally-built image crashed on
+    ``hermes --version`` while this test stayed green against the exact
+    bytes that crashed.
     """
+    import json
+    import re
+
     text = _dockerfile_text()
-    assert 'printf \'{"schemaVersion":2,"commit":"0000000000000000000000000000000000000000","distribution":"docker","source":"fallback"}\\n\'' in text
     assert "if [ ! -f /opt/hermes/install-stamp.json ]" in text
+
+    match = re.search(r"printf '(\{\"schemaVersion\".*?\})\\n'", text)
+    assert match, "no fallback install-stamp printf found in the Dockerfile"
+    stamp = json.loads(match.group(1))
+
+    # The reader's own contract, not a restatement of it.
+    from installation.tree import UPDATE_MECHANISMS
+
+    assert stamp["distribution"] == "docker"
+    assert stamp["updateMechanism"] in UPDATE_MECHANISMS
 
     # The legacy stamps must not come back.
     assert ".install_method" not in text
