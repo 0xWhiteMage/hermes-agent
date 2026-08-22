@@ -579,25 +579,26 @@ jobs:
           if [[ "$MATRIX_LABEL" == win32-* ]] && [ -n "$AZURE_SIGN_ENDPOINT" ] && [ -n "$AZURE_CLIENT_ID" ]; then
             echo "Windows signing: Azure Trusted Signing at $AZURE_SIGN_ENDPOINT"
           fi
-          # Raise the file-descriptor limit before signing (macOS: EMFILE).
+          # Raise the file-descriptor limit for the build (macOS).
           #
-          # @electron/osx-sign's walk (dist/util.js::walk) recurses with
-          # `Promise.all(children.map(...))` and no concurrency bound, and
-          # every regular file it reaches gets an fs.open via isBinaryFile.
-          # The bundled payload makes that fatal: site-packages/lark_oapi
-          # alone is 11,112 files, so the walk holds thousands of
-          # descriptors at once and dies with
-          #   EMFILE: too many open files, open '.../lark_oapi/.../reaction.py'
+          # This is a headroom setting, NOT the EMFILE fix. The fix is
+          # apps/desktop/scripts/fs-open-limit.cjs, preloaded into the
+          # electron-builder process, which caps concurrent fs.open calls so
+          # @electron/osx-sign's unbounded walk cannot exhaust the table. The
+          # walk passes at the macOS default of 256 with the cap alone
+          # (verified), so this step is not load-bearing.
           #
-          # This must run in the SAME shell as the build. Each workflow step
-          # gets a fresh shell, so a standalone `ulimit` step would raise the
-          # limit for a process that has already exited. Children inherit the
-          # limit, which is what carries it into node and the codesign spawns.
+          # It stays because the cap scales with the limit (a quarter of it),
+          # so a higher ceiling means a wider walk and a faster sign, and
+          # because other build stages open files without going through that
+          # preload. If it must run at all it has to run in the SAME shell as
+          # the build: each workflow step gets a fresh shell, so a standalone
+          # `ulimit` step would raise the limit for a process that has already
+          # exited. Children inherit it, which carries it into node.
           #
-          # Best-effort by design: `|| true` keeps a runner whose hard cap is
-          # below 16384 building instead of failing on the ceiling. The echo
-          # records what was actually granted, so a future EMFILE can be read
-          # off the log rather than guessed at.
+          # `|| true`: a runner with a lower hard cap still builds. The echo
+          # records what was granted, so a future EMFILE is readable from the
+          # log rather than guessed at.
           if [ "$RUNNER_OS" = "macOS" ]; then
             ulimit -n 16384 2>/dev/null || true
             echo "file descriptor limit: soft=$(ulimit -Sn) hard=$(ulimit -Hn)"

@@ -59,7 +59,21 @@ if (args.includes("--win") && process.env.AZURE_SIGN_ENDPOINT && process.env.AZU
   console.log(`[run-electron-builder] Windows signing: Azure Trusted Signing at ${process.env.AZURE_SIGN_ENDPOINT}`)
 }
 
-const result = spawnSync(process.execPath, [electronBuilderCli(), ...args], {
+// Cap concurrent fs.open calls in the electron-builder process.
+//
+// @electron/osx-sign's walk recurses with Promise.all and no concurrency
+// bound, opening every file it meets through isbinaryfile, so peak
+// descriptors track the size of the .app. The bundled payload
+// (site-packages/lark_oapi alone is 11,112 files) blew past the macOS
+// limit with EMFILE during signing.
+//
+// --require, not an import inside this file: isbinaryfile captures
+// `promisify(fs.open)` at ITS module load, so the patch has to be
+// installed before electron-builder's require graph is walked. Preloading
+// in the child is the only point that is reliably early enough.
+const preload = path.join(import.meta.dirname, "fs-open-limit.cjs")
+
+const result = spawnSync(process.execPath, ["--require", preload, electronBuilderCli(), ...args], {
   stdio: "inherit",
 })
 if (result.error) {
