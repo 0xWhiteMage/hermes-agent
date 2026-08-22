@@ -178,8 +178,19 @@ class TestWebExtractTavily:
         }
         mock_response.raise_for_status = MagicMock()
 
+        # web_extract_tool runs every URL through the SSRF guard first, and
+        # that guard does a REAL DNS lookup. On a host without DNS (offline
+        # dev box, sandboxed CI) example.com does not resolve, the URL is
+        # dropped before httpx.post is ever reached, and the assertions below
+        # fail on empty content with "Blocked request — DNS resolution failed".
+        # This test is about Tavily dispatch, not about SSRF policy, so the
+        # verdict is stubbed. tests/tools/test_url_safety.py owns the guard.
+        async def _safe(_url):
+            return True
+
         with patch("tools.web_tools._get_backend", return_value="tavily"), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
+             patch("tools.web_tools.async_is_safe_url", _safe), \
              patch("tools.web_tools.httpx.post", return_value=mock_response):
             from tools.web_tools import web_extract_tool
             result = json.loads(asyncio.get_event_loop().run_until_complete(

@@ -13,6 +13,7 @@ Covers the three seams the integration relies on:
 """
 import json
 import os
+import shutil
 import stat
 import time
 
@@ -966,19 +967,26 @@ class TestInstallCli:
         home = tmp_path / "home"
         bin_dir = home / "bin"
         bin_dir.mkdir(parents=True)
+        # Resolve chmod BEFORE PATH is emptied below — shutil.which reads the
+        # live PATH, so doing this afterwards finds nothing.
+        chmod = shutil.which("chmod")
+        assert chmod, "no chmod on this host"
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setenv("PATH", str(tmp_path / "empty"))
         # install_cli verifies via _find_cli(), which the tests/tools conftest
         # pins to None — restore the real resolver for this test.
         monkeypatch.setattr(bu_cli, "_find_cli", bu_cli._find_cli_unpatched)
         # fake uv: `uv tool install browser-use` drops a binary into UV_TOOL_BIN_DIR.
-        # Absolute /bin/chmod: PATH is emptied above, so bare chmod won't resolve.
+        # The script cannot rely on a bare `chmod` resolving, because PATH is
+        # emptied above. It cannot hardcode /bin/chmod either: NixOS ships no
+        # /bin/chmod (only /bin/sh is guaranteed), which failed this test with
+        # "/bin/chmod: No such file or directory". Bake in the resolved path.
         uv = tmp_path / "uv"
         uv.write_text(
             "#!/bin/sh\n"
             'target="$UV_TOOL_BIN_DIR/browser-use"\n'
             'echo "#!/bin/sh" > "$target"\n'
-            '/bin/chmod +x "$target"\n'
+            f'{chmod} +x "$target"\n'
         )
         uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
         import sys as _sys
