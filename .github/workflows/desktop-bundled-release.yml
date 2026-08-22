@@ -579,6 +579,29 @@ jobs:
           if [[ "$MATRIX_LABEL" == win32-* ]] && [ -n "$AZURE_SIGN_ENDPOINT" ] && [ -n "$AZURE_CLIENT_ID" ]; then
             echo "Windows signing: Azure Trusted Signing at $AZURE_SIGN_ENDPOINT"
           fi
+          # Raise the file-descriptor limit before signing (macOS: EMFILE).
+          #
+          # @electron/osx-sign's walk (dist/util.js::walk) recurses with
+          # `Promise.all(children.map(...))` and no concurrency bound, and
+          # every regular file it reaches gets an fs.open via isBinaryFile.
+          # The bundled payload makes that fatal: site-packages/lark_oapi
+          # alone is 11,112 files, so the walk holds thousands of
+          # descriptors at once and dies with
+          #   EMFILE: too many open files, open '.../lark_oapi/.../reaction.py'
+          #
+          # This must run in the SAME shell as the build. Each workflow step
+          # gets a fresh shell, so a standalone `ulimit` step would raise the
+          # limit for a process that has already exited. Children inherit the
+          # limit, which is what carries it into node and the codesign spawns.
+          #
+          # Best-effort by design: `|| true` keeps a runner whose hard cap is
+          # below 16384 building instead of failing on the ceiling. The echo
+          # records what was actually granted, so a future EMFILE can be read
+          # off the log rather than guessed at.
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            ulimit -n 16384 2>/dev/null || true
+            echo "file descriptor limit: soft=$(ulimit -Sn) hard=$(ulimit -Hn)"
+          fi
           node scripts/build-bundled-desktop.mjs --tag="$HERMES_BUNDLE_TAG" --variant="${{ matrix.variant }}"
 
       # makeappx reports manifest problems as a bare 0x80080204 with no
