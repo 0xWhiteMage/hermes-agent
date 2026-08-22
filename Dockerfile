@@ -75,9 +75,12 @@ FROM debian:13.4
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# Store Playwright browsers outside the volume mount so the build-time
-# install survives the /opt/data volume overlay at runtime.
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
+# The pinned Chromium lives in the managed tool store, and
+# installation/env.py exports PLAYWRIGHT_BROWSERS_PATH at that store for
+# every subprocess Hermes spawns, but ONLY when a browser fact exists.
+# The image used to hard-code the variable here for an
+# `npx playwright install` that wrote to it. Setting it now would name a
+# directory nothing populates and would outrank the fact.
 
 # Install system dependencies in one layer, clear APT cache.
 # tini was previously PID 1 to reap orphaned zombie processes (MCP stdio
@@ -86,9 +89,18 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # replaces tini with s6-overlay's /init (PID 1 = s6-svscan), which reaps
 # zombies non-blockingly on SIGCHLD and additionally supervises the main
 # hermes process, the dashboard, and per-profile gateways.
+#
+# The second list is the shared libraries the pinned Chromium links
+# against. `npx playwright install --with-deps` used to apt-install them
+# as a side effect; the provisioner stages the browser instead, and its
+# probe RUNS the binary, so these must be present before that step or the
+# build fails with "provisioned binary does not run". The list is the
+# `ldd ... | grep "not found"` set of the pinned chrome binary in this
+# base image, mapped to trixie package names.
 RUN apt-get -o Acquire::Retries=3 update && \
     apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
-    ca-certificates curl iputils-ping python3 python-is-python3 ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps openssh-client docker-cli xz-utils && \
+    ca-certificates curl iputils-ping python3 python-is-python3 ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps openssh-client docker-cli xz-utils \
+    libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libcairo2 libcups2t64 libdbus-1-3 libgbm1 libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 && \
     rm -rf /var/lib/apt/lists/*
 
 # Prefer the fixed SQLite over Debian's vulnerable libsqlite3.so.0. Keep the
@@ -185,10 +197,24 @@ COPY installation/ /opt/hermes-build/installation/
 # heredoc: hadolint cannot parse heredoc bodies and the docker-lint job
 # blocks on a Dockerfile parse error.
 COPY docker/publish_runtime_facts.py /opt/hermes-build/publish_runtime_facts.py
+# --extras agent-browser stages the browser driver and, through the pin
+# table's `requires` edges, the Chromium pair it drives. This replaces an
+# `npx playwright install --with-deps chromium` ladder that fetched
+# whatever revision the npm-resolved playwright wanted, unverified, and
+# recorded no fact -- so the container had a browser that the runtime
+# locator could not see. The image is a pin consumer for its browser now,
+# exactly as it already is for node, uv, gh and ripgrep.
 RUN PYTHONPATH=/opt/hermes-build python3 -m installation.provisioner \
-        --runtime-dir /opt/hermes/.hermes-runtime && \
+        --runtime-dir /opt/hermes/.hermes-runtime --extras agent-browser && \
     PYTHONPATH=/opt/hermes-build python3 /opt/hermes-build/publish_runtime_facts.py
 ENV PYTHONPATH_HERMES_BUILD=/opt/hermes-build
+# The image BUILDS its runtime dir instead of provisioning at first run,
+# exactly as the Nix bundle and the desktop payload do, so bytes and facts
+# are one self-contained directory. Without this the runtime reads facts
+# from here and looks for the bytes in the machine-wide store
+# (~/.hermes/tools, i.e. the /opt/data volume), finds nothing, and every
+# managed tool resolves to None -- installation/paths.py::resolve_bases.
+ENV HERMES_RUNTIME_DIR=/opt/hermes/.hermes-runtime
 WORKDIR /opt/hermes-build
 RUN PYTHONPATH=/opt/hermes-build python3 -c "\
 from installation.provisioner import require_current_runtimes; \
@@ -227,10 +253,6 @@ COPY apps/shared/ apps/shared/
 ENV npm_config_install_links=false
 
 RUN npm install --prefer-offline --no-audit --fetch-retries=5 && \
-    for i in 1 2 3; do \
-        npx playwright install --with-deps chromium --only-shell && break || \
-        { [ "$i" = 3 ] && exit 1; echo "playwright install failed (attempt $i); retrying in 10s"; sleep 10; }; \
-    done && \
     npm cache clean --force
 
 # ---------- Photon iMessage sidecar deps (baked, NS-606) ----------
