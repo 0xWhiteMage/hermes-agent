@@ -275,7 +275,7 @@ class TestRefreshActiveFeatures:
         # runs. The probe raises through ensure() as an InstallSkipped
         # subtype; we install a raising probe instead of faking the host,
         # which keeps this covered on Linux too.
-        def _probe(*, for_bundle: bool = False) -> None:
+        def _probe() -> None:
             raise ld.UnsupportedFeature(
                 "unsupported on Windows: Matrix E2EE depends on python-olm"
             )

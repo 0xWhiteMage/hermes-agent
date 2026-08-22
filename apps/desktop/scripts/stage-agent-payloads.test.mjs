@@ -22,6 +22,17 @@ import {
   stageCacheKey
 } from '../scripts/stage-agent-payloads.mjs'
 
+// Every (platform, arch) pair the release matrix builds. One runner per
+// pair, so a target answer is always a native answer.
+const TARGET_PAIRS = [
+  ['linux', 'x64'],
+  ['linux', 'arm64'],
+  ['darwin', 'x64'],
+  ['darwin', 'arm64'],
+  ['win32', 'x64'],
+  ['win32', 'arm64']
+]
+
 // ─── cli shims ─────────────────────────────────────────────────────
 
 test('shimFileNames yields the three [project.scripts] names, .exe only on win32', () => {
@@ -76,39 +87,61 @@ test('windows targets map to msvc toolchains, darwin to apple, linux to gnu', ()
   assert.match(resolveTargets('linux', 'x64').uvTarget, /linux-gnu$/)
 })
 
-test('targets with no published cryptography wheel build it from sdist', () => {
-  // The security floor is an exact pin, so a target that upstream stopped
-  // shipping wheels for must build that exact version on the runner —
-  // never resolve to an older wheel. cryptography 49+ dropped darwin-x64
-  // (48.0.1 was the last universal2) and never shipped win_arm64.
-  // pipTargetArgs turns the list into --no-binary overrides; an empty
-  // list on these targets re-creates the macos-13 lane failure
-  // ("No matching distribution found for cryptography==50.0.0").
-  for (const [platform, arch] of [['darwin', 'x64'], ['win32', 'arm64']]) {
-    const t = resolveTargets(platform, arch)
-    assert.ok(
-      (t.sourceBuild || []).includes('cryptography'),
-      `${t.key}: cryptography must be in sourceBuild — no wheel exists upstream`
-    )
-    const args = pipTargetArgs({ sitePackagesDir: '/out/sp', sourceBuild: t.sourceBuild })
-    assert.ok(args.includes('--no-binary'), `${t.key}: pip args carry no --no-binary override`)
-    assert.match(args[args.indexOf('--no-binary') + 1], /cryptography/)
-  }
-})
-
 // ─── pipTargetArgs ─────────────────────────────────────────────────
 
-test('site-packages install refuses sdists and targets the payload dir', () => {
+test('site-packages install targets the payload dir and installs the resolved set', () => {
   const args = pipTargetArgs({ sitePackagesDir: '/out/site-packages' })
   // Invariants: the requirements come from the frozen lockfile, and the
-  // install is binary-only. An sdist would try to compile on the build
-  // runner for packages we did not explicitly allow-list. The install is
-  // native, so no --platform cross-tags belong here.
+  // install is native, so no --platform cross-tags belong here.
   assert.equal(args[0], 'install')
-  assert.ok(args.includes('--only-binary'))
   assert.equal(args[args.indexOf('-r') + 1], 'requirements-payload.txt')
   assert.equal(args[args.indexOf('--target') + 1], '/out/site-packages')
   assert.ok(!args.includes('--platform'))
+})
+
+test('the payload install never re-resolves the frozen export', () => {
+  // `uv export --frozen` writes a complete resolved set, and uv applied
+  // [tool.uv] override-dependencies when it wrote the lock. pip cannot
+  // read those overrides. Without --no-deps it re-resolves and rejects
+  // the very pins uv chose: cryptography==50.0.0 (a security floor)
+  // against alibabacloud-tea-openapi's cryptography<49 cap, which fails
+  // the build with ResolutionImpossible.
+  for (const [platform, arch] of TARGET_PAIRS) {
+    const args = pipTargetArgs({ sitePackagesDir: '/sp', target: resolveTargets(platform, arch) })
+    assert.ok(args.includes('--no-deps'), `${platform}-${arch}: pip may re-resolve the frozen export`)
+  }
+})
+
+test('pip decides which packages compile, so no flag pre-empts the index', () => {
+  // --only-binary=:all: with a --no-binary allow-list used to make this
+  // decision ahead of pip. The list was built from the extras' DIRECT
+  // pins while the flag applied to the whole resolved closure, so it
+  // named packages that publish wheels (dingtalk-stream, which ships a
+  // wheel and NO sdist, was forbidden its only file) and missed the
+  // transitive ones that publish none (alibabacloud-credentials-api==1.0.0
+  // is sdist-only, and the filter reported it as "from versions: 1.0.1").
+  // Any such list restates what pip reads off the index and drifts from
+  // it, so the shape must carry neither flag.
+  for (const [platform, arch] of TARGET_PAIRS) {
+    const args = pipTargetArgs({ sitePackagesDir: '/sp', target: resolveTargets(platform, arch) })
+    assert.ok(!args.includes('--only-binary'), `${platform}-${arch}: --only-binary pre-empts pip`)
+    assert.ok(!args.includes('--no-binary'), `${platform}-${arch}: --no-binary re-states the index`)
+  }
+})
+
+test('pipTargetArgs is the same for every target', () => {
+  // The argument list carries no per-target names any more, so a drift
+  // between two targets would mean a table crept back in.
+  const shapes = new Set(
+    TARGET_PAIRS.map(([platform, arch]) =>
+      JSON.stringify(pipTargetArgs({ sitePackagesDir: '/sp', target: resolveTargets(platform, arch) }))
+    )
+  )
+  assert.equal(shapes.size, 1, `pip args differ per target: ${[...shapes].join(' vs ')}`)
+  assert.deepEqual(pipTargetArgs({ sitePackagesDir: '/sp' }), [
+    'install', '-r', 'requirements-payload.txt', '--no-deps',
+    '--target', '/sp', '--upgrade', '--no-compile'
+  ])
 })
 
 // ─── bundlePthLines ────────────────────────────────────────────────
@@ -300,24 +333,6 @@ test('python dir matcher accepts patch-versioned installs and rejects foreign bu
   assert.ok(!pattern.test('cpython-3.115-windows-aarch64-none'))
 })
 
-test('source-build exceptions override only-binary for the named packages only', () => {
-  // Fully wheel-covered targets keep the pure only-binary shape.
-  const linux = resolveTargets('linux', 'x64')
-  assert.deepEqual(pipTargetArgs({ sitePackagesDir: '/sp', sourceBuild: linux.sourceBuild ?? [] }), [
-    'install', '--only-binary', ':all:', '-r', 'requirements-payload.txt',
-    '--target', '/sp', '--upgrade', '--no-compile'
-  ])
-
-  // win32-arm64 names the packages with no published win_arm64 wheel;
-  // pip's later --no-binary overrides --only-binary per package, so
-  // exactly these build from sdist and everything else stays wheels-only.
-  const winArm = resolveTargets('win32', 'arm64')
-  const args = pipTargetArgs({ sitePackagesDir: '/sp', sourceBuild: winArm.sourceBuild })
-  const noBinary = args[args.indexOf('--no-binary') + 1]
-  assert.ok(args.indexOf('--no-binary') > args.indexOf('--only-binary'))
-  assert.equal(noBinary, 'cryptography,httptools,ruamel-yaml-clib,pywinpty,pyyaml')
-})
-
 // ─── stageCacheKey ─────────────────────────────────────────────────
 
 test('stageCacheKey is stable for identical inputs and moves with each one', () => {
@@ -328,32 +343,24 @@ test('stageCacheKey is stable for identical inputs and moves with each one', () 
   assert.equal(stageCacheKey(base), stageCacheKey({ ...base }))
 
   // Every input the staged trees depend on must change the key: the lock
-  // contents, the payload python version, and the target (which carries
-  // the triple and the source-build list).
+  // contents, the payload python version, and the target.
   assert.notEqual(stageCacheKey(base), stageCacheKey({ ...base, requirementsText: 'cryptography==46.0.4\n' }))
   assert.notEqual(stageCacheKey(base), stageCacheKey({ ...base, pythonVersion: '3.12' }))
   assert.notEqual(stageCacheKey(base), stageCacheKey({ ...base, target: resolveTargets('win32', 'x64') }))
 })
 
-test('stageCacheKey keys off the effective source-build set, not the target default', () => {
-  // lazy_deps' build-wheel gates add packages to the compile set for a
-  // target, so two runs of the SAME target can install with different
-  // pip flags. A key blind to that would reuse a site-packages staged
-  // with prebuilt wheels for a run that must compile them.
+test('stageCacheKey covers every input the pip install reads', () => {
+  // The install takes the exported requirements and the payload
+  // interpreter, and nothing else varies its result. Anything outside
+  // that set must NOT enter the key, or an identical staging restages
+  // for no reason. This is the guard against a per-target package list
+  // returning: such a list would be a fourth input, and one the key
+  // could silently disagree with pip about.
   const target = resolveTargets('win32', 'arm64')
   const base = { target, pythonVersion: '3.11', requirementsText: 'x==1\n' }
 
-  const withGate = stageCacheKey({ ...base, sourceBuild: [...(target.sourceBuild ?? []), 'sherpa-onnx'] })
-  assert.notEqual(stageCacheKey({ ...base, sourceBuild: target.sourceBuild ?? [] }), withGate)
-
-  // Order is not identity: the same set in another order is the same key.
-  assert.equal(
-    stageCacheKey({ ...base, sourceBuild: ['b', 'a'] }),
-    stageCacheKey({ ...base, sourceBuild: ['a', 'b'] })
-  )
-
-  // Omitted, it falls back to the target's own list — the pre-gate behavior.
-  assert.equal(stageCacheKey(base), stageCacheKey({ ...base, sourceBuild: target.sourceBuild }))
+  assert.equal(stageCacheKey(base), stageCacheKey({ ...base, sourceBuild: ['anything'] }))
+  assert.equal(stageCacheKey(base), stageCacheKey({ ...base, unrelated: 'ignored' }))
 })
 
 // ─── binary architecture probes ────────────────────────────────────

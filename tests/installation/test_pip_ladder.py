@@ -149,6 +149,86 @@ class TestUvOnly:
         assert "broken" in out.stderr or "could not run" in out.stderr
 
 
+class TestNoBuildAndWheelGap:
+    """--no-build, and reading uv's refusal back.
+
+    A user machine is not a build machine, so a runtime install forbids
+    source builds. The refusal has to be told apart from every other
+    resolution failure, because only this one means "this host cannot
+    have the feature" — which lazy_deps re-raises as UnsupportedFeature.
+    """
+
+    def test_no_build_is_off_unless_asked(self, tmp_path, monkeypatch):
+        # The bundled build lane compiles on purpose (native runner, real
+        # toolchains), so the flag must never arrive uninvited.
+        uv = _fake_bin(tmp_path / "uv", exit_code=0)
+        calls: list[list[str]] = []
+        real_run = subprocess.run
+
+        def spy(cmd, **kw):
+            calls.append([str(c) for c in cmd])
+            return real_run(cmd, **kw)
+
+        monkeypatch.setattr(pip_ladder.subprocess, "run", spy)
+
+        pip_ladder.pip_install(["pkg"], uv_bin=str(uv))
+        assert "--no-build" not in calls[0]
+
+        calls.clear()
+        pip_ladder.pip_install(["pkg"], uv_bin=str(uv), no_build=True)
+        assert "--no-build" in calls[0]
+
+    def test_a_wheel_gap_is_recognised_and_names_the_package(self):
+        # uv's real words, verbatim from `uv pip install --no-build` on a
+        # package that publishes an sdist only.
+        result = pip_ladder.LadderResult(
+            False,
+            "",
+            "  x No solution found when resolving dependencies:\n"
+            "  `-> Because alibabacloud-credentials-api==1.0.0 has no usable wheels and\n"
+            "      you require alibabacloud-credentials-api==1.0.0, we can conclude that\n"
+            "      your requirements are unsatisfiable.\n"
+            "\n"
+            "hint: Wheels are required for `alibabacloud-credentials-api` because "
+            "building from source is disabled for all packages (i.e., with `--no-build`)\n",
+            "uv",
+        )
+        assert pip_ladder.wheel_gap(result) == "alibabacloud-credentials-api"
+
+    def test_other_failures_are_not_mistaken_for_a_wheel_gap(self):
+        # Every unsatisfiable resolution shares the "No solution found"
+        # header, so matching THAT would turn a typo or an offline run
+        # into a permanent "unsupported on this machine" verdict. Only
+        # the hint means a wheel is missing.
+        no_such_version = pip_ladder.LadderResult(
+            False,
+            "",
+            "  x No solution found when resolving dependencies:\n"
+            "  `-> Because there is no version of somepkg==99.0.0 and you require\n"
+            "      somepkg==99.0.0, we can conclude that your requirements are\n"
+            "      unsatisfiable.\n",
+            "uv",
+        )
+        offline = pip_ladder.LadderResult(
+            False,
+            "",
+            "  x No solution found when resolving dependencies:\n"
+            "  `-> Because certifi was not found in the cache and you require\n"
+            "      certifi==2026.7.22, we can conclude that your requirements are\n"
+            "      unsatisfiable.\n"
+            "\n"
+            "hint: Packages were unavailable because the network was disabled. When "
+            "the network is disabled, registry packages may only be read from the cache.\n",
+            "uv",
+        )
+        assert pip_ladder.wheel_gap(no_such_version) is None
+        assert pip_ladder.wheel_gap(offline) is None
+
+    def test_a_successful_install_reports_no_gap(self):
+        ok = pip_ladder.LadderResult(True, "Installed 1 package", "", "uv")
+        assert pip_ladder.wheel_gap(ok) is None
+
+
 class TestNoPipTier:
     """The pip tier must not come back.
 

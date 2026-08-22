@@ -32,10 +32,10 @@ class TestTargetKeyExpansion:
 
     def test_target_and_platform_keys_mix(self):
         table = ld._expand_target_keys(
-            {"linux": ld.BUILD_WHEEL, "win32-arm64": ld.UNAVAILABLE}
+            {"linux": ld.UNAVAILABLE, "win32-arm64": ld.UNAVAILABLE}
         )
-        assert table["linux-x64"] == ld.BUILD_WHEEL
-        assert table["linux-arm64"] == ld.BUILD_WHEEL
+        assert table["linux-x64"] == ld.UNAVAILABLE
+        assert table["linux-arm64"] == ld.UNAVAILABLE
         assert table["win32-arm64"] == ld.UNAVAILABLE
         assert "win32-x64" not in table
 
@@ -51,28 +51,26 @@ class TestTargetKeyExpansion:
 
 
 class TestVerdictSemantics:
-    """UNAVAILABLE refuses everyone; BUILD_WHEEL refuses only the user."""
+    """UNAVAILABLE is the only verdict, and it refuses everyone."""
 
     def test_unavailable_refuses_runtime_and_bundle_alike(self):
         probe = ld.only_targets({"darwin-x64": ld.UNAVAILABLE}, "no sdist exists.")
         with at("darwin-x64"):
             with pytest.raises(ld.UnsupportedFeature, match="darwin-x64"):
                 probe()
-            with pytest.raises(ld.UnsupportedFeature):
-                probe(for_bundle=True)
 
-    def test_build_wheel_refuses_the_user_and_allows_the_build_lane(self):
-        probe = ld.only_targets({"win32-arm64": ld.BUILD_WHEEL}, "no wheel published.")
-        with at("win32-arm64"):
-            with pytest.raises(ld.UnsupportedFeature, match="does not compile"):
-                probe()
-            probe(for_bundle=True)  # the lane compiles the sdist
+    def test_a_gate_carries_one_verdict_only(self):
+        # UNAVAILABLE is the only verdict a gate may hold. A wheel gap is
+        # not a host capability and belongs to the installer, which reads
+        # the index live, so a second verdict here would be a table that
+        # goes stale when an upstream project publishes.
+        with pytest.raises(ValueError, match="expected 'unavailable'"):
+            ld.only_targets({"win32-arm64": "build-wheel"})
 
     def test_an_unlisted_target_is_untouched(self):
         probe = ld.only_targets({"win32-arm64": ld.UNAVAILABLE})
         with at("linux-x64"):
             probe()
-            probe(for_bundle=True)
 
     def test_the_explainer_reaches_the_user(self):
         probe = ld.only_targets({"linux-x64": ld.UNAVAILABLE}, "use the cloud backend.")
@@ -96,7 +94,7 @@ class TestGatedFeatures:
     def test_unavailable_features_are_never_staged(self, feature, target):
         with at(target):
             with pytest.raises(ld.UnsupportedFeature):
-                ld.check_supported(feature, for_bundle=True)
+                ld.check_supported(feature)
             assert ld.feature_extra(feature) not in ld.bundle_extras()
 
     @pytest.mark.parametrize(
@@ -108,11 +106,16 @@ class TestGatedFeatures:
             ("platform.dingtalk", "linux-x64"),
         ],
     )
-    def test_build_wheel_features_ship_but_refuse_a_runtime_install(self, feature, target):
+    def test_a_wheel_gap_alone_never_gates_a_feature(self, feature, target):
+        # Each of these used to carry a BUILD_WHEEL gate naming a target
+        # whose wheel was missing at the time. None is a host capability
+        # limit: the package can run there, it just was not published
+        # there yet, and several since have been. The gate stays out and
+        # the artifact carries the backend; a runtime install that really
+        # cannot get a wheel is refused by uv --no-build, which reads the
+        # index on the day the user asks.
         with at(target):
-            with pytest.raises(ld.UnsupportedFeature):
-                ld.check_supported(feature)
-            ld.check_supported(feature, for_bundle=True)
+            ld.check_supported(feature)
             assert ld.feature_extra(feature) in ld.bundle_extras()
 
     def test_a_feature_stays_available_on_the_arch_that_has_the_wheel(self):
@@ -134,34 +137,27 @@ class TestBundleQueries:
             assert len(extras) > 20, f"{target} staged only {len(extras)}"
             assert len(extras) == len(set(extras)), f"{target} repeated an extra"
 
-    def test_source_builds_name_packages_of_staged_extras_only(self):
-        for target in ld.ALL_TARGETS:
-            with at(target):
-                extras = set(ld.bundle_extras())
-                builds = ld.bundle_source_builds()
-                owners = {
-                    ld._pkg_name_from_spec(spec)
-                    for extra in extras
-                    for spec in ld.extra_specs(extra)
-                }
-            assert set(builds) <= owners, f"{target}: {set(builds) - owners}"
-
-    def test_a_target_with_no_gaps_asks_for_no_source_build(self):
-        # win32-x64 is the target every gated package publishes a wheel
-        # for, except dingtalk's sdist-only SDKs.
-        with at("win32-x64"):
-            builds = ld.bundle_source_builds()
-        assert all("alibabacloud" in b or "dingtalk" in b or b == "qrcode" for b in builds), builds
-
-    def test_the_two_queries_agree_about_what_is_staged(self):
-        # A package can only be compiled for a bundle that carries it.
+    def test_a_bundle_gate_never_hides_an_extra_it_admits(self):
+        # A feature the bundle lane accepts must have its extra staged,
+        # or the artifact would claim a backend it does not carry.
         for target in ld.ALL_TARGETS:
             with at(target):
                 for feature in ld.LAZY_DEPS:
                     try:
-                        ld.check_supported(feature, for_bundle=True)
+                        ld.check_supported(feature)
                     except ld.UnsupportedFeature:
                         continue
                     assert ld.feature_extra(feature) in ld.bundle_extras() or not ld.extra_specs(
                         ld.feature_extra(feature)
                     )
+
+    def test_the_build_lane_names_no_packages_to_compile(self):
+        # pip reads wheel availability off the index for every pin in the
+        # resolved closure, so the build lane needs no list of names. A
+        # list here could only repeat what pip already knows and drift
+        # from it: the previous one was built from the extras' DIRECT
+        # pins while pip's flag applied to the whole closure, so it named
+        # packages that publish wheels and missed the transitive ones
+        # that do not.
+        assert not hasattr(ld, "bundle_source_builds")
+        assert "bundle-source-builds" not in (ld._main.__doc__ or "")

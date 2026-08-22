@@ -61,8 +61,8 @@ const OUT_DIR = path.join(DESKTOP_ROOT, "build", "agent-payload")
  *
  * There are no cross-platform wheel tags here, on purpose. A CI runner per
  * (os, arch) pair assembles the payloads. electron-builder needs per-OS
- * runners for signing anyway. Thus the script fetches wheels NATIVELY with
- * `uvx pip wheel --only-binary=:all:`. The platform of the runner is the
+ * runners for signing anyway. Thus the script installs the payload
+ * NATIVELY on the target runner, and the platform of the runner is the
  * target platform.
  */
 export function resolveTargets(platform = process.platform, arch = process.arch) {
@@ -78,12 +78,6 @@ export function resolveTargets(platform = process.platform, arch = process.arch)
     "darwin-x64": {
       uvTarget: "x86_64-apple-darwin",
       uvPython: "macos-x86_64-none",
-      // cryptography 49+ publishes macOS wheels for arm64 only (48.0.1
-      // was the last universal2). The pin is a security floor, so the
-      // Intel artifact builds the EXACT pinned version from sdist on
-      // the runner (needs Rust — preinstalled on the macos GitHub
-      // runners), same arrangement as win32-arm64 below.
-      sourceBuild: ["cryptography"],
     },
     "darwin-arm64": {
       uvTarget: "aarch64-apple-darwin",
@@ -96,12 +90,6 @@ export function resolveTargets(platform = process.platform, arch = process.arch)
     "win32-arm64": {
       uvTarget: "aarch64-pc-windows-msvc",
       uvPython: "windows-aarch64-none",
-      // Pinned packages with no published win_arm64 wheel. pip builds
-      // these from sdist on the runner (needs MSVC arm64 + Rust).
-      // pyyaml publishes win_arm64 wheels for cp312+ only — the payload
-      // python is 3.11, so it builds here too (pure fallback when the
-      // libyaml accelerator is unavailable).
-      sourceBuild: ["cryptography", "httptools", "ruamel-yaml-clib", "pywinpty", "pyyaml"],
     },
   }
   const key = `${platform}-${arch}`
@@ -116,27 +104,39 @@ export function resolveTargets(platform = process.platform, arch = process.arch)
  * Build the `pip install --target` argument list that fills the payload's
  * site-packages. The caller invokes it through `uvx pip …` ON the staged
  * payload interpreter, natively on the target runner, so wheels resolve
- * for the target platform/arch. With --only-binary=:all: it never
- * compiles on the user machine — there IS no install step on the user
- * machine; the backend imports straight from this directory.
+ * for the target platform/arch.
  *
- * Exception: the target's sourceBuild list. Some pinned packages publish
- * no wheel for a target (win32-arm64: cryptography dropped win_arm64
- * after 46.0.3; httptools and ruamel-yaml-clib never shipped one;
- * pywinpty 2.x has none). For those named packages pip builds the
- * EXACT pinned version from its sdist ON the build runner, which yields
- * real target-arch code in site-packages — the user machine still
- * never compiles. The build runner needs the toolchains (MSVC arm64 +
- * Rust on windows-11-arm). A later --no-binary overrides --only-binary
- * per package; the list stays empty for every target whose pins are
- * fully covered by published wheels.
+ * pip decides per package whether a published wheel fits this target and
+ * compiles the sdist when none does. That decision is pip's to make: it
+ * reads the index every run, and every target builds natively on its own
+ * runner (linux-arm64 on ubuntu-24.04-arm, darwin-x64 on macos-15-intel,
+ * win32-arm64 on windows-11-arm), so a source build here produces
+ * target-arch code by construction. The user machine still never
+ * compiles — there IS no install step there; the backend imports
+ * straight from this directory.
+ *
+ * `--only-binary=:all:` used to forbid every source build, with a list of
+ * `--no-binary` names to punch holes back through it. The list came from
+ * the extras' DIRECT pins while the flag applied to the whole resolved
+ * closure, so it named packages that publish wheels and missed the
+ * transitive ones that do not. Both faults are structural: any such list
+ * restates what pip reads off the index, and drifts when a package
+ * publishes its first wheel or drops its sdist.
+ *
+ * `--no-deps` is what keeps the install honest. The requirements come
+ * from `uv export --frozen`, which is a complete resolved set, and uv
+ * applied `[tool.uv] override-dependencies` when it wrote the lock. pip
+ * cannot read those overrides, so re-resolving makes it reject the very
+ * pins uv chose (cryptography==50.0.0 against alibabacloud-tea-openapi's
+ * cryptography<49 cap, a security floor). Install the resolved set as
+ * given and no second resolver gets a vote.
  */
-export function pipTargetArgs({ sitePackagesDir, sourceBuild = [] }) {
+export function pipTargetArgs({ sitePackagesDir }) {
   return [
     "install",
-    "--only-binary", ":all:",
-    ...(sourceBuild.length > 0 ? ["--no-binary", sourceBuild.join(",")] : []),
     "-r", "requirements-payload.txt",
+    // The export is already a complete resolved set (see above).
+    "--no-deps",
     "--target", sitePackagesDir,
     // pip warns without this when --target sees an existing dir; staging
     // wipes first, so upgrade semantics never actually apply.
@@ -354,7 +354,7 @@ export function buildManifest({ tag, commit, target, pythonRelPath }) {
  * fresh every run. The key says "reuse is allowed"; the arch probes and
  * the import backstop still decide "reuse is correct".
  */
-export function stageCacheKey({ target, pythonVersion, requirementsText, sourceBuild }) {
+export function stageCacheKey({ target, pythonVersion, requirementsText }) {
   return createHash("sha256")
     .update(
       JSON.stringify({
@@ -362,11 +362,6 @@ export function stageCacheKey({ target, pythonVersion, requirementsText, sourceB
         target: target.key,
         uvPython: target.uvPython,
         pythonVersion,
-        // The EFFECTIVE compile set (the target's own pins plus whatever
-        // lazy_deps' build-wheel gates add for this target), not
-        // target.sourceBuild — the two differ, and a key that ignored the
-        // difference would reuse a cache staged with other pip flags.
-        sourceBuild: [...(sourceBuild ?? target.sourceBuild ?? [])].sort(),
         requirements: createHash("sha256").update(requirementsText).digest("hex"),
       })
     )
@@ -871,22 +866,21 @@ function findPythonBinary(pythonDir, target, pythonVersion) {
 }
 
 /**
- * Ask lazy_deps what this target's artifact should carry, and what pip
- * must compile to carry it.
+ * Ask lazy_deps which opt-in backends this target's artifact carries.
  *
- * lazy_deps owns both answers, and it is the same module `ensure()` asks
+ * lazy_deps owns the answer, and it is the same module `ensure()` asks
  * at run time — one authority, so a bundled artifact and a bundled user
  * can never disagree about whether a backend is available here. The
  * probe runs ON the target runner, which is what makes a host answer a
  * target answer (one runner per (os, arch), same rule as the wheels).
  *
- * The two verdicts of a lazy_deps target gate land here as the two
- * fields. `unavailable` keeps an extra out of `extras` entirely — no
- * wheel and no sdist exists, so demanding it would only fail the build
- * (onnxruntime on macOS x86_64). `build-wheel` keeps the extra IN and
- * adds its packages to `sourceBuild`, so pip compiles the sdist on this
- * runner: the artifact carries the backend even though a user machine
- * could never install it.
+ * Both lazy_deps target verdicts land in this one answer. `unavailable`
+ * keeps an extra out — no wheel and no sdist exists, so demanding it
+ * would only fail the build (onnxruntime on macOS x86_64). `build-wheel`
+ * keeps the extra IN: an sdist exists, so pip compiles it on this runner
+ * and the artifact carries the backend even though a user machine could
+ * never install it. Which packages that compiles is pip's decision from
+ * the index, so the verdict names no packages (see pipTargetArgs).
  */
 export function bundlePythonPlan(uvExe, cwd = REPO_ROOT, pythonVersion) {
   const ask = (query) =>
@@ -904,10 +898,10 @@ export function bundlePythonPlan(uvExe, cwd = REPO_ROOT, pythonVersion) {
   if (extras.length === 0) {
     throw new Error("lazy_deps reported no bundle extras — the payload would ship without any opt-in backend")
   }
-  return { extras, sourceBuild: ask("bundle-source-builds") }
+  return { extras }
 }
 
-function stageSitePackages(target, outDir, pythonBinary, { reuse = false, sourceBuild } = {}) {
+function stageSitePackages(target, outDir, pythonBinary, { reuse = false } = {}) {
   const sitePackagesDir = path.join(outDir, "site-packages")
   // Export the lock to a requirements file, then install the whole tree
   // with pip running ON THE STAGED PAYLOAD INTERPRETER: pip resolves
@@ -929,7 +923,7 @@ function stageSitePackages(target, outDir, pythonBinary, { reuse = false, source
     fs.mkdirSync(sitePackagesDir, { recursive: true })
     run(
       "uvx",
-      ["--python", pythonBinary, "pip", ...pipTargetArgs({ sitePackagesDir, sourceBuild: sourceBuild ?? target.sourceBuild ?? [] })],
+      ["--python", pythonBinary, "pip", ...pipTargetArgs({ sitePackagesDir })],
       { cwd: REPO_ROOT }
     )
   }
@@ -1186,11 +1180,10 @@ function main() {
 
   fs.mkdirSync(OUT_DIR, { recursive: true })
 
-  // Which opt-in backends this target's artifact carries, and what pip
-  // must compile to carry them. lazy_deps answers both (see
-  // bundlePythonPlan); asked BEFORE the export because the extras are
-  // export arguments, and before the cache key because both halves of
-  // the plan feed it.
+  // Which opt-in backends this target's artifact carries. lazy_deps
+  // answers (see bundlePythonPlan); asked BEFORE the export because the
+  // extras are export arguments, and before the cache key because the
+  // exported file feeds it.
   //
   // `uv run --no-project` rather than the payload interpreter: that one
   // does not exist yet at this point, and lazy_deps' query path is
@@ -1200,10 +1193,7 @@ function main() {
   // markers it evaluates are the payload's markers.
   const pythonVersion = payloadPythonVersion(pins.tools)
   const plan = bundlePythonPlan("uv", REPO_ROOT, pythonVersion)
-  console.log(
-    `[stage-agent-payloads] bundling ${plan.extras.length} opt-in extras` +
-      (plan.sourceBuild.length ? `, compiling ${plan.sourceBuild.length} from sdist` : "")
-  )
+  console.log(`[stage-agent-payloads] bundling ${plan.extras.length} opt-in extras`)
 
   // The expensive stages (python install + site-packages) are reused
   // when their cache identity matches the previous run's — CI restores
@@ -1222,12 +1212,10 @@ function main() {
     ],
     { cwd: REPO_ROOT }
   )
-  const sourceBuild = [...new Set([...(target.sourceBuild ?? []), ...plan.sourceBuild])]
   const cacheKey = stageCacheKey({
     target,
     pythonVersion,
     requirementsText: fs.readFileSync(path.join(REPO_ROOT, "requirements-payload.txt"), "utf8"),
-    sourceBuild,
   })
   const cacheKeyFile = path.join(OUT_DIR, ".stage-cache-key")
   let reuse = false
@@ -1251,7 +1239,7 @@ function main() {
   console.log(`[stage-agent-payloads] staging: uv + python (${target.key}, ${tag})`)
   const payloadPython = stageUvAndPython(target, OUT_DIR, pythonVersion, { reusePython: reuse })
   console.log(`[stage-agent-payloads] staging: site-packages (${target.key}, ${tag})`)
-  stageSitePackages(target, OUT_DIR, payloadPython, { reuse, sourceBuild })
+  stageSitePackages(target, OUT_DIR, payloadPython, { reuse })
   // The glue that makes the payload interpreter resolve repo/ and
   // site-packages/ wherever the bundle sits. Written after both stages
   // exist so a failed staging run never leaves a .pth that points at

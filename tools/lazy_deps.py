@@ -197,10 +197,11 @@ class LazyDep:
     run the feature, and returns None when it can. :func:`ensure` runs
     the probe before pip, so a known-impossible install never starts.
 
-    The probe takes a keyword-only ``for_bundle`` flag, because "can the
-    bundled artifact carry this?" and "can this host install it right
-    now?" have different answers for a target whose wheel the build lane
-    compiles itself. See :func:`only_targets`.
+    A gate answers one question: can this host run the feature at all?
+    A missing WHEEL is not that question and is not gated here — the
+    runtime install forbids source builds and reports the gap uv finds,
+    and the bundled build lane compiles the sdist on the target runner.
+    See :func:`only_targets`.
     """
 
     extra: str
@@ -221,14 +222,19 @@ ALL_TARGETS = (
     "win32-arm64",
 )
 
-#: What a target-gated feature costs on a host that cannot simply install
-#: it. UNAVAILABLE: a pinned package publishes no wheel AND no sdist
-#: there, so nothing can produce it — not a user, not CI. BUILD_WHEEL: an
-#: sdist exists, so the build lane compiles it into the artifact, but a
-#: user machine must never be asked to (it needs a compiler toolchain the
-#: install cannot assume).
+#: What a target gate costs a host that cannot simply install a feature.
+#: UNAVAILABLE: the feature cannot work on this target at all, because a
+#: pinned package publishes nothing usable there and nothing can produce
+#: it — not a user, not CI.
+#:
+#: There is no verdict for "no wheel here." A wheel gap is not a host
+#: capability, it is a fact about an index that changes without anyone
+#: editing this file, and a table restating it drifts the moment a
+#: package publishes its first wheel or drops its sdist. The runtime
+#: install passes uv `--no-build` and turns uv's own refusal into
+#: :class:`UnsupportedFeature`, so the gap is reported by the one party
+#: that reads the index every time.
 UNAVAILABLE = "unavailable"
-BUILD_WHEEL = "build-wheel"
 
 
 def _expand_target_keys(gates: dict[str, str]) -> dict[str, str]:
@@ -241,10 +247,10 @@ def _expand_target_keys(gates: dict[str, str]) -> dict[str, str]:
     """
     expanded: dict[str, str] = {}
     for key, verdict in gates.items():
-        if verdict not in (UNAVAILABLE, BUILD_WHEEL):
+        if verdict != UNAVAILABLE:
             raise ValueError(
                 f"only_targets: {key!r} has verdict {verdict!r}; "
-                f"expected {UNAVAILABLE!r} or {BUILD_WHEEL!r}"
+                f"expected {UNAVAILABLE!r}"
             )
         matches = [t for t in ALL_TARGETS if t == key or t.startswith(f"{key}-")]
         if not matches:
@@ -266,57 +272,42 @@ def only_targets(gates: dict[str, str], explainer: str | None = None):
     other feature.
 
     Architecture is why this takes targets rather than platforms alone.
-    A wheel gap belongs to the (platform, arch) pair a package builds
-    for: onnxruntime publishes macOS arm64 and not macOS x86_64;
-    ctranslate2 publishes win_amd64 and not win_arm64. Gating the whole
-    platform would take a working feature away from the arch that has
-    the wheel.
+    A capability gap belongs to the (platform, arch) pair a package
+    builds for, so gating the whole platform would take a working
+    feature away from the arch that can run it.
 
-    The two verdicts differ by WHO can satisfy the feature, so the probe
-    answers differently depending on who is asking:
+    The one verdict is :data:`UNAVAILABLE`: the feature cannot work on
+    this target for anyone. Nothing exists to install, so the refusal is
+    the same for a user machine and for bundle staging, and the extra
+    stays out of the artifact.
 
-    * :data:`UNAVAILABLE` — no wheel and no sdist. Nobody can produce it.
-      Refused for everyone, bundle staging included.
-    * :data:`BUILD_WHEEL` — an sdist exists. The bundled build lane
-      compiles it on the target runner and ships the result, so a
-      bundled user has it already. A runtime install still refuses:
-      compiling there needs a toolchain no install can assume, and the
-      failure would arrive mid-conversation as a compiler error.
-
-    ``for_bundle=True`` selects the build-lane question ("can the
-    artifact carry this?"); the default asks the runtime one ("can this
-    host install it now?").
+    A target whose packages merely lack a WHEEL does not belong here.
+    Nothing in this file can know that reliably — it changes when an
+    upstream project publishes, not when someone edits Hermes. The
+    runtime install forbids source builds and turns uv's refusal into
+    the same :class:`UnsupportedFeature`, naming the package uv named.
     """
     table = _expand_target_keys(gates)
     suffix = f" {explainer}" if explainer else ""
 
-    def _supported(*, for_bundle: bool = False) -> None:
+    def _supported() -> None:
         from installation.registry import current_target
 
-        verdict = table.get(current_target())
-        if verdict is None:
+        if table.get(current_target()) is None:
             return
-        if verdict == BUILD_WHEEL and for_bundle:
-            return  # the build lane compiles it from the sdist
-        if verdict == BUILD_WHEEL:
-            raise UnsupportedFeature(
-                f"unsupported on {current_target()}: no prebuilt wheel is "
-                f"published, and Hermes does not compile packages on your "
-                f"machine.{suffix}"
-            )
         raise UnsupportedFeature(f"unsupported on {current_target()}.{suffix}")
 
     return _supported
 
 
 def only_platform(platform: PlatformType, explainer: str | None = None): 
-    def _supported(*, for_bundle: bool = False):
+    def _supported():
         if sys.platform != platform:
             raise UnsupportedFeature(f"unsupported on platforms other than {platform}.{' ' + explainer if explainer else ''}")
     return _supported
 
 def never_platform(platform: PlatformType, explainer: str | None = None):
-    def _supported(*, for_bundle: bool = False):
+    def _supported():
         if sys.platform == platform:
             raise UnsupportedFeature(f"unsupported on platform {platform}.{' ' + explainer if explainer else ''}")
     return _supported
@@ -349,10 +340,7 @@ LAZY_DEPS: dict[str, str | LazyDep] = {
         "transcription backend instead.",
     )),
     "stt.mistral": "mistral",
-    "stt.silk": LazyDep("silk", only_targets(
-        {"linux": BUILD_WHEEL, "darwin": BUILD_WHEEL, "win32-arm64": BUILD_WHEEL},
-        "pilk publishes a win_amd64 wheel only.",
-    )),
+    "stt.silk": "silk",
 
     # ─── Text to speech ────────────────────────────────────────────────────
     "tts.edge": "edge-tts",
@@ -370,10 +358,7 @@ LAZY_DEPS: dict[str, str | LazyDep] = {
         "ai-edge-litert publishes no macOS x86_64 wheel and no sdist. The "
         "tflite path exists for Apple silicon.",
     )),
-    "wake.sherpa": LazyDep("wake-sherpa", only_targets(
-        {"win32-arm64": BUILD_WHEEL},
-        "sherpa-onnx publishes no win_arm64 wheel.",
-    )),
+    "wake.sherpa": "wake-sherpa",
     "wake.porcupine": "wake-porcupine",
 
     # ─── Image generation backends ─────────────────────────────────────────
@@ -383,43 +368,26 @@ LAZY_DEPS: dict[str, str | LazyDep] = {
     "memory.honcho": "honcho",
     "memory.hindsight": "hindsight",
     "memory.supermemory": "supermemory",
-    "memory.mem0": LazyDep("mem0", only_targets(
-        {"win32-arm64": BUILD_WHEEL}, "grpcio publishes no win_arm64 wheel."
-    )),
+    "memory.mem0": "mem0",
 
     # ─── Messaging platforms ───────────────────────────────────────────────
     "platform.telegram": "telegram",
-    "platform.discord": LazyDep("discord", only_targets(
-        {"darwin-x64": BUILD_WHEEL, "win32-arm64": BUILD_WHEEL},
-        "brotlicffi and davey publish no wheel for these targets.",
-    )),
+    "platform.discord": "discord",
     "platform.slack": "slack",
     "platform.matrix": LazyDep("matrix", only_platform(
         "linux",
         "Matrix E2EE depends on python-olm, which only ships wheels for Linux."
         "Run Hermes under WSL to use Matrix on Windows."
     )),
-    "platform.dingtalk": LazyDep("dingtalk", only_targets(
-        dict.fromkeys(ALL_TARGETS, BUILD_WHEEL),
-        "the alibabacloud-* SDKs publish sdists only.",
-    )),
+    "platform.dingtalk": "dingtalk",
     "platform.feishu": "feishu",
     "platform.wecom_callback": "wecom",
-    "platform.teams": LazyDep("teams", only_targets(
-        {"darwin-x64": BUILD_WHEEL, "win32-arm64": BUILD_WHEEL},
-        "dependency-injector publishes no wheel for these targets.",
-    )),
+    "platform.teams": "teams",
 
     # ─── Terminal backends ─────────────────────────────────────────────────
-    "terminal.modal": LazyDep("modal", only_targets(
-        {"darwin-x64": BUILD_WHEEL}, "cbor2 publishes no macOS x86_64 wheel."
-    )),
-    "terminal.daytona": LazyDep("daytona", only_targets(
-        {"win32-arm64": BUILD_WHEEL}, "obstore publishes no win_arm64 wheel."
-    )),
-    "terminal.vercel": LazyDep("vercel", only_targets(
-        {"darwin-x64": BUILD_WHEEL}, "cbor2 publishes no macOS x86_64 wheel."
-    )),
+    "terminal.modal": "modal",
+    "terminal.daytona": "daytona",
+    "terminal.vercel": "vercel",
 
     # ─── Skills ────────────────────────────────────────────────────────────
     "skill.google_workspace": "google",
@@ -432,10 +400,7 @@ LAZY_DEPS: dict[str, str | LazyDep] = {
     "tool.dashboard": "web",
     "tool.computer_use": "computer-use",
     "tool.trace_upload": "trace-upload",
-    "tool.doc_extract": LazyDep("doc-extract", only_targets(
-        {"win32-arm64": BUILD_WHEEL},
-        "firecrawl-anydoc publishes no win_arm64 wheel.",
-    )),
+    "tool.doc_extract": "doc-extract",
 }
 
 
@@ -914,7 +879,7 @@ def feature_extra(feature: str) -> str:
     return entry.extra if isinstance(entry, LazyDep) else entry
 
 
-def check_supported(feature: str, *, for_bundle: bool = False) -> None:
+def check_supported(feature: str) -> None:
     """Run the host-support probe of ``feature``, when it has one.
 
     Raises :class:`UnsupportedFeature` when this host cannot run the
@@ -926,14 +891,13 @@ def check_supported(feature: str, *, for_bundle: bool = False) -> None:
     keeps known-impossible installs out of both first-use lazy
     installation and the ``hermes update`` lazy-refresh pass.
 
-    ``for_bundle`` asks the build-lane question instead of the runtime
-    one: a :data:`BUILD_WHEEL` target passes, because the bundled build
-    compiles the sdist on that runner and ships the result. See
-    :func:`only_targets`.
+    One question, one answer, for every asker: a gate that passes here
+    passes for the bundled build lane too. A missing wheel is not asked
+    about — :func:`ensure` finds that during the install itself.
     """
     entry = LAZY_DEPS.get(feature)
     if isinstance(entry, LazyDep):
-        entry.supported(for_bundle=for_bundle)
+        entry.supported()
 
 
 def _parse_spec(spec: str):
@@ -1209,6 +1173,12 @@ def _uv_sync_extra(feature: str) -> Optional[_InstallResult]:
         "--locked",
         "--no-install-project",
         "--python", sys.executable,
+        # A user machine is not a build machine. Without this uv compiles
+        # any package that publishes no wheel for this host, and the user
+        # meets a compiler error mid-conversation instead of a refusal
+        # naming the package. ensure() turns the refusal into
+        # UnsupportedFeature.
+        "--no-build",
     ]
     try:
         r = _run(cmd, timeout=600, env=env)
@@ -1284,6 +1254,10 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
             overrides=overrides,
             env=env,
             creationflags=windows_hide_flags(),
+            # See the same flag on the uv sync tier: no compiling on a
+            # user machine. ensure() reads the refusal back with
+            # pip_ladder.wheel_gap().
+            no_build=True,
         )
         if result.ok and target is not None:
             _activate_target_on_syspath(target)
@@ -1446,6 +1420,26 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
     if result is None:
         result = _venv_pip_install(missing)
     if not result.success:
+        # One failure cause gets its own error: the install was refused
+        # because a package publishes no wheel for this host. That is a
+        # host capability answer, identical in kind to a target gate, so
+        # it is reported as one rather than as a wall of resolver output.
+        # uv names the package, so the message can too — and because the
+        # index is read live, the answer is right on the day it is asked
+        # and cannot go stale in a table here.
+        from installation.pip_ladder import LadderResult, wheel_gap
+
+        gap = wheel_gap(
+            LadderResult(False, result.stdout or "", result.stderr or "", "uv")
+        )
+        if gap:
+            raise UnsupportedFeature(
+                f"unsupported on this machine: {gap} publishes no prebuilt "
+                f"wheel for it, and Hermes does not compile packages on your "
+                f"machine.",
+                feature=feature,
+                missing=missing,
+            )
         # Surface the actual pip error so the user can debug PyPI-side
         # issues (404 quarantine, network down, etc.).
         snippet = (result.stderr or result.stdout or "").strip()
@@ -1641,49 +1635,25 @@ def bundle_extras() -> list[str]:
     build lane therefore gets the same answer ``ensure`` would give a
     user of that artifact, which is what keeps the two from drifting.
 
+    The two lanes now ask the probe the SAME question, and the answers
+    still differ where they should. A gate refuses both. A wheel gap
+    refuses neither here: the build lane compiles the sdist on the
+    target runner and ships the result, and a runtime install on a user
+    machine is the only place that forbids the compile.
+
     An extra that resolves to no specs is left out rather than passed to
     the exporter, which rejects an unknown extra name.
     """
     extras: list[str] = []
     for feature in sorted(LAZY_DEPS):
         try:
-            check_supported(feature, for_bundle=True)
+            check_supported(feature)
         except UnsupportedFeature:
             continue
         extra = feature_extra(feature)
         if extra not in extras and extra_specs(extra):
             extras.append(extra)
     return extras
-
-
-def bundle_source_builds() -> list[str]:
-    """Packages the bundled build must compile from sdist on THIS target.
-
-    A :data:`BUILD_WHEEL` gate says the target has no published wheel but
-    does have an sdist, so the build lane compiles it rather than
-    dropping the feature. Staging passes these to pip as ``--no-binary``
-    names, which override ``--only-binary=:all:`` per package.
-
-    The gate names the FEATURE; the packages come from the extra's spec
-    list, so a pin change moves the compiled set with it and no second
-    table has to be kept in step.
-    """
-    names: list[str] = []
-    for feature in sorted(LAZY_DEPS):
-        try:
-            check_supported(feature)
-        except UnsupportedFeature:
-            # Refused at runtime but allowed for the bundle: the gap this
-            # target has IS the source build.
-            try:
-                check_supported(feature, for_bundle=True)
-            except UnsupportedFeature:
-                continue  # genuinely unavailable — not staged at all
-            for spec in extra_specs(feature_extra(feature)):
-                name = _pkg_name_from_spec(spec)
-                if name and name not in names:
-                    names.append(name)
-    return names
 
 
 def feature_report() -> list[tuple[str, str]]:
@@ -1932,11 +1902,9 @@ def _main(argv: list[str]) -> int:
     JSON parser.
 
     ``bundle-extras``       the extras to export for this target.
-    ``bundle-source-builds`` the packages pip must compile there.
     """
     queries = {
         "bundle-extras": bundle_extras,
-        "bundle-source-builds": bundle_source_builds,
     }
     query = queries.get(argv[0]) if argv else None
     if query is None or len(argv) != 1:
