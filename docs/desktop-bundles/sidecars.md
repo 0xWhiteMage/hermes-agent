@@ -129,7 +129,8 @@ without both halves instead of guessing.
    rewrites the lockfile, which defeats the pin.
 3. Give the install a real trigger. A sidecar that installs at import
    time makes every user pay for a capability most of them do not use.
-   `hermes_cli/dep_ensure.py` holds the on-demand triggers.
+   A locator module beside the capability holds the trigger, as
+   `installation/browser.py` does for agent-browser.
 4. When the sidecar drives a pinned binary, provision the binary first
    and point the sidecar at it through the environment, as the Camoufox
    handshake does.

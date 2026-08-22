@@ -53,10 +53,6 @@ param(
     #   powershell -File install.ps1 -ShowResolvedPaths
     [switch]$ShowResolvedPaths,
 
-    # --- Ensure mode (dep_ensure.py entry point) ---
-    [string]$Ensure = "",
-    [switch]$PostInstall,
-
     # --- Desktop GUI build (opt-in) ---
     # When set, install.ps1 includes Stage-Desktop in the manifest and
     # builds apps/desktop into a launchable Hermes.exe.
@@ -4286,33 +4282,6 @@ function Invoke-AllStages {
     }
 }
 
-function Invoke-EnsureMode {
-    param([string]$Deps)
-    # Only deps whose install is OS-package work reach this script now.
-    # node, browser and ripgrep are pinned tools: dep_ensure.py stages
-    # them through installation/provisioner.py directly, digest-verified
-    # and recorded, without spawning a shell.
-    $depList = $Deps -split ","
-    foreach ($dep in $depList) {
-        $dep = $dep.Trim()
-        switch ($dep) {
-            "ffmpeg" {
-                Write-Info "ffmpeg: install manually on Windows (scoop install ffmpeg)"
-            }
-            default {
-                Write-Err "Unknown dependency: $dep"
-                exit 1
-            }
-        }
-    }
-}
-
-function Invoke-PostInstallMode {
-    Write-Info "Running post-install setup..."
-    Invoke-EnsureMode -Deps "node,browser"
-    Write-Info "Post-install complete"
-}
-
 function Main {
     Write-Banner
     Invoke-AllStages
@@ -4332,19 +4301,6 @@ function Main {
 # structured JSON error frame instead of a bare exception.
 
 try {
-    if ($Ensure -ne "") {
-        if ($PSBoundParameters.ContainsKey("Stage")) {
-            Write-Err "Cannot use -Ensure and -Stage simultaneously"
-            exit 1
-        }
-        Invoke-EnsureMode -Deps $Ensure
-        exit 0
-    }
-    if ($PostInstall) {
-        Invoke-PostInstallMode
-        exit 0
-    }
-
     if ($ProtocolVersion) {
         Write-Output $InstallStageProtocolVersion
         exit 0

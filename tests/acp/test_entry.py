@@ -79,12 +79,33 @@ def test_main_setup_offers_browser_install_when_tty(monkeypatch):
 
 
 def test_main_setup_browser_propagates_browser_failure(monkeypatch):
-    """If browser install fails, exit code is 1."""
-    def fake_ensure(dep, interactive=True):
-        return dep != "browser"  # browser fails
-
-    monkeypatch.setattr("hermes_cli.dep_ensure.ensure_dependency", fake_ensure)
+    """If the driver provision fails, exit code is 1."""
+    monkeypatch.setattr("installation.browser.driver_path", lambda: None)
+    monkeypatch.setattr("installation.browser.provision_driver", lambda: False)
 
     with pytest.raises(SystemExit) as excinfo:
         entry.main(["--setup-browser"])
     assert excinfo.value.code == 1
+
+
+def test_main_setup_browser_is_a_noop_when_the_driver_is_staged(monkeypatch, tmp_path):
+    """A staged driver needs no provision — and must not trigger one.
+
+    The check this replaced also accepted a system Chrome, so it could
+    answer "installed" for a machine with no driver at all.
+    """
+    staged = tmp_path / "agent-browser"
+    staged.write_text("#!/bin/sh\n")
+
+    provisions = []
+
+    def fail_if_called():
+        provisions.append(True)
+        return False
+
+    monkeypatch.setattr("installation.browser.driver_path", lambda: staged)
+    monkeypatch.setattr("installation.browser.provision_driver", fail_if_called)
+
+    # main() exits only on failure; a successful setup just returns.
+    entry.main(["--setup-browser"])
+    assert provisions == []

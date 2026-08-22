@@ -2505,16 +2505,9 @@ def run_doctor(args):
                             "Playwright Chromium not installed",
                             "(browser_* tools will be hidden from the agent)",
                         )
-                        if sys.platform == "win32":
-                            check_info(
-                                f"Install with: cd {PROJECT_ROOT} && "
-                                "npx playwright install chromium"
-                            )
-                        else:
-                            check_info(
-                                f"Install with: cd {PROJECT_ROOT} && "
-                                "npx playwright install --with-deps chromium"
-                            )
+                        from installation.browser import browser_install_guidance
+
+                        check_info(browser_install_guidance())
     else:
         check_warn("Node.js not found", "(optional, needed for browser tools)")
     

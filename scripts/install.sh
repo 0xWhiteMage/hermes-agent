@@ -74,7 +74,6 @@ NO_SKILLS=false
 BRANCH="main"
 INSTALL_COMMIT=""
 FORCE_COMMIT=false
-ENSURE_DEPS=""
 
 MANIFEST_MODE=false
 STAGE_NAME=""
@@ -155,10 +154,6 @@ while [[ $# -gt 0 ]]; do
             HERMES_HOME="$2"
             shift 2
             ;;
-        --ensure)
-            ENSURE_DEPS="$2"
-            shift 2
-            ;;
 
         -h|--help)
             echo "Hermes Agent Installer"
@@ -196,9 +191,6 @@ while [[ $# -gt 0 ]]; do
             echo "  (default /root/.hermes).  This keeps Docker bind-mounted volumes"
             echo "  small and ensures the command is on PATH for all shells."
             echo "  Existing installs at \$HERMES_HOME/hermes-agent are preserved in-place."
-            echo "  --ensure DEPS  Install only specified deps (comma-separated)"
-            echo "                   Supported: node, browser, ripgrep, ffmpeg"
-            echo "                   Does NOT clone repo or create venv"
 
             exit 0
             ;;
@@ -2479,31 +2471,6 @@ print_success() {
 
 }
 
-ensure_mode() {
-    detect_os
-
-    # Only deps whose install is OS-package work reach this script now.
-    # node, browser and ripgrep are pinned tools: dep_ensure.py stages
-    # them through installation/provisioner.py directly, digest-verified
-    # and recorded, without spawning a shell.
-    IFS=',' read -ra DEPS <<< "$ENSURE_DEPS"
-    for dep in "${DEPS[@]}"; do
-        dep="$(echo "$dep" | tr -d '[:space:]')"
-        case "$dep" in
-            ffmpeg)
-                if ! command -v ffmpeg &>/dev/null; then
-                    HAS_FFMPEG=false
-                    install_system_packages
-                fi
-                ;;
-            *)
-                log_warn "Unknown dependency: $dep"
-                ;;
-        esac
-    done
-}
-
-
 # Clear the cached Electron download + any half-written unpacked output so the
 # next `npm run pack` re-downloads and re-stages from scratch. A corrupt zip in
 # the per-user Electron download cache - most often a partial/resumed download
@@ -3104,8 +3071,6 @@ if [ "$MANIFEST_MODE" = true ]; then
     emit_manifest
 elif [ -n "$STAGE_NAME" ]; then
     run_stage_protocol "$STAGE_NAME"
-elif [ -n "$ENSURE_DEPS" ]; then
-    ensure_mode
 else
     main
 fi

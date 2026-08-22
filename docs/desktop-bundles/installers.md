@@ -94,10 +94,8 @@ Two Windows-specific behaviors matter:
   binary on disk and fails.
 
 The script also has `-ShowResolvedPaths` (print the resolved paths as
-JSON and exit) and `-Ensure` mode (the `dep_ensure.py` entry point
-for lazy dependency checks). The PowerShell scripts are gated on the
-real PowerShell parser in tests. A syntax break then fails CI on every
-OS.
+JSON and exit). The PowerShell scripts are gated on the real PowerShell
+parser in tests. A syntax break then fails CI on every OS.
 
 ## setup-hermes.sh (dev checkouts)
 

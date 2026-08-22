@@ -1765,9 +1765,6 @@ def _run_post_setup(post_setup_key: str):
                 _chromium_installed,
                 _running_in_docker,
                 _find_agent_browser,
-                _resolve_npx_bin,
-                _is_npx_agent_browser_sentinel,
-                AGENT_BROWSER_NPX_SPEC,
             )
         except Exception as exc:  # pragma: no cover — defensive
             _print_warning(f"    Could not check Chromium status: {exc}")
@@ -1779,7 +1776,7 @@ def _run_post_setup(post_setup_key: str):
         # / npx only through the extended fallback path, which a bare
         # shutil.which("npx") lookup misses.
         try:
-            browser_cmd = _find_agent_browser(validate=False)
+            _find_agent_browser(validate=False)
         except FileNotFoundError:
             _print_warning(
                 "    npx not found - browser tools require Node.js: https://nodejs.org"
@@ -1813,51 +1810,24 @@ def _run_post_setup(post_setup_key: str):
             )
             return
 
-        # browser_cmd was already resolved above (same PATH -> Homebrew ->
-        # Hermes-managed-node -> npx cascade _find_agent_browser uses at
-        # runtime), so this can't diverge from what actually gets invoked.
-        if _is_npx_agent_browser_sentinel(browser_cmd):
-            # Re-resolve via the same PATH + extended-PATH cascade
-            # _find_agent_browser used, rather than a bare shutil.which("npx")
-            # — Hermes-managed-Node-only setups resolve npx only through the
-            # extended fallback path, and a bare lookup here would silently
-            # diverge and hand subprocess.run a None argument.
-            npx_bin = _resolve_npx_bin()
-            if not npx_bin:
-                _print_warning(
-                    "    npx not found - install Chromium manually: npx agent-browser install --with-deps"
-                )
-                return
-            install_cmd = [npx_bin, "--ignore-scripts", "-y", AGENT_BROWSER_NPX_SPEC, "install", "--with-deps"]
-        else:
-            install_cmd = [browser_cmd, "install", "--with-deps"]
-
+        # Stage the PINNED browser stack. The pin table records the engine
+        # pair as agent-browser's `requires`, so one provision walks the
+        # closure and brings up both, digest-verified, at a revision the
+        # pinned driver is known to drive. The `agent-browser install`
+        # shell-out this replaced fetched whatever revision the CLI
+        # resolved, unverified and unpinned.
         _print_info("    Installing Chromium (~170MB one-time download)...")
-        import subprocess
-        try:
-            result = subprocess.run(
-                install_cmd,
-                capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(PROJECT_ROOT), timeout=600,
-                creationflags=_post_setup_no_window_flags(),
-            )
-            if result.returncode == 0:
-                _print_success("    Chromium installed")
-                # Invalidate the cached "missing" result so subsequent
-                # check_browser_requirements() calls see the new install.
-                import tools.browser_tool as _bt
-                _bt._cached_chromium_installed = None
-            else:
-                _print_warning("    Chromium install failed:")
-                tail = (result.stderr or result.stdout or "").strip().splitlines()[-3:]
-                for line in tail:
-                    _print_info(f"      {line[:200]}")
-                _print_info("    Run manually: npx agent-browser install --with-deps")
-        except subprocess.TimeoutExpired:
-            _print_warning("    Chromium install timed out (>10min)")
-            _print_info("    Run manually: npx agent-browser install --with-deps")
-        except Exception as exc:
-            _print_warning(f"    Chromium install failed: {exc}")
-            _print_info("    Run manually: npx agent-browser install --with-deps")
+        from installation.browser import browser_install_guidance, provision_driver
+
+        if provision_driver():
+            _print_success("    Chromium installed")
+            # Invalidate the cached "missing" result so subsequent
+            # check_browser_requirements() calls see the new install.
+            import tools.browser_tool as _bt
+            _bt._cached_chromium_installed = None
+        else:
+            _print_warning("    Chromium install failed")
+            _print_info(f"    {browser_install_guidance()}")
 
     elif post_setup_key == "browser_use_cli":
         _ensure_browser_use_cli(verbose_hints=True)

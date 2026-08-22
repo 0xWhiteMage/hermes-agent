@@ -536,7 +536,7 @@ def _binary_rel(tool: str, target: str) -> str:
         # The Windows node zip has node.exe at the root; POSIX has bin/node.
         "node": "node.exe" if win else "bin/node",
         # `npm -g --prefix` drops .cmd shims in the prefix root on Windows
-        # and POSIX shims in bin/ (same split dep_ensure documents).
+        # and POSIX shims in bin/.
         "npm": "npm.cmd" if win else "bin/npm",
         "uv": f"uv{ext}",
         # PortableGit exposes cmd/git.exe; dugite-native uses bin/git.

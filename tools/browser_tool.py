@@ -898,7 +898,39 @@ def _resolve_cloud_provider_uncached() -> Optional[CloudBrowserProvider]:
 
 
 def _browser_install_hint() -> str:
-    return "npm install -g agent-browser && agent-browser install --with-deps"
+    from installation.browser import browser_install_guidance
+
+    return browser_install_guidance()
+
+
+def _allow_browser_lazy_install() -> bool:
+    """Whether this process may download the pinned browser stack.
+
+    ``security.allow_lazy_installs`` is the user's one opt-out for every
+    lazy install, and Docker sets its env twin because the image already
+    contains what a container can run. Fail-open on an unreadable
+    config, matching ``tools.lazy_deps``.
+
+    The env kill-switch is honoured UNCONDITIONALLY here, which is where
+    this parts ways with ``lazy_deps._allow_lazy_installs``. That helper
+    lets a sealed tree through when a durable lazy-install target exists,
+    because its subject is a pip package from a plugin manifest that no
+    image could have baked. The subject here is a pinned artifact in the
+    tool store: a bundle either staged it or did not, and a writable
+    package directory says nothing about whether this process should
+    pull ~170MB off the network.
+    """
+    if _running_in_docker():
+        return False
+    if os.environ.get("HERMES_DISABLE_LAZY_INSTALLS") == "1":
+        return False
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+    except Exception:  # noqa: BLE001 — an unreadable config permits the install
+        return True
+    return bool((cfg.get("security") or {}).get("allow_lazy_installs", True))
 
 
 # Sentinel _find_agent_browser returns/caches to mean "resolve via npx" rather
@@ -2500,12 +2532,9 @@ def _find_agent_browser(*, validate: bool = True) -> str:
     # rung that can answer there. It is a native binary (no node needed) and
     # digest-verified at staging. Fail-open like every registry consult —
     # a broken runtime dir falls through to the base ladder below.
-    try:
-        from installation.registry import tool_path as _registry_tool_path
+    from installation.browser import driver_path as _driver_path
 
-        pinned = _registry_tool_path("agent-browser")
-    except Exception:
-        pinned = None
+    pinned = _driver_path()
     if pinned is not None:
         pinned_str = str(pinned)
         if agent_browser_runnable(pinned_str) if validate else _agent_browser_candidate_present(pinned_str):
@@ -2573,34 +2602,25 @@ def _find_agent_browser(*, validate: bool = True) -> str:
     if not validate:
         raise FileNotFoundError("agent-browser CLI not found")
 
-    # Nothing found — try lazy installation before giving up.
-    try:
-        from hermes_cli.dep_ensure import ensure_dependency
-        if ensure_dependency("browser"):
-            candidates = [
-                shutil.which("agent-browser"),
-                shutil.which("agent-browser", path=extended_path) if extended_path else None,
-                # Same candidate list the extended PATH is built from, so a
-                # post-install recheck cannot look in fewer places than the
-                # first pass did.
-                *(
-                    shutil.which("agent-browser", path=directory)
-                    for directory in _browser_candidate_path_dirs()
-                ),
-            ]
-            for recheck in candidates:
-                if recheck and agent_browser_runnable(recheck):
-                    _cached_agent_browser = recheck
-                    _agent_browser_resolved = True
-                    return recheck
-    except Exception:
-        pass
+    # Nothing found — stage the pinned driver before giving up. This asks
+    # ONLY about the driver: the check it replaced also accepted a system
+    # Chrome, so a machine with Chrome and no driver answered "installed",
+    # skipped the provision, and then raised the not-found below. Having a
+    # browser suppressed the browser install.
+    if _allow_browser_lazy_install():
+        from installation.browser import provision_driver
+
+        if provision_driver():
+            staged = _driver_path()
+            if staged is not None and agent_browser_runnable(str(staged)):
+                _cached_agent_browser = str(staged)
+                _agent_browser_resolved = True
+                return _cached_agent_browser
 
     _agent_browser_resolved = True
     raise FileNotFoundError(
-        "agent-browser CLI not found. Install it with: "
-        f"{_browser_install_hint()}\n"
-        "Or ensure npx is available in your PATH."
+        "agent-browser CLI not found. "
+        f"{_browser_install_hint()}"
     )
 
 
@@ -5103,45 +5123,26 @@ def _chromium_search_roots() -> List[str]:
 def _chromium_installed() -> bool:
     """Return True when a usable Chromium (or headless-shell) build is on disk.
 
-    Checks, in order:
+    Delegates the whole question to :func:`installation.browser.engine_path`,
+    which honours ``AGENT_BROWSER_EXECUTABLE_PATH`` and then the pinned
+    chromium pair, plus the legacy Playwright cache scan below for installs
+    whose browsers predate the pin table.
 
-    1. ``AGENT_BROWSER_EXECUTABLE_PATH`` env var — the official way to point
-       agent-browser at a pre-installed Chrome/Chromium.
-    2. System Chrome/Chromium in PATH (``google-chrome``, ``chromium``,
-       ``chromium-browser``, ``chrome``).
-    3. Playwright's browser cache (current logic) — directories containing
-       ``chromium-*`` or ``chromium_headless_shell-*``.
-
-    agent-browser (0.26+) downloads Playwright's chromium / headless-shell
-    builds into ``PLAYWRIGHT_BROWSERS_PATH`` and won't start without at least
-    one of the three above being present.  Without a browser binary the CLI
-    hangs on first use until the command timeout fires (often ~30s).  Guarding
-    the tool behind this check prevents advertising a capability that will
-    fail at runtime.
+    A Chrome that merely happens to be on PATH is deliberately NOT a rung:
+    it is an unpinned version driven by a driver pinned to one revision,
+    and the pair is what the pin table exists to fix.
     """
     global _cached_chromium_installed
     if _cached_chromium_installed is not None:
         return _cached_chromium_installed
 
-    # 1. AGENT_BROWSER_EXECUTABLE_PATH — explicit user-configured browser
-    ab_path = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
-    if ab_path:
-        if os.path.isfile(ab_path) or shutil.which(ab_path):
-            _cached_chromium_installed = True
-            return True
+    from installation.browser import engine_path
 
-    # 2. System Chrome/Chromium in PATH (common names)
-    system_chrome = (
-        shutil.which("google-chrome")
-        or shutil.which("chromium")
-        or shutil.which("chromium-browser")
-        or shutil.which("chrome")
-    )
-    if system_chrome:
+    if engine_path() is not None:
         _cached_chromium_installed = True
         return True
 
-    # 3. Playwright browser cache (legacy — chromium-* / chromium_headless_shell-* dirs)
+    # Playwright browser cache (legacy — chromium-* / chromium_headless_shell-* dirs)
     for root in _chromium_search_roots():
         if not root or not os.path.isdir(root):
             continue
@@ -5168,66 +5169,42 @@ _chromium_autoinstall_attempted = False
 
 
 def _maybe_autoinstall_chromium() -> bool:
-    """Best-effort, gated download of the Chromium *binary* on local cold start.
+    """Best-effort, gated staging of the pinned Chromium on local cold start.
 
-    Closes the "the PR doesn't actually install the missing browser" gap for
-    the common case — a Chromium binary that was simply never downloaded.
-    Scope is deliberately narrow:
+    Closes the "the browser tool doesn't actually install the missing
+    browser" gap for the common case — an engine that was simply never
+    staged. Scope is deliberately narrow:
 
-    - Binary only (``agent-browser install``), never ``--with-deps`` — that
-      shells ``apt`` and needs root, so missing *system libraries* stay a user
-      action (the timeout/blocked hints already point there).
+    - The PINNED chromium pair, via the provisioner: digest-verified, at a
+      revision the pinned driver is known to drive. It replaces an
+      ``agent-browser install`` shell-out that fetched whatever revision
+      the CLI resolved, unverified.
+    - System *libraries* stay a user action (the timeout/blocked hints
+      already point there) — nothing here shells ``apt`` or needs root.
     - Gated by ``security.allow_lazy_installs`` (same opt-out as every other
       lazy install) and skipped in Docker, where Chromium ships in the image.
     - Attempted once per process.
 
-    Returns True only when Chromium is present afterwards.
+    Returns True only when an engine is present afterwards.
     """
     global _chromium_autoinstall_attempted
     if _chromium_autoinstall_attempted:
         return _chromium_installed()
     _chromium_autoinstall_attempted = True
 
-    if _running_in_docker():
+    if not _allow_browser_lazy_install():
         return False
-
-    from tools.lazy_deps import _allow_lazy_installs
-    if not _allow_lazy_installs():
-        return False
-
-    try:
-        browser_cmd = _find_agent_browser()
-    except FileNotFoundError:
-        return False
-
-    if _is_npx_agent_browser_sentinel(browser_cmd):
-        install_cmd = [
-            _resolve_npx_bin() or "npx", "--ignore-scripts", "-y", AGENT_BROWSER_NPX_SPEC, "install",
-        ]
-    else:
-        install_cmd = [browser_cmd, "install"]
 
     logger.info(
-        "browser: Chromium missing — auto-installing the browser binary "
+        "browser: Chromium missing — staging the pinned browser "
         "(one-time ~170MB; disable via security.allow_lazy_installs)"
     )
-    try:
-        proc = subprocess.run(
-            install_cmd,
-            capture_output=True,
-            text=True, encoding='utf-8', errors='replace',
-            timeout=600,
-            env=_build_browser_env(),
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        logger.warning("browser: Chromium auto-install failed to start: %s", e)
-        return False
+    # The pin table records the engine pair as agent-browser's `requires`,
+    # so provisioning the driver walks the closure and stages both.
+    from installation.browser import provision_driver
 
-    if proc.returncode != 0:
-        tail = (proc.stderr or proc.stdout or "").strip()[-300:]
-        logger.warning(
-            "browser: Chromium auto-install exited %s: %s", proc.returncode, tail
-        )
+    if not provision_driver():
+        logger.warning("browser: could not stage the pinned Chromium")
         return False
 
     global _cached_chromium_installed
