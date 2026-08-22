@@ -74,24 +74,246 @@
 # Gated on the shims actually existing so the external (non-bundled) NSIS
 # artifact — which carries a stub payload with no bin/ — adds nothing.
 #
-# EnVar (shipped by electron-builder) targets the user scope (perMachine is
-# false), handles REG_EXPAND_SZ correctly, and is idempotent in both
-# directions. Pop after every call: EnVar always pushes a status and an
-# unbalanced stack corrupts the surrounding generated script.
+# The edit targets the user scope (HKCU\Environment) because perMachine is
+# false, and it must be idempotent in both directions: the oneClick updater
+# runs the old uninstaller and then this installer on every update.
+#
+# It is written against advapi32 directly rather than against the EnVar
+# plugin. EnVar is the usual answer to this problem, but electron-builder
+# has never shipped it: neither the v27 default bundle (nsis@1.2.1,
+# nsis-bundle-3.12) nor the legacy bundle (nsis-resources-3.4.1) carries
+# EnVar.dll in Plugins\x86-unicode, so `EnVar::SetHKCU` fails the build at
+# compile time with "Plugin not found". Vendoring the DLL would put a
+# prebuilt binary we cannot rebuild or audit inside a signed installer, for
+# work that is ~40 lines of script against the System plugin the bundle DOES
+# ship.
+#
+# PATH is read with RegQueryValueEx, NOT with ReadRegStr. ReadRegStr returns
+# an empty string both when the value is missing and when it is longer than
+# ${NSIS_MAX_STRLEN}, so the naive version silently REPLACES a long user PATH
+# with our one entry. RegQueryValueEx distinguishes the two
+# (ERROR_MORE_DATA), which lets us refuse to touch a PATH we cannot read
+# whole. The registry type is round-tripped for the same reason: rewriting a
+# REG_SZ PATH as REG_EXPAND_SZ would change how a literal '%' in it behaves.
 
-!macro customInstall
-  ${If} ${FileExists} "$INSTDIR\resources\agent-payload\bin\hermes.exe"
-    EnVar::SetHKCU
-    EnVar::AddValue "PATH" "$INSTDIR\resources\agent-payload\bin"
-    Pop $0
-    ${If} $0 != 0
-      DetailPrint "Could not add the Hermes CLI to PATH (EnVar status $0)"
+!include "LogicLib.nsh"
+!include "WinMessages.nsh"
+
+!define HERMES_PATH_KEY 'HKCU "Environment"'
+!define HERMES_PATH_HKCU 0x80000001
+!define HERMES_PATH_KEY_READ 0x20019    # STANDARD_RIGHTS_READ|KEY_QUERY_VALUE|KEY_ENUMERATE_SUB_KEYS|KEY_NOTIFY
+!define HERMES_PATH_ERROR_FILE_NOT_FOUND 2
+!define HERMES_PATH_REG_SZ 1
+!define HERMES_PATH_REG_EXPAND_SZ 2
+
+# cbData is a BYTE count; the buffer the System plugin hands out is one NSIS
+# string (${NSIS_MAX_STRLEN} chars). Keep one char back for the terminator.
+!define /math _HERMES_PATH_CHARS ${NSIS_MAX_STRLEN} - 1
+!define /math HERMES_PATH_CB_MAX ${_HERMES_PATH_CHARS} * ${NSIS_CHAR_SIZE}
+
+# Reads HKCU\Environment\PATH.
+#   out $1 = current value ("" when the value does not exist)
+#   out $2 = registry type (REG_EXPAND_SZ when the value does not exist)
+#   out $3 = 0 when $1 is trustworthy, 1 when PATH must not be touched
+# clobbers $4 $5 $6
+!macro HermesReadUserPath
+  StrCpy $1 ""
+  StrCpy $2 ${HERMES_PATH_REG_EXPAND_SZ}
+  StrCpy $3 1
+  System::Call "advapi32::RegOpenKeyEx(i ${HERMES_PATH_HKCU}, t'Environment', i 0, i ${HERMES_PATH_KEY_READ}, *i.r4) i.r5"
+  ${If} $5 = 0
+    StrCpy $6 ${HERMES_PATH_CB_MAX}
+    System::Call "advapi32::RegQueryValueEx(i $4, t'PATH', i 0, *i.r2, t.r1, *i r6r6) i.r5"
+    System::Call "advapi32::RegCloseKey(i $4)"
+    ${If} $5 = ${HERMES_PATH_ERROR_FILE_NOT_FOUND}
+      StrCpy $1 ""
+      StrCpy $2 ${HERMES_PATH_REG_EXPAND_SZ}
+      StrCpy $3 0
+    ${ElseIf} $5 = 0
+    ${AndIf} $2 = ${HERMES_PATH_REG_SZ}
+      StrCpy $3 0
+    ${ElseIf} $5 = 0
+    ${AndIf} $2 = ${HERMES_PATH_REG_EXPAND_SZ}
+      StrCpy $3 0
     ${EndIf}
   ${EndIf}
 !macroend
 
-!macro customUnInstall
-  EnVar::SetHKCU
-  EnVar::DeleteValue "PATH" "$INSTDIR\resources\agent-payload\bin"
+# Locates ";<dir>;" inside ";<path>;" — the sentinel semicolons make an entry
+# match only on whole-entry boundaries, so "C:\a\bin" never matches inside
+# "C:\a\bin2". StrCmp is case-insensitive, which is what Windows paths want.
+#   in  $4 = haystack, $5 = needle
+#   out $7 = match index, or -1
+# clobbers $6
+!macro HermesFindPathEntry LABEL
+  StrLen $6 $5
+  StrCpy $7 0
+  hermes_scan_${LABEL}:
+    StrCpy $8 $4 $6 $7
+    StrCmp $8 "" 0 +3
+      StrCpy $7 -1
+      Goto hermes_scan_done_${LABEL}
+    StrCmp $8 $5 hermes_scan_done_${LABEL}
+    IntOp $7 $7 + 1
+    Goto hermes_scan_${LABEL}
+  hermes_scan_done_${LABEL}:
+!macroend
+
+# Writes PATH back as $1 with type $2 and tells the shell about it, so a
+# terminal opened after the install sees the change without a logout.
+!macro HermesWriteUserPath
+  ClearErrors
+  ${If} $2 = ${HERMES_PATH_REG_SZ}
+    WriteRegStr ${HERMES_PATH_KEY} "PATH" "$1"
+  ${Else}
+    WriteRegExpandStr ${HERMES_PATH_KEY} "PATH" "$1"
+  ${EndIf}
+  ${If} ${Errors}
+    DetailPrint "Could not write PATH to HKCU\Environment"
+  ${Else}
+    SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
+  ${EndIf}
+!macroend
+
+Function HermesAddPathEntry
+  Exch $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  Push $5
+  Push $6
+  Push $7
+  Push $8
+
+  !insertmacro HermesReadUserPath
+  ${If} $3 <> 0
+    DetailPrint "Left PATH alone: it is longer than this installer can read safely"
+    Goto hermes_add_done
+  ${EndIf}
+
+  StrCpy $4 ";$1;"
+  StrCpy $5 ";$0;"
+  !insertmacro HermesFindPathEntry add
+  ${If} $7 <> -1
+    Goto hermes_add_done
+  ${EndIf}
+
+  # +1 for the joining semicolon.
+  StrLen $4 $0
+  StrLen $5 $1
+  IntOp $4 $4 + $5
+  IntOp $4 $4 + 1
+  ${If} $4 >= ${NSIS_MAX_STRLEN}
+    DetailPrint "Left PATH alone: adding the Hermes CLI would overflow it"
+    Goto hermes_add_done
+  ${EndIf}
+
+  ${If} $1 == ""
+    StrCpy $1 "$0"
+  ${Else}
+    StrCpy $4 $1 1 -1
+    ${If} $4 == ";"
+      StrCpy $1 $1 -1
+    ${EndIf}
+    StrCpy $1 "$1;$0"
+  ${EndIf}
+  DetailPrint "Adding the Hermes CLI to PATH: $0"
+  !insertmacro HermesWriteUserPath
+
+  hermes_add_done:
+  Pop $8
+  Pop $7
+  Pop $6
+  Pop $5
+  Pop $4
+  Pop $3
+  Pop $2
+  Pop $1
   Pop $0
+FunctionEnd
+
+Function un.HermesRemovePathEntry
+  Exch $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  Push $5
+  Push $6
+  Push $7
+  Push $8
+  Push $9
+
+  !insertmacro HermesReadUserPath
+  ${If} $3 <> 0
+    Goto hermes_del_done
+  ${EndIf}
+  ${If} $1 == ""
+    Goto hermes_del_done
+  ${EndIf}
+
+  StrCpy $4 ";$1;"
+  StrCpy $5 ";$0;"
+  StrCpy $9 0
+
+  # Splice out every occurrence, keeping the needle's trailing semicolon as
+  # the joiner between the surrounding entries.
+  hermes_del_next:
+    !insertmacro HermesFindPathEntry del
+    ${If} $7 <> -1
+      StrCpy $9 1
+      StrCpy $8 $4 $7
+      IntOp $7 $7 + $6
+      IntOp $7 $7 - 1
+      StrCpy $4 $4 "" $7
+      StrCpy $4 "$8$4"
+      Goto hermes_del_next
+    ${EndIf}
+
+  ${If} $9 = 0
+    Goto hermes_del_done
+  ${EndIf}
+
+  # Drop the sentinel semicolons this function added.
+  hermes_del_lstrip:
+    StrCpy $5 $4 1
+    ${If} $5 == ";"
+      StrCpy $4 $4 "" 1
+      Goto hermes_del_lstrip
+    ${EndIf}
+  hermes_del_rstrip:
+    StrCpy $5 $4 1 -1
+    ${If} $5 == ";"
+      StrCpy $4 $4 -1
+      Goto hermes_del_rstrip
+    ${EndIf}
+
+  StrCpy $1 $4
+  DetailPrint "Removing the Hermes CLI from PATH: $0"
+  !insertmacro HermesWriteUserPath
+
+  hermes_del_done:
+  Pop $9
+  Pop $8
+  Pop $7
+  Pop $6
+  Pop $5
+  Pop $4
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
+FunctionEnd
+
+!macro customInstall
+  ${If} ${FileExists} "$INSTDIR\resources\agent-payload\bin\hermes.exe"
+    Push "$INSTDIR\resources\agent-payload\bin"
+    Call HermesAddPathEntry
+  ${EndIf}
+!macroend
+
+!macro customUnInstall
+  Push "$INSTDIR\resources\agent-payload\bin"
+  Call un.HermesRemovePathEntry
 !macroend
