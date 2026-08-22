@@ -266,13 +266,31 @@ class TestPayloadInstallability:
                 )
 
     def test_an_unavailable_gate_names_a_real_gap(
-        self, wheels: dict, sdists: set
+        self, wheels: dict
     ) -> None:
-        # UNAVAILABLE claims no wheel AND no sdist exists. When upstream
-        # later publishes either one, the gate is stale and takes a
-        # working backend away from that target. Such an extra is kept out
-        # of the bundle, so its pins are absent from payload_pins and get
-        # their own export.
+        # An UNAVAILABLE gate claims the feature cannot work on a target for
+        # anyone. The half of that claim this module can VERIFY is the
+        # index-derived one: at least one pin has no wheel whose tags fit the
+        # target, so installing there is not a matter of downloading a file.
+        #
+        # It deliberately does not also demand "and no sdist exists". Two
+        # shapes both earn the verdict and only one has that property:
+        #
+        #   no wheel, no sdist      nothing to install at all (ctranslate2 and
+        #                           onnxruntime, behind stt.faster_whisper).
+        #   no wheel, dead sdist    a source archive that cannot produce a
+        #                           wheel on the target (grpcio behind mem0 on
+        #                           win32-arm64: its setup.py passes /std:c++17
+        #                           and /std:c11 together and relies on a
+        #                           monkeypatch of Compiler.spawn to strip the
+        #                           wrong one per file, but setuptools now
+        #                           calls Compiler.call, so cl fails D8016).
+        #
+        # Whether an sdist builds is not a fact about the index and cannot be
+        # read off one — it is learned from a build and recorded in the gate's
+        # own explainer, next to the gate. What stays checkable here is the
+        # staleness property this test exists for: the day upstream publishes
+        # a fitting wheel, every pin fits, this fails, and the gate comes out.
         stale: list[str] = []
         for feature in sorted(ld.LAZY_DEPS):
             extra = ld.feature_extra(feature)
@@ -290,12 +308,12 @@ class TestPayloadInstallability:
                 for name, version, marker in _export((extra,)):
                     if not _marker_admits(marker, target):
                         continue
-                    fits = any(_wheel_fits(f, target) for f in wheels.get((name, version), []))
-                    if not fits and (name, version) not in sdists:
+                    if not any(_wheel_fits(f, target) for f in wheels.get((name, version), [])):
                         gap = True
                         break
                 if not gap:
                     stale.append(
-                        f"{target}: {feature} is UNAVAILABLE, but every pin it needs installs"
+                        f"{target}: {feature} is UNAVAILABLE, but every pin it "
+                        f"needs has a wheel that fits — the gate is stale"
                     )
         assert not stale, "\n".join(stale)
