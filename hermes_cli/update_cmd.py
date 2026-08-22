@@ -6486,6 +6486,23 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("hermes-acp launcher self-heal failed: %s", e)
 
+        # Re-stage the Windows PATH launchers (<checkout>\bin\hermes.exe +
+        # hermes-acp.exe). The pre-update autostash above ran `git stash push
+        # --include-untracked`, and until /bin/ landed in .gitignore that
+        # swept these untracked copies off disk — with --keep-stash (the
+        # desktop updater) nothing restored them and `hermes` stopped
+        # resolving in every new terminal. NOT redundant with the same heal
+        # at hermes_cli.main import time: that one ran at THIS process's
+        # start, before the autostash swept — this call is the one that
+        # repairs a sweep that happened mid-update. No-op on POSIX, on
+        # source checkouts (bin\ not on the user PATH), and when present.
+        try:
+            from hermes_cli._install_repair import ensure_windows_bin_launchers
+
+            ensure_windows_bin_launchers(_m().PROJECT_ROOT)
+        except Exception as e:
+            logger.debug("Windows bin launcher self-heal failed: %s", e)
+
         # Refresh the cua-driver binary used by the Computer Use toolset.
         # The upstream installer is gated on supported platforms and on the
         # binary already being on PATH, so this is a no-op for users who

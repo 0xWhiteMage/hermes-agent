@@ -117,6 +117,132 @@ def _venv_scripts_dir(root: Path) -> Path | None:
     return scripts if scripts.is_dir() else None
 
 
+#: Launcher exes install.ps1's Set-PathVariable stages into ``<root>\bin`` —
+#: the only directory the Windows installer puts on the user PATH. Keep in
+#: lockstep with the launcher list in scripts/install.ps1.
+_WINDOWS_BIN_LAUNCHERS = ("hermes.exe", "hermes-acp.exe")
+
+
+def _normalize_windows_path(value) -> str:
+    """Windows path equality key: backslashes, no trailing separator, lowered.
+
+    Lowercase via ``.lower()`` (what ``ntpath.normcase`` does) rather than
+    ``os.path.normcase`` — that is an identity function on POSIX, and this
+    comparison must behave Windows-correct even when tests exercise the
+    Windows branch from another host (same rationale as
+    ``venv_bin_dir(windows=...)``).
+    """
+    return str(value).replace("/", "\\").rstrip("\\").lower()
+
+
+def _windows_user_path_entries() -> list[str]:
+    """User PATH entries from the registry — the value install.ps1 writes.
+
+    Falls back to the process PATH when the registry is unreadable. Only
+    called on Windows.
+    """
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            raw, _kind = winreg.QueryValueEx(key, "Path")
+        value = os.path.expandvars(str(raw))
+    except (OSError, ImportError):
+        value = os.environ.get("PATH", "")
+    return [entry for entry in value.split(";") if entry.strip()]
+
+
+def ensure_windows_bin_launchers(
+    root,
+    *,
+    windows: bool | None = None,
+    user_path_entries: list[str] | None = None,
+) -> list[str]:
+    """Re-stage the ``<root>\\bin`` launcher exes when they vanish.
+
+    On Windows, ``hermes`` resolves through COPIES of the venv console
+    scripts that install.ps1 stages into a dedicated ``<root>\\bin`` and puts
+    on the user PATH — never ``venv\\Scripts`` itself, which would shadow the
+    user's ``python`` (#83797). Those copies are untracked files inside the
+    git checkout, so ``hermes update``'s pre-update autostash (``git stash
+    push --include-untracked``) swept them off disk; once the desktop updater
+    stopped re-applying stashes (``--keep-stash``) nothing ever restored
+    them, and ``hermes`` stopped resolving in every new terminal.
+
+    Heals only installs that opted into the bin layout: ``<root>\\bin`` must
+    already be on the user PATH (registry value, process PATH as fallback).
+    Source checkouts that never ran install.ps1 are left untouched. Copies go
+    through a staging name + ``os.replace`` so concurrent process starts
+    cannot tear a launcher. Never raises; returns the names it restored.
+
+    *windows* and *user_path_entries* are injectable for tests, same pattern
+    as ``hermes_constants.venv_bin_dir``.
+    """
+    if windows is None:
+        windows = _is_windows()
+    if not windows:
+        return []
+
+    root = Path(root)
+    bin_dir = root / "bin"
+
+    # Cheap gate first — this runs at every hermes_cli.main process start
+    # (right after the profile override), so the healthy path must stay at a
+    # couple of stat calls.
+    missing = [name for name in _WINDOWS_BIN_LAUNCHERS if not (bin_dir / name).exists()]
+    if not missing:
+        return []
+
+    # Consent gate before touching anything else: only installs whose bin
+    # dir is already on the user PATH opted into the install.ps1 layout.
+    # Compared as normalized literal strings — the installer writes the long
+    # literal path, and realpath'ing arbitrary PATH entries here could hang
+    # on dead network shares. A registry entry stored some other way (8.3
+    # short path, subst drive) misses the heal, which fails safe: no-op.
+    if user_path_entries is None:
+        user_path_entries = _windows_user_path_entries()
+    configured = {_normalize_windows_path(entry) for entry in user_path_entries}
+    if _normalize_windows_path(bin_dir) not in configured:
+        return []
+
+    from hermes_constants import project_venv_dir, venv_bin_dir
+
+    venv_dir = project_venv_dir(root)
+    if venv_dir is None:
+        return []
+    scripts_dir = venv_bin_dir(venv_dir, windows=windows)
+    sources = [(name, scripts_dir / name) for name in missing if (scripts_dir / name).is_file()]
+    if not sources:
+        return []
+
+    try:
+        bin_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return []
+
+    import shutil
+
+    restored: list[str] = []
+    for name, source in sources:
+        staging = bin_dir / f"{name}.heal.{os.getpid()}"
+        try:
+            shutil.copy2(source, staging)
+            os.replace(staging, bin_dir / name)
+            restored.append(name)
+        except OSError:
+            with contextlib.suppress(OSError):
+                staging.unlink()
+    if restored:
+        # Guarded like everything else in this never-raises helper: a
+        # closed/broken stderr must not turn a successful heal into a crash.
+        with contextlib.suppress(OSError, ValueError):
+            print(
+                f"  ✓ Restored hermes launcher(s) in {bin_dir}: " + ", ".join(restored),
+                file=sys.stderr,
+            )
+    return restored
+
+
 def _load_console_script_names(root: Path) -> list[str]:
     """``[project.scripts]`` names from pyproject.toml (tomllib, 3.11+)."""
     try:

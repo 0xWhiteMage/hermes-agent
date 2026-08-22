@@ -693,6 +693,28 @@ def _apply_profile_override() -> None:
 
 _apply_profile_override()
 
+# Windows launcher self-heal — the ``hermes`` command users run is a COPY of
+# the venv console script, staged into ``<checkout>\bin`` by install.ps1
+# (#83797: ``venv\Scripts`` must stay off the user PATH or it shadows their
+# ``python``). Those copies are untracked files inside the git checkout, and
+# ``hermes update``'s pre-update autostash swept them off disk; once the
+# desktop updater stopped re-applying stashes (``--keep-stash``) nothing
+# restored them, leaving ``hermes`` unresolvable in every new terminal.
+# Re-staging at process start reaches already-broken installs through the one
+# channel that still works there: the desktop app spawning its backend via
+# ``python -m hermes_cli.main``. Costs two stat calls when healthy; only acts
+# when ``<checkout>\bin`` is on the user PATH, so source checkouts are
+# untouched. Sits AFTER the profile override on purpose — the helper imports
+# ``hermes_constants`` at call time, and no hermes module may be imported
+# before profiles resolve.
+if sys.platform == "win32":
+    try:
+        from hermes_cli import _install_repair as _install_repair_mod
+
+        _install_repair_mod.ensure_windows_bin_launchers(_bootstrap_root)
+    except Exception:
+        pass
+
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_cli.config import get_hermes_home
