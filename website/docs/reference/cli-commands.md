@@ -86,7 +86,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes plugins` | Manage Hermes Agent plugins (install, enable, disable, remove). |
 | `hermes portal` | Nous Portal status, subscription link, and Tool Gateway routing. See [Tool Gateway](../user-guide/features/tool-gateway.md). |
 | `hermes tools` | Configure enabled tools per platform. |
-| `hermes computer-use` | Install or check the Computer Use (cua-driver) backend (macOS/Windows/Linux). |
+| `hermes computer-use` | Stage or check the Computer Use (cua-driver) backend (macOS/Windows/Linux). |
 | `hermes pets` | Browse, install, and select [petdex](../user-guide/features/pets.md) animated pets shown across the CLI, TUI, and desktop app. Subcommands: `list`, `install`, `select`, `show`, `off`, `scale`, `remove`, `doctor`. |
 | `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
 | `hermes insights` | Show token/cost/activity analytics. |
@@ -1456,26 +1456,33 @@ Subcommands:
 
 | Subcommand | Description |
 |------------|-------------|
-| `install` | Run the upstream cua-driver installer (macOS, Windows, and Linux). |
-| `install --upgrade` | Re-run the installer even if cua-driver is already on PATH. The upstream script always pulls the latest release, so this performs an in-place upgrade. |
-| `status` | Print whether `cua-driver` is on `$PATH` and which version is installed. |
+| `install` | Stage the pinned cua-driver (macOS, Windows, and Linux). |
+| `status` | Report the resolved `cua-driver` binary and its version. |
 | `doctor [--include CHECK] [--skip CHECK] [--json]` | Run cua-driver's health report and show its platform checks. |
 | `permissions status [--json]` | Report macOS Accessibility and Screen Recording grants. |
 | `permissions grant` | Ask macOS to grant Accessibility and Screen Recording to Cua Driver. |
 
-`hermes computer-use install` is the stable entry point for installing the
-[cua-driver](https://github.com/trycua/cua) binary used by the
-`computer_use` toolset. It runs the same upstream installer that
-`hermes tools` invokes when you first enable Computer Use, so it's safe
-to use for re-running the install if the toolset toggle didn't trigger
-it (for example, on returning-user setups).
+`hermes computer-use install` stages the
+[cua-driver](https://github.com/trycua/cua) binary that the
+`computer_use` toolset drives. cua-driver is a managed tool, so the
+version comes from `installation/runtime-pins.json`: the command
+downloads that exact version, checks its sha256 before unpacking it,
+publishes it into the shared tool store, and records the fact. It is a
+no-op when the install is already at the pin, which makes it safe to
+re-run when the toolset toggle did not stage the driver.
 
-If cua-driver is already present, Hermes checks its version and runtime
-manifest. A compatible 0.20.0 or newer installation is left in place. An old or
-incomplete standard installation is repaired with the current upstream
-installer. Hermes never replaces a custom binary selected through
-`HERMES_CUA_DRIVER_CMD`; update that binary directly or remove the override.
-`hermes computer-use status` reports when repair is required.
+There is no `--upgrade`. To move to a newer driver, bump the pin and run
+`hermes update`, which carries the new version onto every install whose
+facts already record the tool. The pin is the version this repo
+qualified, so taking a newer upstream release is a reviewed change
+rather than whatever upstream tagged most recently.
+
+Resolution has two rungs and no others: `HERMES_CUA_DRIVER_CMD` when it
+is set, then the managed fact. A `cua-driver` on `PATH` is not used.
+When a managed driver fails the runtime contract, Hermes re-stages the
+pin once per process; Hermes never touches a binary named by
+`HERMES_CUA_DRIVER_CMD`, so update that one yourself or remove the
+override. `hermes computer-use status` reports when repair is required.
 
 The built-in `computer_use` toolset is the recommended Hermes integration.
 Registering raw Cua MCP tools is an alternative when you need Cua's low-level
@@ -1488,10 +1495,10 @@ belong to runtime launch. In bounded mode Hermes passes Cua's canonical
 transport owns a private lifecycle session inside its runtime. Public session
 names label cursor and session state; they do not own or share the runtime.
 
-`hermes update` automatically re-runs the upstream installer at the end
-of the update if cua-driver is on PATH, so most users will not need to
-call `--upgrade` manually. Use it when upstream ships a fix you want
-right now without waiting for the next Hermes update.
+`hermes update` brings the driver to the pinned version as part of its
+normal runtime provisioning, on any install whose facts already record
+the tool. Nothing re-runs an upstream installer, and nothing polls
+GitHub for a newer release.
 
 ## `hermes pets`
 

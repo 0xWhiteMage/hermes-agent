@@ -41,35 +41,46 @@ no-foreground invariant, click-dispatch internals — see
 
 ## Enabling
 
-**Fresh installs already have the driver.** The Hermes installer
-(`install.sh` / `install.ps1`) pre-installs `cua-driver` (best-effort;
-pass `--skip-computer-use` / `-SkipComputerUse` to opt out), so enabling
-Computer Use is just a config flip:
+**Installs already carry the driver.** `cua-driver` is a pinned managed
+tool: the version lives in `installation/runtime-pins.json`, and every
+install kind stages the same one.
 
-- **`hermes tools`** → pick `🖱️  Computer Use` — installs the driver
-  automatically if it's still missing.
-- **Dashboard / desktop app** → toggle the Computer Use toolset — if the
-  driver is missing, the toggle kicks off the install in the background
-  automatically (watch progress in the toolset panel).
+- **`install.sh` / `install.ps1`** stage it during the normal runtime
+  sweep. Pass `--skip-computer-use` / `-SkipComputerUse` to opt out.
+- **Bundled desktop artifacts** ship it inside the payload. A sealed
+  install runs no installer script, so a driver that was not bundled
+  could never arrive — this is why the toolset used to have nothing to
+  run in a bundled install.
+- **`hermes tools`** → pick `🖱️  Computer Use`, and the driver is
+  staged if it is missing.
+- **Dashboard / desktop app** → toggle the Computer Use toolset. The
+  toggle stages the driver in the background (watch the toolset panel).
 
-**Manual fallback (older installs, skipped installer step):**
+To stage it by hand:
 
 ```
 hermes computer-use install
 ```
 
-This fetches and runs the upstream cua-driver installer — `install.sh`
-on macOS/Linux, `install.ps1` on Windows. Use `hermes computer-use
-status` to verify the install.
+That downloads the pinned version, checks its sha256 before unpacking
+it, publishes it into the shared tool store, and records the fact. It is
+a no-op when the install is already at the pin. Use `hermes computer-use
+status` to see what resolved.
 
-Already have cua-driver? Hermes reuses it when it supports the 0.20 runtime
-contract. During setup, toolset enablement, `hermes update`, and the first
-`computer_use` call of a session, Hermes checks the local version and
-manifest. It repairs an old or incomplete standard installation through
-the upstream installer (at most once per session at runtime). A binary
-selected with `HERMES_CUA_DRIVER_CMD` stays
-under your control, so Hermes reports the incompatibility and leaves it
-unchanged.
+**Updating the driver** is a pin bump plus `hermes update`. There is no
+`--upgrade` flag and no update check against upstream releases: the pin
+names the version Hermes qualified, so a newer upstream tag is a change
+this repo makes deliberately, not a prompt you get told to act on.
+`hermes update` carries the new pin onto any install that already has
+the driver.
+
+**Bringing your own binary.** `HERMES_CUA_DRIVER_CMD` names a driver to
+use instead of the managed one, and it wins over the pin. Nothing else
+is consulted: a `cua-driver` on `PATH` is not used, because a tool
+Hermes did not stage is a tool whose version and integrity Hermes cannot
+state. When a managed driver fails the 0.20 runtime contract, Hermes
+re-stages the pin once per process; when the override fails it, Hermes
+reports the problem and leaves your binary alone.
 
 If you install Cua Driver first, `cua-driver skills install` installs Cua's
 skill pack under `~/.cua-driver/skills/cua-driver`. Hermes autodetection is a
@@ -84,9 +95,10 @@ platform-appropriate prereqs:
 
 | Platform | Prereqs |
 |---|---|
-| **macOS** | System Settings → Privacy & Security → **Accessibility** + **Screen Recording**. Grant the identity named by `hermes computer-use doctor`. Standard mode uses CuaDriver.app; bounded and unrestricted modes use the Hermes host identity. |
+| **macOS** | System Settings → Privacy & Security → **Accessibility** + **Screen Recording**. Grant the identity named by `hermes computer-use doctor`. Hermes runs the managed binary in its own process (`--direct`), so grants attribute to the Hermes host identity in every permission mode. An install that previously used CuaDriver.app must grant the host identity again. |
 | **Windows** | None at install time. If you're driving over SSH (not RDP / console), you need the autostart pattern — see [cua.ai/docs/how-to-guides/driver/windows-ssh](https://cua.ai/docs/how-to-guides/driver/windows-ssh) for the Session 0 ↔ Session 1+ proxy. |
 | **Linux** | A reachable display server: `DISPLAY` set for X11, or `XDG_SESSION_TYPE=wayland`. Wayland sessions need an XWayland bridge for capture. AT-SPI must be on (default on GNOME/KDE/Xfce). |
+
 
 Then start a session with the toolset enabled:
 
@@ -155,10 +167,11 @@ state. It does not select, share, or keep a runtime alive. Turning `/yolo` off,
 resetting or closing the Hermes session, cancellation cleanup, or process exit
 closes that transport session. Hermes also stops private runtimes that it
 launched for bounded, unrestricted, or existing-profile access. One Hermes
-conversation cannot change another runtime's mode or grants. On macOS, a
-standard runtime with an existing-profile grant uses a fresh CuaDriver.app
-daemon on a private socket. Bounded and unrestricted modes use a private
-embedded service under the Hermes host identity.
+conversation cannot change another runtime's mode or grants. On macOS, every
+mode runs the driver in-process (`--direct`) under the Hermes host identity:
+the managed binary is a plain store entry, not a `CuaDriver.app` bundle, so
+there is no app daemon to launch or proxy to. Bounded and unrestricted modes
+use a private embedded service under that same identity.
 
 `smart` approval remains `standard`: an LLM classification cannot stand in for
 a reviewed manifest or a launch-time grant.
@@ -368,8 +381,8 @@ of screenshot context, not ~600K.
   elevated terminal); otherwise target non-elevated windows.
 - **Platform-specific deployment gotchas:**
   - **macOS** uses private SkyLight SPIs. Apple can change them in any
-    OS update. Hermes warns when the installed cua-driver is older than
-    the version it was tested against.
+    OS update. The pin names the cua-driver version Hermes was tested
+    against, so an install is on that version unless you override it.
   - **Windows** SSH sessions run in **Session 0**, which has no
     interactive desktop. Drive Hermes from inside the RDP / console
     session, or set up cua-driver's autostart Scheduled Task —

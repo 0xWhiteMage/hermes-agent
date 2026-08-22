@@ -149,7 +149,7 @@ The step registries:
 | Scope | Steps |
 |---|---|
 | Home | Config migration, skills sync, state.db integrity guard, launcher repair |
-| Machine | cua-driver refresh, runtime provisioning |
+| Machine | Runtime provisioning |
 
 The scopes match the records that gate them in the boot bootstrap: home
 steps run once per profile per code change, machine steps once per

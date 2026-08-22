@@ -54,7 +54,7 @@ A complete payload contains:
 | `repo/` | The plain source tree at the release tag, from `git archive`, without `.git`. It carries the prebuilt JS surfaces (ui-tui dist, dashboard `web_dist`) and the build stamp. |
 | `python/` | A uv-managed CPython. Its own site-packages carries `hermes-bundle.pth` with RELATIVE paths to `repo/` and `site-packages/`, so the interpreter resolves the runtime wherever the app bundle sits. No venv, no `PYTHONPATH`. |
 | `site-packages/` | The full dependency tree from `uv.lock`, installed at build time with `pip install --target` on the payload interpreter. The backend runs directly from here. Nothing materializes at first launch. |
-| Store entries | One directory per managed tool, named `<tool>-<version>-<target>`: `uv`, `node`, `gh`, `ripgrep`, and `git` on Windows. The payload is its own tool store, so the names match the ones a source install writes into `~/.hermes/tools/`. |
+| Store entries | One directory per managed tool, named `<tool>-<version>-<target>`: `uv`, `node`, `gh`, `ripgrep`, `git` on Windows, and the opt-in capability tools (`agent-browser` with its Chromium pair, `cua-driver`). The payload is its own tool store, so the names match the ones a source install writes into `~/.hermes/tools/`. |
 
 The staging script does not lay the tool trees out itself. It runs
 `python -m installation.provisioner --runtime-dir <payload> --target
@@ -72,6 +72,19 @@ than restating the rule. Windows needs the bash that ships inside
 PortableGit. On macOS and Linux `installation.git.git_path()` takes the
 machine's git when it clears the version floor, so those targets stage
 no git and the pin table records the reason.
+
+**Capability tools are named, never inferred.** The staging call passes
+`--extra git --extra agent-browser --extra cua-driver`. A bundled
+artifact runs no installer script, so a capability the payload does not
+carry is one the user cannot obtain: enabling Computer Use in a sealed
+install found no driver and had no way to fetch one, which is why
+`cua-driver` is on that list. The flip side is that a new optional pin
+must not silently add hundreds of MB to every download, so bundling a
+capability stays an edit to this list rather than something derived from
+the table. The provisioner drops parts of a tool that Hermes cannot
+reach — the cua-driver tarball's embedding SDK is ~38-47MB of library
+the CLI neither links nor dlopens, so staging prunes it and the entry
+lands at ~50MB.
 
 Payload staging stays dormant unless `HERMES_DESKTOP_VARIANT=bundled`.
 Without it, the script writes a stub manifest marked `external: true`,
