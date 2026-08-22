@@ -10,14 +10,13 @@ No LLM involved — only gateway-level commands are tested.
 Tests are parametrized over platforms via the ``platform`` fixture in conftest.
 """
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from gateway.config import Platform
 from gateway.platforms.base import SendResult
-from tests.e2e.conftest import make_event, send_and_capture
+from tests.e2e.conftest import make_event, send_and_capture, settle_background
 
 
 class TestSlashCommands:
@@ -206,7 +205,7 @@ class TestAuthorization:
         event = make_event(platform, "/help")
         adapter.send.reset_mock()
         await adapter.handle_message(event)
-        await asyncio.sleep(0.3)
+        await settle_background(adapter)
 
         # The adapter.send is called directly by the authorization path
         # (not via _send_with_retry), so check it was called with a pairing message
@@ -222,7 +221,7 @@ class TestAuthorization:
         event = make_event(platform, "/help")
         adapter.send.reset_mock()
         await adapter.handle_message(event)
-        await asyncio.sleep(0.3)
+        await settle_background(adapter)
 
         # If send was called, it should NOT contain the help text
         if adapter.send.called:
@@ -242,6 +241,6 @@ class TestSendFailureResilience:
         event = make_event(platform, "/help")
         # Should not raise — pipeline handles send failures internally
         await adapter.handle_message(event)
-        await asyncio.sleep(0.3)
+        await settle_background(adapter)
 
         adapter.send.assert_called()

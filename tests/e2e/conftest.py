@@ -22,7 +22,9 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, SendResult
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
-E2E_MESSAGE_SETTLE_DELAY = 0.3
+# Deadlock guard for settle_background, not a latency budget. A background
+# message task that is still running after this long is wedged, not slow.
+E2E_BACKGROUND_TASK_TIMEOUT = 30.0
 
 # Platform library mocks
 
@@ -270,19 +272,40 @@ def make_adapter(platform: Platform, runner=None):
     return adapter
 
 
-async def send_and_capture(adapter, text: str, platform: Platform, **event_kwargs) -> AsyncMock:
-    """Send a message through the full e2e flow and return the send mock.
+async def settle_background(adapter, timeout: float = E2E_BACKGROUND_TASK_TIMEOUT) -> None:
+    """Wait until the adapter's background message tasks are done.
 
-    Polls for the send rather than waiting a fixed delay: handler DB work now
-    hops to worker threads (AsyncSessionDB), so completion latency varies.
+    ``handle_message`` returns as soon as it spawns the processing task, so a
+    test must wait for that task before it asserts on ``adapter.send``. Wait on
+    the task objects themselves instead of a wall-clock budget. A budget is a
+    race: the agent post-turn hooks build a SessionDB, and each test gets a
+    fresh HERMES_HOME, so every agent-path test pays a cold schema init. That
+    init is fast on an idle machine and slow on a loaded CI runner, which made
+    the group plain-text test fail in run 32585458274.
+
+    A completed task can spawn a drain task for a queued message, so drain the
+    set until it stays empty. The timeout is a deadlock guard, not a latency
+    budget.
     """
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        pending = [task for task in adapter._background_tasks if not task.done()]
+        if not pending:
+            return
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise AssertionError(
+                f"{len(pending)} background task(s) still running after {timeout}s"
+            )
+        await asyncio.wait(pending, timeout=remaining)
+
+
+async def send_and_capture(adapter, text: str, platform: Platform, **event_kwargs) -> AsyncMock:
+    """Send a message through the full e2e flow and return the send mock."""
     event = make_event(platform, text, **event_kwargs)
     adapter.send.reset_mock()
     await adapter.handle_message(event)
-    for _ in range(40):  # up to ~2s; returns as soon as the send lands
-        if adapter.send.called:
-            break
-        await asyncio.sleep(0.05)
+    await settle_background(adapter)
     return adapter.send
 
 

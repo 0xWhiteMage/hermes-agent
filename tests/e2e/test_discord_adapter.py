@@ -4,7 +4,6 @@ Covers the fix for slash commands not being recognized when sent via
 @mention in a channel, especially after auto-threading.
 """
 
-import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -12,11 +11,11 @@ import pytest
 
 from tests.e2e.conftest import (
     BOT_USER_ID,
-    E2E_MESSAGE_SETTLE_DELAY,
     get_response_text,
     make_discord_message,
     make_fake_dm_channel,
     make_fake_thread,
+    settle_background,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -24,7 +23,7 @@ pytestmark = pytest.mark.asyncio
 
 async def dispatch(adapter, msg):
     await adapter._handle_message(msg)
-    await asyncio.sleep(E2E_MESSAGE_SETTLE_DELAY)
+    await settle_background(adapter)
 
 
 class TestMentionStrippedCommandDispatch:
