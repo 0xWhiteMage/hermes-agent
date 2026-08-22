@@ -423,6 +423,50 @@ def _check_install_state_hygiene() -> None:
     _check_channel_record_hygiene()
 
 
+def _check_lazy_features() -> None:
+    """Opt-in backends this install has activated, and their state.
+
+    A lazy feature has two halves that can disagree: the record of what
+    the user activated, and the packages in this install's overlay. The
+    updater's view (``active_features``) drops every row where the two
+    disagree, so nothing else reports them — a feature the user selected
+    and no longer has looks identical to one they never selected.
+    """
+    try:
+        from tools.lazy_deps import feature_report
+
+        report = feature_report()
+    except Exception as exc:  # noqa: BLE001 — a diagnostic must not raise
+        check_warn("Optional backends unreadable", f"({exc})")
+        return
+
+    if not report:
+        check_ok("Optional backends", "(none activated)")
+        return
+
+    installed = [f for f, state in report if state == "installed"]
+    if installed:
+        shown = ", ".join(installed[:6])
+        more = f" +{len(installed) - 6} more" if len(installed) > 6 else ""
+        check_ok(f"{len(installed)} optional backend(s) installed", f"({shown}{more})")
+
+    for feature, state in report:
+        if state == "stale":
+            check_warn(
+                f"Optional backend out of date: {feature}",
+                "(a pin moved — `hermes update` refreshes it)",
+            )
+        elif state == "missing":
+            check_warn(
+                f"Optional backend recorded but absent: {feature}",
+                "(its packages are not in this install — re-run the feature to reinstall)",
+            )
+        elif state == "unsupported":
+            check_info(f"Optional backend unavailable on this host: {feature}")
+        elif state == "unknown":
+            check_info(f"Optional backend no longer exists: {feature} (record is stale)")
+
+
 def _has_provider_env_config(content: str) -> bool:
     """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
     return any(key in content for key in _PROVIDER_ENV_HINTS)
@@ -2205,6 +2249,11 @@ def run_doctor(args):
     # Derived-state leaks: orphaned installs/<sha16>/ folders and
     # tool-store entries nobody's facts reference (§B store GC, report-only).
     _check_install_state_hygiene()
+
+    # Opt-in backends: what the user activated, and whether this install
+    # actually holds the packages (the record and the overlay are
+    # separate halves and can disagree).
+    _check_lazy_features()
 
     # Docker (optional)
     terminal_env = os.getenv("TERMINAL_ENV", "local")

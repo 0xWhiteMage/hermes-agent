@@ -193,24 +193,130 @@ class LazyDep:
     ``extra`` names the pyproject extra, exactly like a plain-string entry.
 
     ``supported`` is a platform capability gate, not a security policy
-    gate. It raises :class:`UnsupportedFeature` when this host can never
+    gate. It raises :class:`UnsupportedFeature` when this host cannot
     run the feature, and returns None when it can. :func:`ensure` runs
     the probe before pip, so a known-impossible install never starts.
+
+    The probe takes a keyword-only ``for_bundle`` flag, because "can the
+    bundled artifact carry this?" and "can this host install it right
+    now?" have different answers for a target whose wheel the build lane
+    compiles itself. See :func:`only_targets`.
     """
 
     extra: str
-    supported: Callable[[], None]
+    supported: Callable[..., None]
 
 PlatformType = Literal["linux", "win32", "darwin", "msys", "cygwin"]
 
+#: Every target a Hermes artifact is built for, as pin-table keys. The
+#: same spelling installation.registry.current_target() returns and the
+#: desktop payload's own target table uses, so a gate here and a build
+#: lane there name a host identically.
+ALL_TARGETS = (
+    "linux-x64",
+    "linux-arm64",
+    "darwin-x64",
+    "darwin-arm64",
+    "win32-x64",
+    "win32-arm64",
+)
+
+#: What a target-gated feature costs on a host that cannot simply install
+#: it. UNAVAILABLE: a pinned package publishes no wheel AND no sdist
+#: there, so nothing can produce it — not a user, not CI. BUILD_WHEEL: an
+#: sdist exists, so the build lane compiles it into the artifact, but a
+#: user machine must never be asked to (it needs a compiler toolchain the
+#: install cannot assume).
+UNAVAILABLE = "unavailable"
+BUILD_WHEEL = "build-wheel"
+
+
+def _expand_target_keys(gates: dict[str, str]) -> dict[str, str]:
+    """Expand a gate table's platform keys into per-target keys.
+
+    A key is either a full target (``win32-arm64``) or a bare platform
+    (``darwin``), which means every target of that platform. Raises for
+    a key that is neither, so a typo fails at import instead of silently
+    gating nothing.
+    """
+    expanded: dict[str, str] = {}
+    for key, verdict in gates.items():
+        if verdict not in (UNAVAILABLE, BUILD_WHEEL):
+            raise ValueError(
+                f"only_targets: {key!r} has verdict {verdict!r}; "
+                f"expected {UNAVAILABLE!r} or {BUILD_WHEEL!r}"
+            )
+        matches = [t for t in ALL_TARGETS if t == key or t.startswith(f"{key}-")]
+        if not matches:
+            raise ValueError(
+                f"only_targets: {key!r} matches no target "
+                f"(expected a platform or one of {', '.join(ALL_TARGETS)})"
+            )
+        for target in matches:
+            expanded[target] = verdict
+    return expanded
+
+
+def only_targets(gates: dict[str, str], explainer: str | None = None):
+    """Gate a feature on the hosts named in *gates*.
+
+    Keys are targets (``win32-arm64``) or whole platforms (``darwin``,
+    expanded to every target of that platform). An unlisted target is
+    unaffected: the packages install from published wheels like any
+    other feature.
+
+    Architecture is why this takes targets rather than platforms alone.
+    A wheel gap belongs to the (platform, arch) pair a package builds
+    for: onnxruntime publishes macOS arm64 and not macOS x86_64;
+    ctranslate2 publishes win_amd64 and not win_arm64. Gating the whole
+    platform would take a working feature away from the arch that has
+    the wheel.
+
+    The two verdicts differ by WHO can satisfy the feature, so the probe
+    answers differently depending on who is asking:
+
+    * :data:`UNAVAILABLE` — no wheel and no sdist. Nobody can produce it.
+      Refused for everyone, bundle staging included.
+    * :data:`BUILD_WHEEL` — an sdist exists. The bundled build lane
+      compiles it on the target runner and ships the result, so a
+      bundled user has it already. A runtime install still refuses:
+      compiling there needs a toolchain no install can assume, and the
+      failure would arrive mid-conversation as a compiler error.
+
+    ``for_bundle=True`` selects the build-lane question ("can the
+    artifact carry this?"); the default asks the runtime one ("can this
+    host install it now?").
+    """
+    table = _expand_target_keys(gates)
+    suffix = f" {explainer}" if explainer else ""
+
+    def _supported(*, for_bundle: bool = False) -> None:
+        from installation.registry import current_target
+
+        verdict = table.get(current_target())
+        if verdict is None:
+            return
+        if verdict == BUILD_WHEEL and for_bundle:
+            return  # the build lane compiles it from the sdist
+        if verdict == BUILD_WHEEL:
+            raise UnsupportedFeature(
+                f"unsupported on {current_target()}: no prebuilt wheel is "
+                f"published, and Hermes does not compile packages on your "
+                f"machine.{suffix}"
+            )
+        raise UnsupportedFeature(f"unsupported on {current_target()}.{suffix}")
+
+    return _supported
+
+
 def only_platform(platform: PlatformType, explainer: str | None = None): 
-    def _supported():
+    def _supported(*, for_bundle: bool = False):
         if sys.platform != platform:
             raise UnsupportedFeature(f"unsupported on platforms other than {platform}.{' ' + explainer if explainer else ''}")
     return _supported
 
 def never_platform(platform: PlatformType, explainer: str | None = None):
-    def _supported():
+    def _supported(*, for_bundle: bool = False):
         if sys.platform == platform:
             raise UnsupportedFeature(f"unsupported on platform {platform}.{' ' + explainer if explainer else ''}")
     return _supported
@@ -235,9 +341,18 @@ LAZY_DEPS: dict[str, str | LazyDep] = {
     # stt-whisper, not voice: this feature transcribes audio files, which
     # include voice notes that arrive over the network. It must not pull
     # the microphone stack in, and the Docker image bakes it.
-    "stt.faster_whisper": "stt-whisper",
+    "stt.faster_whisper": LazyDep("stt-whisper", only_targets(
+        {"darwin-x64": UNAVAILABLE, "win32-arm64": UNAVAILABLE},
+        "faster-whisper needs ctranslate2 and onnxruntime. Neither publishes "
+        "an sdist, and each one skips a target: ctranslate2 has no win_arm64 "
+        "wheel, onnxruntime has no macOS x86_64 wheel. Use a cloud "
+        "transcription backend instead.",
+    )),
     "stt.mistral": "mistral",
-    "stt.silk": "silk",
+    "stt.silk": LazyDep("silk", only_targets(
+        {"linux": BUILD_WHEEL, "darwin": BUILD_WHEEL, "win32-arm64": BUILD_WHEEL},
+        "pilk publishes a win_amd64 wheel only.",
+    )),
 
     # ─── Text to speech ────────────────────────────────────────────────────
     "tts.edge": "edge-tts",
@@ -245,9 +360,20 @@ LAZY_DEPS: dict[str, str | LazyDep] = {
     "tts.mistral": "mistral",
 
     # ─── Wake word engines ─────────────────────────────────────────────────
-    "wake.openwakeword": "wake-openwakeword",
-    "wake.openwakeword.tflite": "wake-tflite",
-    "wake.sherpa": "wake-sherpa",
+    "wake.openwakeword": LazyDep("wake-openwakeword", only_targets(
+        {"darwin-x64": UNAVAILABLE},
+        "openWakeWord runs on onnxruntime, which publishes no macOS x86_64 "
+        "wheel and no sdist. Use wake.porcupine on an Intel Mac.",
+    )),
+    "wake.openwakeword.tflite": LazyDep("wake-tflite", only_targets(
+        {"darwin-x64": UNAVAILABLE},
+        "ai-edge-litert publishes no macOS x86_64 wheel and no sdist. The "
+        "tflite path exists for Apple silicon.",
+    )),
+    "wake.sherpa": LazyDep("wake-sherpa", only_targets(
+        {"win32-arm64": BUILD_WHEEL},
+        "sherpa-onnx publishes no win_arm64 wheel.",
+    )),
     "wake.porcupine": "wake-porcupine",
 
     # ─── Image generation backends ─────────────────────────────────────────
@@ -257,26 +383,43 @@ LAZY_DEPS: dict[str, str | LazyDep] = {
     "memory.honcho": "honcho",
     "memory.hindsight": "hindsight",
     "memory.supermemory": "supermemory",
-    "memory.mem0": "mem0",
+    "memory.mem0": LazyDep("mem0", only_targets(
+        {"win32-arm64": BUILD_WHEEL}, "grpcio publishes no win_arm64 wheel."
+    )),
 
     # ─── Messaging platforms ───────────────────────────────────────────────
     "platform.telegram": "telegram",
-    "platform.discord": "discord",
+    "platform.discord": LazyDep("discord", only_targets(
+        {"darwin-x64": BUILD_WHEEL, "win32-arm64": BUILD_WHEEL},
+        "brotlicffi and davey publish no wheel for these targets.",
+    )),
     "platform.slack": "slack",
     "platform.matrix": LazyDep("matrix", only_platform(
         "linux",
         "Matrix E2EE depends on python-olm, which only ships wheels for Linux."
         "Run Hermes under WSL to use Matrix on Windows."
     )),
-    "platform.dingtalk": "dingtalk",
+    "platform.dingtalk": LazyDep("dingtalk", only_targets(
+        dict.fromkeys(ALL_TARGETS, BUILD_WHEEL),
+        "the alibabacloud-* SDKs publish sdists only.",
+    )),
     "platform.feishu": "feishu",
     "platform.wecom_callback": "wecom",
-    "platform.teams": "teams",
+    "platform.teams": LazyDep("teams", only_targets(
+        {"darwin-x64": BUILD_WHEEL, "win32-arm64": BUILD_WHEEL},
+        "dependency-injector publishes no wheel for these targets.",
+    )),
 
     # ─── Terminal backends ─────────────────────────────────────────────────
-    "terminal.modal": "modal",
-    "terminal.daytona": "daytona",
-    "terminal.vercel": "vercel",
+    "terminal.modal": LazyDep("modal", only_targets(
+        {"darwin-x64": BUILD_WHEEL}, "cbor2 publishes no macOS x86_64 wheel."
+    )),
+    "terminal.daytona": LazyDep("daytona", only_targets(
+        {"win32-arm64": BUILD_WHEEL}, "obstore publishes no win_arm64 wheel."
+    )),
+    "terminal.vercel": LazyDep("vercel", only_targets(
+        {"darwin-x64": BUILD_WHEEL}, "cbor2 publishes no macOS x86_64 wheel."
+    )),
 
     # ─── Skills ────────────────────────────────────────────────────────────
     "skill.google_workspace": "google",
@@ -289,7 +432,10 @@ LAZY_DEPS: dict[str, str | LazyDep] = {
     "tool.dashboard": "web",
     "tool.computer_use": "computer-use",
     "tool.trace_upload": "trace-upload",
-    "tool.doc_extract": "doc-extract",
+    "tool.doc_extract": LazyDep("doc-extract", only_targets(
+        {"win32-arm64": BUILD_WHEEL},
+        "firecrawl-anydoc publishes no win_arm64 wheel.",
+    )),
 }
 
 
@@ -768,10 +914,10 @@ def feature_extra(feature: str) -> str:
     return entry.extra if isinstance(entry, LazyDep) else entry
 
 
-def check_supported(feature: str) -> None:
+def check_supported(feature: str, *, for_bundle: bool = False) -> None:
     """Run the host-support probe of ``feature``, when it has one.
 
-    Raises :class:`UnsupportedFeature` when this host can never run the
+    Raises :class:`UnsupportedFeature` when this host cannot run the
     feature. Returns None for a supported feature, for a plain-string
     entry, and for an unknown feature (:func:`ensure` owns the allowlist
     check, and reports that error better).
@@ -779,10 +925,15 @@ def check_supported(feature: str) -> None:
     This is a platform capability gate, not a security policy gate. It
     keeps known-impossible installs out of both first-use lazy
     installation and the ``hermes update`` lazy-refresh pass.
+
+    ``for_bundle`` asks the build-lane question instead of the runtime
+    one: a :data:`BUILD_WHEEL` target passes, because the bundled build
+    compiles the sdist on that runner and ships the result. See
+    :func:`only_targets`.
     """
     entry = LAZY_DEPS.get(feature)
     if isinstance(entry, LazyDep):
-        entry.supported()
+        entry.supported(for_bundle=for_bundle)
 
 
 def _parse_spec(spec: str):
@@ -1477,6 +1628,103 @@ def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300) -> 
     )
 
 
+def bundle_extras() -> list[str]:
+    """The pyproject extras a bundled artifact stages for THIS host.
+
+    THE authority the desktop payload staging asks. Every extra behind a
+    :data:`LAZY_DEPS` feature ships in the bundle, minus the ones whose
+    host-support probe refuses this host — so a bundled user never meets
+    a first-use install for a backend the artifact could have carried.
+
+    Callable as an authority because a bundled release builds natively,
+    one runner per (os, arch): the host running this IS the target. The
+    build lane therefore gets the same answer ``ensure`` would give a
+    user of that artifact, which is what keeps the two from drifting.
+
+    An extra that resolves to no specs is left out rather than passed to
+    the exporter, which rejects an unknown extra name.
+    """
+    extras: list[str] = []
+    for feature in sorted(LAZY_DEPS):
+        try:
+            check_supported(feature, for_bundle=True)
+        except UnsupportedFeature:
+            continue
+        extra = feature_extra(feature)
+        if extra not in extras and extra_specs(extra):
+            extras.append(extra)
+    return extras
+
+
+def bundle_source_builds() -> list[str]:
+    """Packages the bundled build must compile from sdist on THIS target.
+
+    A :data:`BUILD_WHEEL` gate says the target has no published wheel but
+    does have an sdist, so the build lane compiles it rather than
+    dropping the feature. Staging passes these to pip as ``--no-binary``
+    names, which override ``--only-binary=:all:`` per package.
+
+    The gate names the FEATURE; the packages come from the extra's spec
+    list, so a pin change moves the compiled set with it and no second
+    table has to be kept in step.
+    """
+    names: list[str] = []
+    for feature in sorted(LAZY_DEPS):
+        try:
+            check_supported(feature)
+        except UnsupportedFeature:
+            # Refused at runtime but allowed for the bundle: the gap this
+            # target has IS the source build.
+            try:
+                check_supported(feature, for_bundle=True)
+            except UnsupportedFeature:
+                continue  # genuinely unavailable — not staged at all
+            for spec in extra_specs(feature_extra(feature)):
+                name = _pkg_name_from_spec(spec)
+                if name and name not in names:
+                    names.append(name)
+    return names
+
+
+def feature_report() -> list[tuple[str, str]]:
+    """Every recorded feature paired with its state in THIS install.
+
+    Diagnostics, for ``hermes doctor``. ``active_features`` answers the
+    updater's question ("what should I refresh?") by dropping anything
+    whose packages are absent; the dropped rows are exactly what a user
+    needs to see, so this reports them instead.
+
+    States:
+      ``installed``   the packages are here and satisfy the current pins.
+      ``stale``       here, but a pin has moved since — `hermes update`
+                      refreshes it.
+      ``missing``     recorded, packages absent from this install. The
+                      user removed them by hand, or the overlay was
+                      cleared (an ABI-stamp wipe after an interpreter
+                      change) since the feature was last used.
+      ``unsupported`` this host is gated off the feature.
+      ``unknown``     a name no longer in LAZY_DEPS (a renamed or
+                      removed backend).
+    """
+    report: list[tuple[str, str]] = []
+    for feature in sorted(_read_feature_record()):
+        if feature not in LAZY_DEPS:
+            report.append((feature, "unknown"))
+            continue
+        try:
+            check_supported(feature)
+        except UnsupportedFeature:
+            report.append((feature, "unsupported"))
+            continue
+        if not _feature_anchor_present(feature):
+            report.append((feature, "missing"))
+        elif feature_missing(feature):
+            report.append((feature, "stale"))
+        else:
+            report.append((feature, "installed"))
+    return report
+
+
 def active_features() -> list[str]:
     """Return the list of features the user has lazy-installed and still has.
 
@@ -1511,16 +1759,23 @@ def _feature_anchor_present(feature: str) -> bool:
     return anchor is not None and _is_present(anchor)
 
 
-# The record of the features that ensure() has served. One name per line
-# in a JSON list, in $HERMES_HOME, so it survives a venv rebuild and, in a
-# container, lives on the data volume.
+# The record of the features that ensure() has served. A JSON list, in
+# the INSTALL's own state folder, beside the lazy-packages overlay whose
+# contents it describes.
+#
+# Install-scoped because the packages are: a sealed install puts them in
+# installs/<sha16>/lazy-packages, so two installs sharing one HERMES_HOME
+# have separate package sets and a shared record would answer for the
+# wrong one. Keeping both halves in one folder makes the record describe
+# the overlay beside it, by construction.
 _FEATURE_RECORD_NAME = "lazy-features.json"
 
 
 def _feature_record_path() -> Path:
-    from hermes_constants import get_hermes_home
+    from hermes_cli.boot_bootstrap import ensure_install_dir
+    from installation.paths import get_install_root
 
-    return get_hermes_home() / _FEATURE_RECORD_NAME
+    return ensure_install_dir(get_install_root()) / _FEATURE_RECORD_NAME
 
 
 def _read_feature_record() -> set[str]:
@@ -1666,3 +1921,31 @@ def ensure_and_bind(
 
     target_globals.update(bindings)
     return True
+
+
+def _main(argv: list[str]) -> int:
+    """``python -m tools.lazy_deps <query>`` — the build-lane queries.
+
+    The desktop payload staging runs these on the target runner, so the
+    answers are that target's. A subprocess rather than an import
+    because the caller is Node; one name per line so the caller needs no
+    JSON parser.
+
+    ``bundle-extras``       the extras to export for this target.
+    ``bundle-source-builds`` the packages pip must compile there.
+    """
+    queries = {
+        "bundle-extras": bundle_extras,
+        "bundle-source-builds": bundle_source_builds,
+    }
+    query = queries.get(argv[0]) if argv else None
+    if query is None or len(argv) != 1:
+        print(f"usage: python -m tools.lazy_deps {{{'|'.join(queries)}}}", file=sys.stderr)
+        return 2
+    for name in query():
+        print(name)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_main(sys.argv[1:]))

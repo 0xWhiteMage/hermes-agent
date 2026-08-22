@@ -335,6 +335,27 @@ test('stageCacheKey is stable for identical inputs and moves with each one', () 
   assert.notEqual(stageCacheKey(base), stageCacheKey({ ...base, target: resolveTargets('win32', 'x64') }))
 })
 
+test('stageCacheKey keys off the effective source-build set, not the target default', () => {
+  // lazy_deps' build-wheel gates add packages to the compile set for a
+  // target, so two runs of the SAME target can install with different
+  // pip flags. A key blind to that would reuse a site-packages staged
+  // with prebuilt wheels for a run that must compile them.
+  const target = resolveTargets('win32', 'arm64')
+  const base = { target, pythonVersion: '3.11', requirementsText: 'x==1\n' }
+
+  const withGate = stageCacheKey({ ...base, sourceBuild: [...(target.sourceBuild ?? []), 'sherpa-onnx'] })
+  assert.notEqual(stageCacheKey({ ...base, sourceBuild: target.sourceBuild ?? [] }), withGate)
+
+  // Order is not identity: the same set in another order is the same key.
+  assert.equal(
+    stageCacheKey({ ...base, sourceBuild: ['b', 'a'] }),
+    stageCacheKey({ ...base, sourceBuild: ['a', 'b'] })
+  )
+
+  // Omitted, it falls back to the target's own list — the pre-gate behavior.
+  assert.equal(stageCacheKey(base), stageCacheKey({ ...base, sourceBuild: target.sourceBuild }))
+})
+
 // ─── binary architecture probes ────────────────────────────────────
 
 import fs from 'node:fs'

@@ -354,7 +354,7 @@ export function buildManifest({ tag, commit, target, pythonRelPath }) {
  * fresh every run. The key says "reuse is allowed"; the arch probes and
  * the import backstop still decide "reuse is correct".
  */
-export function stageCacheKey({ target, pythonVersion, requirementsText }) {
+export function stageCacheKey({ target, pythonVersion, requirementsText, sourceBuild }) {
   return createHash("sha256")
     .update(
       JSON.stringify({
@@ -362,7 +362,11 @@ export function stageCacheKey({ target, pythonVersion, requirementsText }) {
         target: target.key,
         uvPython: target.uvPython,
         pythonVersion,
-        sourceBuild: target.sourceBuild || [],
+        // The EFFECTIVE compile set (the target's own pins plus whatever
+        // lazy_deps' build-wheel gates add for this target), not
+        // target.sourceBuild — the two differ, and a key that ignored the
+        // difference would reuse a cache staged with other pip flags.
+        sourceBuild: [...(sourceBuild ?? target.sourceBuild ?? [])].sort(),
         requirements: createHash("sha256").update(requirementsText).digest("hex"),
       })
     )
@@ -613,8 +617,8 @@ function run(cmd, args, opts = {}) {
  * failure the captured stderr goes into the thrown error, so probe
  * failures are never silent.
  */
-function probe(cmd, args) {
-  const result = spawnSync(cmd, args, { encoding: "utf8" })
+function probe(cmd, args, opts = {}) {
+  const result = spawnSync(cmd, args, { encoding: "utf8", ...opts })
   if (result.error) {
     throw new Error(`${cmd} did not start: ${result.error.message}`)
   }
@@ -860,7 +864,44 @@ function findPythonBinary(pythonDir, target, pythonVersion) {
   throw new Error(`python: no ${name} found under ${roots.join(", ")}`)
 }
 
-function stageSitePackages(target, outDir, pythonBinary, { reuse = false } = {}) {
+/**
+ * Ask lazy_deps what this target's artifact should carry, and what pip
+ * must compile to carry it.
+ *
+ * lazy_deps owns both answers, and it is the same module `ensure()` asks
+ * at run time — one authority, so a bundled artifact and a bundled user
+ * can never disagree about whether a backend is available here. The
+ * probe runs ON the target runner, which is what makes a host answer a
+ * target answer (one runner per (os, arch), same rule as the wheels).
+ *
+ * The two verdicts of a lazy_deps target gate land here as the two
+ * fields. `unavailable` keeps an extra out of `extras` entirely — no
+ * wheel and no sdist exists, so demanding it would only fail the build
+ * (onnxruntime on macOS x86_64). `build-wheel` keeps the extra IN and
+ * adds its packages to `sourceBuild`, so pip compiles the sdist on this
+ * runner: the artifact carries the backend even though a user machine
+ * could never install it.
+ */
+export function bundlePythonPlan(uvExe, cwd = REPO_ROOT, pythonVersion) {
+  const ask = (query) =>
+    probe(uvExe, ["run", "--no-project", "--python", pythonVersion, "-m", "tools.lazy_deps", query], { cwd })
+      .split("\n")
+      .map((line) => line.trim())
+      // Keep only lines shaped like a package/extra name. lazy_deps prints
+      // nothing else, but this probe runs the repo's own interpreter and a
+      // wrapper that greets on stdout (a nix devshell banner, a shell rc)
+      // would otherwise become an "extra" the exporter rejects with a
+      // confusing error about an unknown extra name.
+      .filter((line) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(line))
+
+  const extras = ask("bundle-extras")
+  if (extras.length === 0) {
+    throw new Error("lazy_deps reported no bundle extras — the payload would ship without any opt-in backend")
+  }
+  return { extras, sourceBuild: ask("bundle-source-builds") }
+}
+
+function stageSitePackages(target, outDir, pythonBinary, { reuse = false, sourceBuild } = {}) {
   const sitePackagesDir = path.join(outDir, "site-packages")
   // Export the lock to a requirements file, then install the whole tree
   // with pip running ON THE STAGED PAYLOAD INTERPRETER: pip resolves
@@ -882,7 +923,7 @@ function stageSitePackages(target, outDir, pythonBinary, { reuse = false } = {})
     fs.mkdirSync(sitePackagesDir, { recursive: true })
     run(
       "uvx",
-      ["--python", pythonBinary, "pip", ...pipTargetArgs({ sitePackagesDir, sourceBuild: target.sourceBuild || [] })],
+      ["--python", pythonBinary, "pip", ...pipTargetArgs({ sitePackagesDir, sourceBuild: sourceBuild ?? target.sourceBuild ?? [] })],
       { cwd: REPO_ROOT }
     )
   }
@@ -1139,6 +1180,25 @@ function main() {
 
   fs.mkdirSync(OUT_DIR, { recursive: true })
 
+  // Which opt-in backends this target's artifact carries, and what pip
+  // must compile to carry them. lazy_deps answers both (see
+  // bundlePythonPlan); asked BEFORE the export because the extras are
+  // export arguments, and before the cache key because both halves of
+  // the plan feed it.
+  //
+  // `uv run --no-project` rather than the payload interpreter: that one
+  // does not exist yet at this point, and lazy_deps' query path is
+  // stdlib-only by construction (hermes_bootstrap imports the module
+  // during startup, before a broken venv is repaired). Same uv the rest
+  // of this script uses, pinned to the payload's python version so the
+  // markers it evaluates are the payload's markers.
+  const pythonVersion = payloadPythonVersion(pins.tools)
+  const plan = bundlePythonPlan("uv", REPO_ROOT, pythonVersion)
+  console.log(
+    `[stage-agent-payloads] bundling ${plan.extras.length} opt-in extras` +
+      (plan.sourceBuild.length ? `, compiling ${plan.sourceBuild.length} from sdist` : "")
+  )
+
   // The expensive stages (python install + site-packages) are reused
   // when their cache identity matches the previous run's — CI restores
   // them via actions/cache keyed on uv.lock. Export the requirements
@@ -1147,12 +1207,21 @@ function main() {
   // dist-info rewrite, the .pth, and the manifest run identically on
   // both paths, so a wrong or stale cache fails the same checks a bad
   // fresh staging would.
-  run("uv", ["export", "--frozen", "--no-emit-project", "-o", "requirements-payload.txt"], { cwd: REPO_ROOT })
-  const pythonVersion = payloadPythonVersion(pins.tools)
+  run(
+    "uv",
+    [
+      "export", "--frozen", "--no-emit-project",
+      ...plan.extras.flatMap((extra) => ["--extra", extra]),
+      "-o", "requirements-payload.txt",
+    ],
+    { cwd: REPO_ROOT }
+  )
+  const sourceBuild = [...new Set([...(target.sourceBuild ?? []), ...plan.sourceBuild])]
   const cacheKey = stageCacheKey({
     target,
     pythonVersion,
     requirementsText: fs.readFileSync(path.join(REPO_ROOT, "requirements-payload.txt"), "utf8"),
+    sourceBuild,
   })
   const cacheKeyFile = path.join(OUT_DIR, ".stage-cache-key")
   let reuse = false
@@ -1176,7 +1245,7 @@ function main() {
   console.log(`[stage-agent-payloads] staging: uv + python (${target.key}, ${tag})`)
   const payloadPython = stageUvAndPython(target, OUT_DIR, pythonVersion, { reusePython: reuse })
   console.log(`[stage-agent-payloads] staging: site-packages (${target.key}, ${tag})`)
-  stageSitePackages(target, OUT_DIR, payloadPython, { reuse })
+  stageSitePackages(target, OUT_DIR, payloadPython, { reuse, sourceBuild })
   // The glue that makes the payload interpreter resolve repo/ and
   // site-packages/ wherever the bundle sits. Written after both stages
   // exist so a failed staging run never leaves a .pth that points at
