@@ -152,28 +152,21 @@ def test_state_db_guard_passes_valid_db(tmp_path, monkeypatch):
     assert step_state_db_guard() == {"ok": True}
 
 
-# ── cua refresh gating ───────────────────────────────────────────────
+# ── machine-step registry ────────────────────────────────────────────
 
 
-def test_cua_refresh_skips_when_config_disabled(monkeypatch):
-    import hermes_cli.config as cfg
+def test_provisioning_is_the_machine_scope_driver_path():
+    """cua-driver has no refresh step of its own — provisioning carries it.
 
-    monkeypatch.setattr(
-        cfg, "load_config", lambda: {"updates": {"refresh_cua_driver": False}}
-    )
-    result = post_update.step_cua_driver_refresh()
-    assert result == {"ok": True, "skipped": "config-disabled"}
-
-
-def test_cua_refresh_skips_when_binary_absent(monkeypatch):
-    import shutil as _shutil
-
-    import hermes_cli.config as cfg
-
-    monkeypatch.setattr(cfg, "load_config", lambda: {})
-    monkeypatch.setattr(_shutil, "which", lambda name: None)
-    result = post_update.step_cua_driver_refresh()
-    assert result == {"ok": True, "skipped": "not-installed"}
+    The driver used to get a bespoke ``cua_driver_refresh`` machine step
+    that shelled the upstream installer when a GitHub check confirmed a
+    newer release. It is a pinned managed tool now, so the ordinary
+    provisioner sweep moves it exactly like node or ripgrep, and a
+    second mechanism would be a second authority on its version.
+    """
+    names = [name for name, _ in post_update.MACHINE_STEPS]
+    assert "provision_runtimes" in names
+    assert not any("cua" in name for name in names)
 
 
 # ── __main__ entry ───────────────────────────────────────────────────

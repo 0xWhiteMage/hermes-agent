@@ -197,7 +197,7 @@ COPY installation/ /opt/hermes-build/installation/
 # heredoc: hadolint cannot parse heredoc bodies and the docker-lint job
 # blocks on a Dockerfile parse error.
 COPY docker/publish_runtime_facts.py /opt/hermes-build/publish_runtime_facts.py
-# --extras agent-browser stages the browser driver and, through the pin
+# --extra agent-browser stages the browser driver and, through the pin
 # table's `requires` edges, the Chromium pair it drives. This replaces an
 # `npx playwright install --with-deps chromium` ladder that fetched
 # whatever revision the npm-resolved playwright wanted, unverified, and
@@ -205,7 +205,7 @@ COPY docker/publish_runtime_facts.py /opt/hermes-build/publish_runtime_facts.py
 # locator could not see. The image is a pin consumer for its browser now,
 # exactly as it already is for node, uv, gh and ripgrep.
 RUN PYTHONPATH=/opt/hermes-build python3 -m installation.provisioner \
-        --runtime-dir /opt/hermes/.hermes-runtime --extras agent-browser && \
+        --runtime-dir /opt/hermes/.hermes-runtime --extra agent-browser && \
     PYTHONPATH=/opt/hermes-build python3 /opt/hermes-build/publish_runtime_facts.py
 ENV PYTHONPATH_HERMES_BUILD=/opt/hermes-build
 # The image BUILDS its runtime dir instead of provisioning at first run,

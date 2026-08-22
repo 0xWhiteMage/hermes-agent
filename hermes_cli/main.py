@@ -12518,17 +12518,16 @@ def main():
     )
     computer_use_sub = computer_use_parser.add_subparsers(dest="computer_use_action")
 
-    computer_use_install = computer_use_sub.add_parser(
+    computer_use_sub.add_parser(
         "install",
-        help="Install or repair the cua-driver binary (macOS/Windows/Linux)",
-    )
-    computer_use_install.add_argument(
-        "--upgrade",
-        action="store_true",
-        help=(
-            "Re-run the upstream installer even if cua-driver is already on "
-            "PATH. The upstream install.sh always pulls the latest release, "
-            "so this performs an in-place upgrade."
+        help="Stage the pinned cua-driver binary (macOS/Windows/Linux)",
+        description=(
+            "Provision the cua-driver version pinned in\n"
+            "installation/runtime-pins.json: download, verify its sha256,\n"
+            "publish it into the shared tool store, and record the fact.\n"
+            "Already at the pin? This is a no-op. To move to a NEWER\n"
+            "driver, bump the pin and run `hermes update` — the version is\n"
+            "a code-reviewed decision, not whatever upstream tagged today."
         ),
     )
     computer_use_sub.add_parser(
@@ -12603,21 +12602,21 @@ def main():
         if action == "install":
             from hermes_cli.tools_config import (
                 _cua_driver_contract_status,
-                install_cua_driver,
+                provision_cua_driver,
             )
-            if not install_cua_driver(upgrade=bool(getattr(args, "upgrade", False))):
+            if not provision_cua_driver():
                 return 1
             return 0 if _cua_driver_contract_status().get("ready") else 1
         if action == "status":
             import os as _os
             import subprocess
-            from hermes_cli.tools_config import _cua_driver_contract_status
-            from tools.computer_use.cua_backend import (
-                cua_driver_update_check,
-                resolve_cua_driver_cmd,
+            from hermes_cli.tools_config import (
+                _cua_driver_contract_status,
+                _pinned_cua_driver_version,
             )
-            # Must match the runtime resolver: Desktop/TUI processes can omit
-            # ~/.local/bin even though the official installer put the driver there.
+            from tools.computer_use.cua_backend import resolve_cua_driver_cmd
+            # Must match the runtime resolver: the managed fact, or an
+            # explicit HERMES_CUA_DRIVER_CMD override.
             path = resolve_cua_driver_cmd()
             override = _os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip()
             if path:
@@ -12651,24 +12650,18 @@ def main():
                     if override:
                         print(
                             "    Update the binary selected by HERMES_CUA_DRIVER_CMD, or unset "
-                            "the override and run: hermes computer-use install --upgrade"
+                            "the override and run: hermes computer-use install"
                         )
                     else:
                         print("    Run: hermes computer-use install")
                     return 1
-                try:
-                    st = cua_driver_update_check()
-                    if st and st.get("update_available"):
-                        latest = st.get("latest_version") or "?"
-                        print(f"  ⬆ Update available: cua-driver {latest}.")
-                        print("    Run: hermes computer-use install --upgrade")
-                    elif st:
-                        print("  ✓ Up to date.")
-                    else:
-                        # Older driver (no check-update verb) or offline.
-                        print("  Refresh to latest: hermes computer-use install --upgrade")
-                except Exception:
-                    print("  Refresh to latest: hermes computer-use install --upgrade")
+                # No GitHub update poll: the pin table names the version this
+                # install is supposed to run, so "is there something newer
+                # upstream?" is a question for a pin bump under code review,
+                # not for a per-status network round-trip that would nag the
+                # user toward a driver Hermes has not qualified.
+                if not override:
+                    print(f"  ✓ At the pinned version ({_pinned_cua_driver_version()}).")
                 return 0
             print("cua-driver: not installed")
             print("  Run: hermes computer-use install")

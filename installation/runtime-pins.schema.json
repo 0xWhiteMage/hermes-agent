@@ -71,7 +71,7 @@
         },
         "requires": {
           "type": "array",
-          "description": "Tools this one cannot function without. Drives SELECTION only: asking for this tool (--extras, provision_tool) also asks for these, transitively. No install-order or PATH consequence — that is what separates it from 'extends'. agent-browser requires the chromium pair it launches.",
+          "description": "Tools this one cannot function without. Drives SELECTION only: asking for this tool (--extra, provision_tool) also asks for these, transitively. No install-order or PATH consequence — that is what separates it from 'extends'. agent-browser requires the chromium pair it launches.",
           "items": { "type": "string" },
           "uniqueItems": true
         },

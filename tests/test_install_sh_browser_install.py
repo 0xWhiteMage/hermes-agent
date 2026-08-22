@@ -30,7 +30,7 @@ def test_playwright_installs_are_timeout_guarded() -> None:
     """The one surviving playwright invocation (install-deps, the system-
     library half) stays timeout-guarded. The browser DOWNLOAD half is gone:
     the provisioner sweep stages the pinned Chromium via
-    --extras agent-browser, so no `playwright install chromium` may return."""
+    --extra agent-browser, so no `playwright install chromium` may return."""
     text = INSTALL_SH.read_text()
 
     # The timeout wrapper still exists and is used internally by the install
@@ -53,7 +53,7 @@ def test_browser_rides_the_provisioner_sweep_gated_by_skip_browser() -> None:
     sweep skips it)."""
     text = INSTALL_SH.read_text()
 
-    assert "provisioner_args+=(--extras agent-browser)" in text
+    assert "provisioner_args+=(--extra agent-browser)" in text
     assert 'if [ "$SKIP_BROWSER" != true ]; then' in text
     assert (
         'python -m installation.provisioner "${provisioner_args[@]}"' in text

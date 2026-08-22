@@ -32,7 +32,7 @@ def test_pinned_browser_is_provisioned_as_a_fact(
 ) -> None:
     """The build stages the pinned driver and engine, and records them.
 
-    ``--extras agent-browser`` walks the pin table's ``requires`` edges,
+    ``--extra agent-browser`` walks the pin table's ``requires`` edges,
     so one request brings up the driver plus the Chromium pair.
     """
     start_container(built_image, container_name)

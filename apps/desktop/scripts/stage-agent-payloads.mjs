@@ -417,6 +417,12 @@ function stageManagedRuntimes(target, outDir, pythonExe) {
   // agent-browser expands through the pin table's `requires` edge to the
   // chromium pair it launches — one name selects the whole browsing
   // capability, so the driver and its browser cannot drift apart here.
+  //
+  // cua-driver is named for the same reason the others are: a bundled
+  // artifact must carry the Computer Use driver, or enabling the toolset
+  // in a sealed install has nothing to run and no installer to fetch it
+  // with. It costs ~50MB unpacked (the provisioner prunes the embedding
+  // SDK that Hermes never loads).
   run(pythonExe, [
     "-m",
     "installation.provisioner",
@@ -424,8 +430,8 @@ function stageManagedRuntimes(target, outDir, pythonExe) {
     outDir,
     "--target",
     targetKey,
-    ...["git", "agent-browser"]
-      .flatMap((tool) => ["--extras", tool]),
+    ...["git", "agent-browser", "cua-driver"]
+      .flatMap((tool) => ["--extra", tool]),
     "--archive-cache",
     path.join(REPO_ROOT, "apps", "desktop", "build", "pin-archives"),
   ], { cwd: REPO_ROOT })

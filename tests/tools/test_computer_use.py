@@ -718,47 +718,6 @@ class TestElementLabelParsing:
         assert labels[201] == ""              # pure order number, no label
 
 
-class TestUpdateCheck:
-    """cua_driver_update_check() / _nudge(): native `check-update --json`.
-
-    Prefers cua-driver's source-of-truth update check over a hardcoded
-    version floor. Stays quiet (None) when indeterminate: an old driver with
-    no `check-update` verb, offline, an `error` payload, or unparseable output.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _driver_resolves(self):
-        # The update check now short-circuits to None when no driver
-        # resolves; CI has none installed, so pin a resolved path.
-        with patch(
-            "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
-            return_value="/usr/local/bin/cua-driver",
-        ):
-            yield
-
-    @staticmethod
-    def _run_returning(stdout: str):
-        fake = MagicMock()
-        fake.stdout = stdout
-        return patch("tools.computer_use.cua_backend.subprocess.run", return_value=fake)
-
-    def test_update_available(self):
-        from tools.computer_use import cua_backend
-        payload = '{"current_version":"0.3.1","latest_version":"0.3.2","update_available":true}'
-        with self._run_returning(payload):
-            st = cua_backend.cua_driver_update_check()
-            assert st is not None and st["update_available"] is True
-            msg = cua_backend.cua_driver_update_nudge()
-        assert msg is not None
-        assert "0.3.2" in msg and "0.3.1" in msg
-
-    def test_error_payload_is_indeterminate(self):
-        from tools.computer_use import cua_backend
-        payload = '{"current_version":"0.3.2","update_available":false,"error":"github 503"}'
-        with self._run_returning(payload):
-            assert cua_backend.cua_driver_update_check() is None
-            assert cua_backend.cua_driver_update_nudge() is None
-
 class TestLazyMcpInstall:
     """`mcp` is an optional extra; the backend lazy-installs it on start().
 
@@ -773,7 +732,6 @@ class TestLazyMcpInstall:
                  "cua_driver_runtime_contract_status",
                  return_value={"ready": True},
              ), \
-             patch.object(cua_backend, "_maybe_nudge_update"), \
              patch("tools.lazy_deps.ensure") as mock_ensure, \
              patch.object(cua_backend._CuaDriverSession, "start") as mock_sess_start:
             cua_backend.CuaDriverBackend().start()
@@ -811,7 +769,6 @@ class TestLazyMcpInstall:
                  "cua_driver_runtime_contract_status",
                  return_value={"ready": True},
              ), \
-             patch.object(cua_backend, "_maybe_nudge_update"), \
              patch("tools.lazy_deps.ensure", side_effect=unavailable), \
              patch.object(cua_backend._CuaDriverSession, "start") as mock_sess_start:
             with pytest.raises(FeatureUnavailable):
@@ -849,15 +806,12 @@ class TestContractAutoRepair:
                  "cua_driver_runtime_contract_status",
                  side_effect=[self._incompatible(), {"ready": True}],
              ), \
-             patch("hermes_cli.tools_config.install_cua_driver",
+             patch.object(cua_backend, "provision_cua_driver",
                    return_value=True) as installer, \
-             patch.object(cua_backend, "_maybe_nudge_update"), \
              patch("tools.lazy_deps.ensure"):
             backend.start()
 
-        installer.assert_called_once_with(
-            upgrade=False, show_installer_progress=False
-        )
+        installer.assert_called_once_with()
         backend._session.start.assert_called_once()
 
     def test_failed_repair_surfaces_original_error(self, monkeypatch):
@@ -870,7 +824,7 @@ class TestContractAutoRepair:
                  "cua_driver_runtime_contract_status",
                  return_value=self._incompatible(),
              ), \
-             patch("hermes_cli.tools_config.install_cua_driver",
+             patch.object(cua_backend, "provision_cua_driver",
                    return_value=False), \
              patch("tools.lazy_deps.ensure") as mock_ensure:
             with pytest.raises(RuntimeError, match="0.20.0 or newer"):
@@ -887,7 +841,7 @@ class TestContractAutoRepair:
                  "cua_driver_runtime_contract_status",
                  return_value=self._incompatible(),
              ), \
-             patch("hermes_cli.tools_config.install_cua_driver",
+             patch.object(cua_backend, "provision_cua_driver",
                    return_value=False) as installer, \
              patch("tools.lazy_deps.ensure"):
             for _ in range(2):
@@ -906,7 +860,7 @@ class TestContractAutoRepair:
                  "cua_driver_runtime_contract_status",
                  return_value=self._incompatible(),
              ), \
-             patch("hermes_cli.tools_config.install_cua_driver") as installer, \
+             patch.object(cua_backend, "provision_cua_driver") as installer, \
              patch("tools.lazy_deps.ensure"):
             with pytest.raises(RuntimeError, match="HERMES_CUA_DRIVER_CMD"):
                 cua_backend.CuaDriverBackend().start()
@@ -928,7 +882,7 @@ class TestContractAutoRepair:
                  "cua_driver_runtime_contract_status",
                  return_value=state,
              ), \
-             patch("hermes_cli.tools_config.install_cua_driver") as installer, \
+             patch.object(cua_backend, "provision_cua_driver") as installer, \
              patch("tools.lazy_deps.ensure"):
             with pytest.raises(RuntimeError, match="not installed"):
                 cua_backend.CuaDriverBackend().start()

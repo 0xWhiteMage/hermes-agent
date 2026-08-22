@@ -157,43 +157,6 @@ def step_state_db_guard() -> dict:
     return {"ok": False, "error": message}
 
 
-# ---------------------------------------------------------------------------
-# cua-driver refresh (machine scope)
-# ---------------------------------------------------------------------------
-
-def step_cua_driver_refresh() -> dict:
-    """Refresh the Computer Use driver when a newer release is CONFIRMED.
-
-    Config-gated (``updates.refresh_cua_driver``) and no-op unless the
-    binary is already installed. ``require_confirmed_update`` keeps an
-    indeterminate check (offline, rate-limited) from costing the
-    multi-minute upstream installer.
-    """
-    refresh = True
-    try:
-        from hermes_cli.config import load_config
-
-        update_cfg = (load_config() or {}).get("updates", {})
-        if isinstance(update_cfg, dict):
-            refresh = bool(update_cfg.get("refresh_cua_driver", True))
-    except Exception as exc:
-        logger.debug("Could not read updates.refresh_cua_driver: %s", exc)
-
-    if not refresh:
-        return {"ok": True, "skipped": "config-disabled"}
-    if sys.platform not in ("darwin", "win32", "linux") or not shutil.which("cua-driver"):
-        return {"ok": True, "skipped": "not-installed"}
-
-    from hermes_cli.tools_config import install_cua_driver
-
-    ok = install_cua_driver(
-        upgrade=True,
-        require_confirmed_update=True,
-        show_installer_progress=False,
-    )
-    return {"ok": bool(ok)}
-
-
 def step_adopt_blessed_checkout() -> dict:
     """One-time adoption of shipped stampless installs (birth certificate).
 
@@ -461,8 +424,11 @@ HOME_STEPS: tuple = (
 
 # Machine steps may be slow (network installers); boot bootstrap runs them
 # AFTER writing the machine record, detached from boot readiness.
+#
+# There is no separate cua-driver refresh step: the driver is a pinned
+# managed tool, so provision_runtimes carries a pin bump onto any install
+# whose facts already record it — the same way it carries node or ripgrep.
 MACHINE_STEPS: tuple = (
-    ("cua_driver_refresh", step_cua_driver_refresh),
     ("provision_runtimes", step_provision_runtimes),
 )
 

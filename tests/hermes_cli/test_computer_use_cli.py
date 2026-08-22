@@ -61,11 +61,6 @@ def test_computer_use_status_returns_zero_for_compatible_driver(
         "_cua_driver_contract_status",
         lambda _binary=None: {"ready": True},
     )
-    monkeypatch.setattr(
-        cua_backend,
-        "cua_driver_update_check",
-        lambda: {"update_available": False},
-    )
 
     assert _invoke(monkeypatch, "status") == 0
 
@@ -138,7 +133,7 @@ def test_computer_use_install_checks_resulting_runtime_contract(
     from hermes_cli import tools_config
 
     install = Mock(return_value=True)
-    monkeypatch.setattr(tools_config, "install_cua_driver", install)
+    monkeypatch.setattr(tools_config, "provision_cua_driver", install)
     monkeypatch.setattr(
         tools_config,
         "_cua_driver_contract_status",
@@ -146,7 +141,7 @@ def test_computer_use_install_checks_resulting_runtime_contract(
     )
 
     assert _invoke(monkeypatch, "install") == expected
-    install.assert_called_once_with(upgrade=False)
+    install.assert_called_once_with()
 
 
 def test_computer_use_install_returns_nonzero_for_unrepairable_custom_override(
@@ -158,9 +153,9 @@ def test_computer_use_install_returns_nonzero_for_unrepairable_custom_override(
     monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", driver)
     install = Mock(return_value=False)
     contract = Mock(side_effect=AssertionError("failed install must short-circuit"))
-    monkeypatch.setattr(tools_config, "install_cua_driver", install)
+    monkeypatch.setattr(tools_config, "provision_cua_driver", install)
     monkeypatch.setattr(tools_config, "_cua_driver_contract_status", contract)
 
     assert _invoke(monkeypatch, "install") == 1
-    install.assert_called_once_with(upgrade=False)
+    install.assert_called_once_with()
     contract.assert_not_called()

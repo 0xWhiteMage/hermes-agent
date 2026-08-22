@@ -159,13 +159,17 @@ class TestMcpArgsOverlayFlag:
     def test_appended_when_enabled_and_supported(self):
         with patch.object(cua_backend, "_cua_no_overlay", return_value=True), \
              patch.object(cua_backend, "_cua_driver_supports_no_overlay", return_value=True):
-            result = cua_backend._mcp_args_with_overlay_flag(["mcp"])
+            result = cua_backend._mcp_args_with_overlay_flag(
+                ["mcp"], driver_cmd="/managed/cua-driver"
+            )
             assert result == ["mcp", "--no-overlay"]
 
     def test_not_appended_when_disabled(self):
         with patch.object(cua_backend, "_cua_no_overlay", return_value=False), \
              patch.object(cua_backend, "_cua_driver_supports_no_overlay", return_value=True):
-            result = cua_backend._mcp_args_with_overlay_flag(["mcp"])
+            result = cua_backend._mcp_args_with_overlay_flag(
+                ["mcp"], driver_cmd="/managed/cua-driver"
+            )
             assert result == ["mcp"]
 
 
@@ -173,6 +177,8 @@ class TestMcpArgsOverlayFlag:
         original = ["mcp"]
         with patch.object(cua_backend, "_cua_no_overlay", return_value=True), \
              patch.object(cua_backend, "_cua_driver_supports_no_overlay", return_value=True):
-            result = cua_backend._mcp_args_with_overlay_flag(original)
+            result = cua_backend._mcp_args_with_overlay_flag(
+                original, driver_cmd="/managed/cua-driver"
+            )
             assert "--no-overlay" in result
             assert "--no-overlay" not in original

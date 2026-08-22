@@ -1558,12 +1558,12 @@ class TestDeclaredGapsAreNotFailures:
 
         monkeypatch.setenv("HERMES_RUNTIME_PINS", str(gap / rr.PINS_FILENAME))
         assert rp.main([
-            "--runtime-dir", str(tmp_path / "cli-rt-gap"), "--extras", "chromium",
+            "--runtime-dir", str(tmp_path / "cli-rt-gap"), "--extra", "chromium",
         ]) == 0
 
         monkeypatch.setenv("HERMES_RUNTIME_PINS", str(broken / rr.PINS_FILENAME))
         assert rp.main([
-            "--runtime-dir", str(tmp_path / "cli-rt-broken"), "--extras", "chromium",
+            "--runtime-dir", str(tmp_path / "cli-rt-broken"), "--extra", "chromium",
         ]) == 1
 
     def test_the_reason_is_carried_by_the_type_not_the_message(self, target):
@@ -1697,7 +1697,7 @@ class TestSelectionSemantics:
             "HERMES_RUNTIME_PINS", str(pins / rr.PINS_FILENAME))
 
         assert rp.main([
-            "--runtime-dir", str(tmp_path / "cli-typo"), "--extras", "nope",
+            "--runtime-dir", str(tmp_path / "cli-typo"), "--extra", "nope",
         ]) == 2
 
     def test_the_cli_stages_extras_alongside_the_sweep(
@@ -1709,7 +1709,7 @@ class TestSelectionSemantics:
         rt = tmp_path / "cli-extras"
 
         assert rp.main([
-            "--runtime-dir", str(rt), "--extras", "git",
+            "--runtime-dir", str(rt), "--extra", "git",
         ]) == 0
         assert set(rr.load_facts(rt)) == {"gh", "ripgrep", "git"}
 
@@ -1742,7 +1742,7 @@ class TestRequiresEdge:
         })
 
     def test_extras_expands_the_requires_closure(self, served, tmp_path, target):
-        """--extras <driver> stages the driver AND what it requires —
+        """--extra <driver> stages the driver AND what it requires —
         the literal-set-membership bug this edge exists to fix."""
         pins = self._pins(served, tmp_path, target)
 

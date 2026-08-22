@@ -757,16 +757,26 @@ provision_managed_runtimes() {
     # are already at their pinned version, so a retry only re-fetches what
     # is still missing.
     #
-    # The browser rides the same sweep: --extras agent-browser stages the
+    # The browser rides the same sweep: --extra agent-browser stages the
     # driver AND (through the pin table's requires edge) the pinned
     # Chromium pair, digest-verified into the shared store — replacing the
     # old `npx playwright install` download into ~/.cache/ms-playwright.
     # System LIBRARIES for that Chromium stay in the script (see the
     # browser-deps lane): root-privileged OS package work is not the
     # provisioner's business.
+    #
+    # cua-driver rides it too. It used to arrive through its own
+    # `curl | bash` stage (install_computer_use_driver), which fetched
+    # whatever release upstream had tagged, unverified by us, and left an
+    # installer home + lock + symlink farm behind. As a pinned optional
+    # tool it is one more --extra: exact version, digest checked before
+    # extraction, and `hermes update` carries a pin bump from then on.
     local -a provisioner_args=()
     if [ "$SKIP_BROWSER" != true ]; then
-        provisioner_args+=(--extras agent-browser)
+        provisioner_args+=(--extra agent-browser)
+    fi
+    if [ "$SKIP_COMPUTER_USE" != true ]; then
+        provisioner_args+=(--extra cua-driver)
     fi
     local attempt
     for attempt in 1 2 3; do
@@ -2041,7 +2051,7 @@ install_node_deps() {
         log_success "Node.js dependencies installed"
 
         # Chromium system LIBRARIES. The browser BINARY itself is staged by
-        # the provisioner sweep above (--extras agent-browser expands to the
+        # the provisioner sweep above (--extra agent-browser expands to the
         # pinned Chromium pair via the pin table's requires edge), so the
         # download half of the old lane is gone — this lane now owns only
         # the root-privileged OS package work a pinned browser still needs
@@ -2051,7 +2061,7 @@ install_node_deps() {
         if [ "$SKIP_BROWSER" = true ]; then
             log_info "Skipping browser setup (--skip-browser)"
             log_info "Browser tools will be unavailable until you run manually:"
-            log_info "  cd $INSTALL_DIR && $UV_CMD run --no-project python -m installation.provisioner --extras agent-browser"
+            log_info "  cd $INSTALL_DIR && $UV_CMD run --no-project python -m installation.provisioner --extra agent-browser"
             log_info "On apt-based systems, an admin also needs to run:"
             log_info "  sudo npx playwright install-deps chromium"
         else
@@ -2179,83 +2189,6 @@ install_browser_use_cli() {
         log_warn "Browser Use CLI install failed — browser automation falls back to built-in tools."
         log_info "Install later with: $UV_CMD tool install browser-use  (or via 'hermes tools')"
     fi
-}
-
-cua_driver_runtime_compatible() {
-    local driver_path version_output manifest_output
-    local major minor
-    driver_path="$(command -v cua-driver 2>/dev/null)" || return 1
-    version_output="$("$driver_path" --version 2>/dev/null)" || return 1
-    if [[ ! "$version_output" =~ ([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
-        return 1
-    fi
-    major="${BASH_REMATCH[1]}"
-    minor="${BASH_REMATCH[2]}"
-    if (( major == 0 && minor < 20 )); then
-        return 1
-    fi
-    manifest_output="$("$driver_path" manifest 2>/dev/null)" || return 1
-    local required
-    for required in \
-        '"mcp_invocation"' \
-        '"--socket"' \
-        '"--grant"' \
-        '"--permission-mode"' \
-        '"--capability-manifest"' \
-        '"--approve-capability-manifest"' \
-        '"--embedded"'; do
-        case "$manifest_output" in
-            *"$required"*) ;;
-            *) return 1 ;;
-        esac
-    done
-    return 0
-}
-
-install_computer_use_driver() {
-    # cua-driver powers the computer_use toolset (background desktop control).
-    # Provision it at install time so enabling the tool later — via
-    # `hermes tools`, the dashboard, or the desktop app — is a config flip,
-    # not a surprise multi-minute binary fetch (the confusion this fixes:
-    # users had to discover `hermes computer-use install` on their own).
-    # Best-effort and non-fatal: the enable paths still lazy-install via
-    # install_cua_driver() when this step was skipped or failed.
-    if [ "$SKIP_COMPUTER_USE" = true ]; then
-        log_info "Skipping Computer Use (cua-driver) install (--skip-computer-use)"
-        return 0
-    fi
-    if command -v cua-driver >/dev/null 2>&1; then
-        if cua_driver_runtime_compatible; then
-            log_success "Computer Use driver (cua-driver) already installed and compatible"
-            return 0
-        fi
-        log_warn "Existing cua-driver is old or incomplete; repairing it"
-    fi
-    # Non-admin macOS accounts can't receive the CuaDriver.app bundle in
-    # /Applications; skip cleanly instead of failing loudly (#47865 class).
-    if [ "$(uname -s)" = "Darwin" ] && [ -d /Applications ] && [ ! -w /Applications ]; then
-        log_info "Skipping Computer Use driver (cua-driver): /Applications is not writable"
-        return 0
-    fi
-
-    log_info "Installing Computer Use driver (cua-driver)..."
-    # Same upstream installer `hermes computer-use install` runs; time-boxed
-    # so a stalled GitHub download can't hang the Hermes install. The
-    # upstream installer serializes with its own lock (600s stale window),
-    # so give it a ceiling above that — matching Hermes'
-    # _CUA_INSTALLER_TIMEOUT (660s).
-    local cua_log
-    cua_log="$(mktemp)"
-    if run_with_timeout 660 /bin/bash -c \
-        'curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh | /bin/bash' \
-        >"$cua_log" 2>&1; then
-        log_success "Computer Use driver installed (enable via 'hermes tools' → Computer Use)"
-    else
-        log_warn "Computer Use driver install failed — it will install on demand when you enable the tool."
-        log_info "Install later with: hermes computer-use install"
-        tail -n 5 "$cua_log" >&2 || true
-    fi
-    rm -f "$cua_log"
 }
 
 run_setup_wizard() {
@@ -3052,7 +2985,6 @@ main() {
     setup_path
     install_node_deps || return
     install_browser_use_cli
-    install_computer_use_driver
     copy_config_templates
     run_setup_wizard
     maybe_start_gateway

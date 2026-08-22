@@ -469,21 +469,49 @@ def _windows_file_version(binary: Path) -> Optional[str]:
 
 
 def _probe_env(
-    entry: dict, facts_dir: Path, store: Path
+    entry: dict, facts_dir: Path, store: Path, tool: str | None = None
 ) -> Optional[dict[str, str]]:
     """Environment for the run-the-binary check.
 
-    Most tools are self-contained executables and need nothing. A tool
-    that extends another is a script launched by it — npm's shim is
-    ``#!/usr/bin/env node`` — so the probe has to see the runtime dir's
-    own tools on PATH, or it reports "does not run" on any host without a
-    system copy and the tool is never recorded.
+    Most tools are self-contained executables and need nothing. Two
+    shapes do:
+
+    * A tool that EXTENDS another is a script launched by it — npm's shim
+      is ``#!/usr/bin/env node`` — so the probe has to see the runtime
+      dir's own tools on PATH, or it reports "does not run" on any host
+      without a system copy and the tool is never recorded.
+    * cua-driver ships telemetry ON by default upstream, and its very
+      first run is what mints an installation id. The probe IS a first
+      run, so it carries the same opt-out env every other cua-driver
+      child gets — provisioning a driver must not create the telemetry
+      state the user never opted into.
     """
+    if tool == "cua-driver":
+        return _cua_driver_probe_env()
     if not entry.get("extends"):
         return None
     from installation.env import with_managed_runtimes
 
     return with_managed_runtimes(runtime_dir=facts_dir, store_dir=store)
+
+
+def _cua_driver_probe_env() -> dict[str, str]:
+    """cua-driver's child env, with the Hermes telemetry policy applied.
+
+    ``tools.computer_use.cua_backend`` owns the policy (opt-in via
+    ``computer_use.cua_telemetry``, disabled otherwise). The import is
+    local and guarded: ``installation`` is the dependency-free install
+    engine and runs in contexts where the agent package is not
+    importable, so a missing runtime degrades to disabling telemetry
+    outright rather than failing the provision — the same
+    fail-safe-toward-off direction the policy itself takes.
+    """
+    try:
+        from tools.computer_use.cua_backend import cua_driver_child_env
+
+        return cua_driver_child_env()
+    except Exception:
+        return dict(os.environ, CUA_DRIVER_RS_TELEMETRY_ENABLED="0")
 
 
 # ─── per-tool layout + staging ──────────────────────────────────────────────
@@ -549,6 +577,10 @@ def _binary_rel(tool: str, target: str) -> str:
         # (bin/agent-browser.js) is deliberately NOT the fact: it would
         # drag a node dependency into a tool that has none.
         "agent-browser": f"bin/agent-browser-{target}{ext}",
+        # The `-binary` release variants unpack flat, so the driver sits at
+        # the store entry's root beside its SDK library and (on Windows)
+        # the cua-driver-uia.exe UIAccess worker it spawns.
+        "cua-driver": f"cua-driver{ext}",
         # playwright-core's EXECUTABLE_PATHS, verbatim: the archives keep
         # their internal layout and playwright resolves these inside the
         # entry, so the fact records the same path playwright will run.
@@ -769,6 +801,46 @@ def _prune_foreign_agent_browser_binaries(dest: Path, target: str) -> None:
             item.unlink()
 
 
+def _prune_cua_driver_sdk_artifacts(dest: Path) -> None:
+    """Drop the embedding SDK that ships beside the cua-driver CLI.
+
+    The release tarball carries an SDK for programs that EMBED the driver
+    as a library: ``libcua_driver_sdk.{so,dylib}`` / ``cua_driver_sdk.dll``
+    (~38-47MB), the Node addon ``cua_driver_node_runtime.node``, and the C
+    header ``cua_driver_abi.h``. Hermes is not such a program — it speaks
+    MCP over stdio to the CLI — and the CLI does not use them either: the
+    binary neither links the library (no DT_NEEDED entry) nor names it for
+    a dlopen, verified against the 0.21.0 linux-x64 build.
+
+    So they are bytes no code path on this machine can reach, and in a
+    sealed desktop payload they are bytes every user downloads. Same call
+    the staging already makes for dugite's Windows-only DLLs on POSIX and
+    for agent-browser's foreign-arch binaries.
+
+    ``cua-cursor-theme`` and ``wayland-helper/`` stay: the driver
+    references the cursor theme by name, and the Wayland helper is the
+    GNOME extension a Linux user installs for window rects.
+
+    Raises when the CLI itself is missing rather than pruning blind — an
+    upstream layout change must fail the build, not silently ship a
+    payload whose driver was deleted.
+    """
+    if not (dest / "cua-driver").is_file() and not (dest / "cua-driver.exe").is_file():
+        raise RuntimeError(
+            f"cua-driver: no CLI binary in the staged tarball at {dest} — "
+            "the upstream layout changed and the pruner would delete the "
+            "wrong files"
+        )
+    for name in (
+        "libcua_driver_sdk.so",
+        "libcua_driver_sdk.dylib",
+        "cua_driver_sdk.dll",
+        "cua_driver_node_runtime.node",
+        "cua_driver_abi.h",
+    ):
+        (dest / name).unlink(missing_ok=True)
+
+
 def _stage(
     tool: str,
     pin: PinnedFile,
@@ -799,6 +871,8 @@ def _stage(
     _stage_archive(pin, dest, tmp, archive_dir=archive_dir)
     if tool == "agent-browser":
         _prune_foreign_agent_browser_binaries(dest, target)
+    if tool == "cua-driver":
+        _prune_cua_driver_sdk_artifacts(dest)
     if tool == "git" and not target.startswith("win32"):
         # dugite ships Windows remote-helper DLLs in every build. They
         # are dead weight on POSIX (~40MB) and now cost store space that
@@ -1198,7 +1272,7 @@ def _provision_one(
 
         # Verify by RUNNING it, not by trusting the archive: a cross-arch
         # or half-extracted binary fails here rather than at first use.
-        probe_env = _probe_env(entry, facts_dir, store)
+        probe_env = _probe_env(entry, facts_dir, store, tool)
         if _probe_version(binary, env=probe_env) is None:
             return ToolResult(tool, "failed", detail="provisioned binary does not run")
         # A binary whose version came out of its PE resource was never
@@ -1334,7 +1408,7 @@ def provision_runtimes(
             f"provision_runtimes: not in the pin table: {', '.join(unknown)}"
         )
     # Expand each requested extra through its requires closure BEFORE the
-    # sweep: --extras agent-browser must stage the chromium pair it
+    # sweep: --extra agent-browser must stage the chromium pair it
     # launches, not just the driver (selection only — order and PATH stay
     # the pin table's business).
     for name in list(extra):
@@ -1343,7 +1417,7 @@ def provision_runtimes(
     for tool in install_order(pins):
         if is_optional(tool, pins) and tool not in facts and tool not in extra:
             # An optional tool is provisioned on demand (provision_tool or
-            # an explicit extras request), not for everyone. Once the facts
+            # an explicit --extra request), not for everyone. Once the facts
             # record it, though, the sweep owns it like any other tool.
             continue
         result = _provision_one(
@@ -1513,10 +1587,13 @@ def main(argv: list[str] | None = None) -> int:
         "A mismatch exits 2.",
     )
     parser.add_argument(
-        "--extras",
+        "--extra",
+        dest="extras",
         action="append",
+        metavar="TOOL",
         help="Provision the default sweep PLUS this optional tool "
-        "(repeatable), expanded through the pin table's 'requires' edges. "
+        "(repeatable: --extra git --extra agent-browser), expanded through "
+        "the pin table's 'requires' edges. "
         "What a payload build wants: every required tool, "
         "and the capabilities this artifact ships with. A target the pin "
         "table declares no build for is reported 'unavailable' and does "

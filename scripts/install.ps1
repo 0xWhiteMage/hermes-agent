@@ -1475,15 +1475,25 @@ function Invoke-RuntimeProvisioning {
     # user a reinstall. The provisioner is idempotent and skips tools already
     # at their pinned version, so a retry only re-fetches what is missing.
     #
-    # The browser rides the same sweep: --extras agent-browser stages the
+    # The browser rides the same sweep: --extra agent-browser stages the
     # driver AND (through the pin table's requires edge) the pinned Chromium
     # pair, digest-verified into the shared store -- replacing the old
     # `npx playwright install chromium` download into
     # %LOCALAPPDATA%\ms-playwright.
+    #
+    # cua-driver rides it too. It used to arrive through Install-CuaDriver,
+    # which piped upstream's install.ps1 to iex: whatever release upstream
+    # had tagged, unverified by us, plus a FileShare::None lock file and a
+    # scheduled-task repair for that installer's own quoting bug. As a
+    # pinned optional tool it is one more --extra.
+    $provisionerArgs = @("--extra", "agent-browser")
+    if (-not $SkipComputerUse) {
+        $provisionerArgs += @("--extra", "cua-driver")
+    }
     foreach ($attempt in 1..3) {
         Push-Location $InstallDir
         try {
-            & $script:UvCmd run --no-project python -m installation.provisioner --extras agent-browser
+            & $script:UvCmd run --no-project python -m installation.provisioner @provisionerArgs
             $code = $LASTEXITCODE
         } finally {
             Pop-Location
@@ -3087,7 +3097,7 @@ function Install-NodeDeps {
         $browserNpmOk = _Run-NpmInstall "Browser tools" $InstallDir $browserLog $npmExe
 
         # The Chromium BINARY is staged by the provisioner sweep
-        # (--extras agent-browser expands to the pinned Chromium pair via
+        # (--extra agent-browser expands to the pinned Chromium pair via
         # the pin table's requires edge, into the shared tool store) --
         # the old `npx playwright install chromium` download into
         # %LOCALAPPDATA%\ms-playwright is gone. Windows needs no system-
@@ -3104,7 +3114,6 @@ function Install-NodeDeps {
     }
 
     Install-BrowserUseCli
-    Install-CuaDriver
 }
 
 # The Browser Use CLI is the default browser backend when it is runnable
@@ -3152,141 +3161,6 @@ function Install-BrowserUseCli {
     }
 }
 
-function Test-CuaDriverRuntimeContract {
-    param([Parameter(Mandatory = $true)][string]$DriverPath)
-
-    try {
-        $versionOutput = (& $DriverPath --version 2>$null | Out-String).Trim()
-        if ($LASTEXITCODE -ne 0) {
-            return $false
-        }
-        $versionMatch = [regex]::Match($versionOutput, '(\d+\.\d+\.\d+)')
-        if (-not $versionMatch.Success) {
-            return $false
-        }
-        if ([version]($versionMatch.Groups[1].Value) -lt [version]'0.20.0') {
-            return $false
-        }
-
-        $manifestOutput = (& $DriverPath manifest 2>$null | Out-String).Trim()
-        if ($LASTEXITCODE -ne 0 -or -not $manifestOutput) {
-            return $false
-        }
-        $manifest = $manifestOutput | ConvertFrom-Json
-        if (-not $manifest.mcp_invocation.args) {
-            return $false
-        }
-
-        $required = @{
-            mcp = @('--socket', '--grant')
-            serve = @(
-                '--socket', '--permission-mode', '--capability-manifest',
-                '--approve-capability-manifest', '--embedded'
-            )
-            stop = @('--socket')
-        }
-        foreach ($commandName in $required.Keys) {
-            $command = $manifest.subcommands | Where-Object { $_.name -eq $commandName }
-            if (-not $command) {
-                return $false
-            }
-            $argNames = @($command.args | ForEach-Object { $_.name })
-            foreach ($requiredArg in $required[$commandName]) {
-                if ($requiredArg -notin $argNames) {
-                    return $false
-                }
-            }
-        }
-        return $true
-    } catch {
-        return $false
-    }
-}
-
-# cua-driver powers the computer_use toolset (background desktop control).
-# Provision it at install time so enabling the tool later -- via `hermes
-# tools`, the dashboard, or the desktop app -- is a config flip, not a
-# surprise multi-minute binary fetch. Best-effort and non-fatal: the enable
-# paths still lazy-install via install_cua_driver() (hermes_cli/tools_config)
-# when this step was skipped or failed.
-function Install-CuaDriver {
-    if ($SkipComputerUse) {
-        Write-Info "Skipping Computer Use (cua-driver) install (-SkipComputerUse)"
-        return
-    }
-    $existingCuaDriver = Get-Command cua-driver -ErrorAction SilentlyContinue
-    if ($existingCuaDriver) {
-        if (Test-CuaDriverRuntimeContract -DriverPath $existingCuaDriver.Source) {
-            Write-Success "Computer Use driver (cua-driver) already installed and compatible"
-            return
-        }
-        Write-Warn "Existing cua-driver is old or incomplete; repairing it"
-    }
-
-    Write-Info "Installing Computer Use driver (cua-driver)..."
-    $prevEAP = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        # Same upstream installer `hermes computer-use install` runs. Bounded
-        # via a background job: the upstream installer serializes with its own
-        # lock (600s stale window), so the ceiling sits above that -- matching
-        # Hermes' _CUA_INSTALLER_TIMEOUT (660s).
-        #
-        # Telemetry: cua-driver reads CUA_DRIVER_RS_TELEMETRY_ENABLED ("0" =
-        # disabled). Hermes disables telemetry by default (config
-        # computer_use.cua_telemetry defaults False). Pass the env var into the
-        # job so the upstream installer and the installed binary both see it.
-        # Without this the upstream installer's own console may print a
-        # "Sends telemetry..." consent prompt that pops a visible window.
-        #
-        # Window: -WindowStyle Hidden on the job's PowerShell process stops the
-        # console flash from the upstream installer. The job still streams its
-        # output through Receive-Job for error checking.
-        $env:CUA_DRIVER_RS_TELEMETRY_ENABLED = "0"
-        $job = Start-Job -ScriptBlock {
-            $env:CUA_DRIVER_RS_TELEMETRY_ENABLED = "0"
-            Invoke-RestMethod -UseBasicParsing "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.ps1" | Invoke-Expression
-        }
-        if (Wait-Job $job -Timeout 660) {
-            Receive-Job $job -ErrorAction SilentlyContinue | Out-Null
-            Remove-Job $job -Force -ErrorAction SilentlyContinue
-            $installedCuaDriver = Get-Command cua-driver -ErrorAction SilentlyContinue
-            if ($installedCuaDriver -and (Test-CuaDriverRuntimeContract -DriverPath $installedCuaDriver.Source)) {
-                Write-Success "Computer Use driver installed (enable via 'hermes tools' -> Computer Use)"
-            } else {
-                Write-Warn "Computer Use driver install did not produce a compatible runtime -- repair it before enabling the tool."
-                Write-Info "Install later with: hermes computer-use install"
-            }
-        } else {
-            Stop-Job $job -ErrorAction SilentlyContinue
-            Remove-Job $job -Force -ErrorAction SilentlyContinue
-            Write-Warn "Computer Use driver install timed out -- it will install on demand when you enable the tool."
-            Write-Info "Install later with: hermes computer-use install"
-        }
-    } catch {
-        Write-Warn "Computer Use driver install failed: $_"
-        Write-Info "Install later with: hermes computer-use install"
-    } finally {
-        $ErrorActionPreference = $prevEAP
-    }
-}
-
-# Clear the cached Electron download + any half-written unpacked output so the
-# next `npm run pack` re-downloads and re-stages from scratch. A corrupt zip in
-# the per-user Electron download cache - most often a partial download resumed
-# into the same file, leaving concatenated junk - makes electron-builder's
-# `app-builder unpack-electron` extract a tree MISSING the electron binary, so
-# the final `electron` -> `Hermes` rename dies with ENOENT and every re-run
-# repeats the broken extraction forever.
-#
-# We deliberately do not validate the zip ourselves: the common
-# prepended/concatenated-junk corruption slips past naive checks, so a
-# self-rolled gate would skip the real-world case. We unconditionally drop the
-# cached electron-*.zip (loose copy and any @electron/get hash-subdir copy) plus
-# the stale unpacked dir, then let the caller retry once - @electron/get
-# re-downloads with its own SHASUM verification, the real source of truth.
-#
-# Returns the removed paths. Best-effort: never throws.
 function Clear-ElectronBuildCache {
     param([string]$DesktopDir)
     $removed = @()

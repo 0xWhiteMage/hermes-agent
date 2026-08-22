@@ -1168,14 +1168,6 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         ),
         "options": ["stash", "discard"],
     },
-    "updates.refresh_cua_driver": {
-        "type": "boolean",
-        "description": (
-            "Refresh an already-installed cua-driver during hermes update. "
-            "Disable this on non-admin macOS accounts where /Applications is "
-            "not writable."
-        ),
-    },
     "browser.headed": {
         "type": "boolean",
         "description": "Run the local browser in headed mode (visible window). Also keeps the window open between turns; idle sessions are still reaped after browser.inactivity_timeout.",

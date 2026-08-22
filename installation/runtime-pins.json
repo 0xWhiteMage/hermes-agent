@@ -162,6 +162,37 @@
         }
       }
     },
+    "cua-driver": {
+      "$comment": "OPTIONAL: the Computer Use driver, a self-contained Rust binary that speaks MCP over stdio. The `-binary` release variants unpack flat (cua-driver, cua-cursor-theme, the SDK library, and on Windows the cua-driver-uia.exe UIAccess worker), so the binary runs straight out of its store entry with no installer state: no ~/.cua-driver home, no versioned-dirs + `current` symlink farm, no /Applications bundle. Both darwin targets take the same universal artifact, which carries an x86_64 and an arm64 slice. macOS NOTE: the upstream installer places CuaDriver.app in /Applications so TCC grants attribute to com.trycua.driver; a pinned binary has no bundle, so the driver runs with `mcp --direct` and the grants attribute to the host process instead (Hermes, or the terminal that spawned it). That is the deliberate trade for one code path on every platform. Telemetry is upstream-default-ON and is disabled through CUA_DRIVER_RS_TELEMETRY_ENABLED (cua_backend.cua_driver_child_env), which the provisioner's version probe passes too, so provisioning never creates an installation id.",
+      "version": "0.21.0",
+      "optional": true,
+      "files": {
+        "darwin-arm64": {
+          "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.21.0/cua-driver-rs-0.21.0-darwin-universal-binary.tar.gz",
+          "sha256": "5e327e58f6ce81d5c117fe5edec5f267e87e1b921e8c5a8aa4f7f21cbcf5f273"
+        },
+        "darwin-x64": {
+          "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.21.0/cua-driver-rs-0.21.0-darwin-universal-binary.tar.gz",
+          "sha256": "5e327e58f6ce81d5c117fe5edec5f267e87e1b921e8c5a8aa4f7f21cbcf5f273"
+        },
+        "linux-x64": {
+          "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.21.0/cua-driver-rs-0.21.0-linux-x86_64-binary.tar.gz",
+          "sha256": "cf29bfaad16737e31e72f38dad2a6424f24b21a4ac2edea885e83cb9d5034135"
+        },
+        "linux-arm64": {
+          "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.21.0/cua-driver-rs-0.21.0-linux-arm64-binary.tar.gz",
+          "sha256": "6b3a308c6741dd8291aad22a308bd2ec8eb52eab64687be007ac86ceaf7e3307"
+        },
+        "win32-x64": {
+          "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.21.0/cua-driver-rs-0.21.0-windows-x86_64-binary.zip",
+          "sha256": "d63f6a78e65afc06524048f5557fed36cdf01f0a8a680236e93c9a2fb3587f44"
+        },
+        "win32-arm64": {
+          "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.21.0/cua-driver-rs-0.21.0-windows-arm64-binary.zip",
+          "sha256": "79caf7e4f55cdab08533abf7ead4038132aa070040669238d806d057f648cc5f"
+        }
+      }
+    },
     "agent-browser": {
       "$comment": "OPTIONAL: the browser driver, a self-contained Rust binary that speaks CDP. One registry tarball ships every platform's binary (68.5MB unpacked); the fact records the HOST's native binary directly, so no node/npm is needed to run it. Pinned exactly (0.26.0 is the only 0.26.x) so a sealed bundle resolves no floating range at runtime. win32-arm64 is a declared gap: the tarball and the v0.26.0 GitHub release both ship no ARM64 Windows binary. requires: a driver without a browser is not a configuration anyone wants -- selecting agent-browser selects the pinned Chromium pair with it (selection only; no PATH or ordering consequence).",
       "version": "0.26.0",
