@@ -874,6 +874,18 @@ function findPythonBinary(pythonDir, target, pythonVersion) {
  * probe runs ON the target runner, which is what makes a host answer a
  * target answer (one runner per (os, arch), same rule as the wheels).
  *
+ * The probe interpreter is requested through `pythonRequest`, by full
+ * platform and not by bare version, for the same reason the payload
+ * interpreter is. lazy_deps' target gates read `platform.machine()`, so
+ * the probe's OWN architecture decides the verdicts — and on arm64
+ * Windows a bare "3.11.15" gets an x86_64 CPython, which uv chooses on
+ * purpose ("support for the native architecture (aarch64) is not yet
+ * mature"). That interpreter answers `win32-x64`, every win32-arm64 gate
+ * stays shut, and the extras it lists include backends this target
+ * cannot install. It failed as a pip error further down the build:
+ * stt-whisper survived the gate, and `ctranslate2` publishes no
+ * win_arm64 wheel and no sdist.
+ *
  * Both lazy_deps target verdicts land in this one answer. `unavailable`
  * keeps an extra out — no wheel and no sdist exists, so demanding it
  * would only fail the build (onnxruntime on macOS x86_64). `build-wheel`
@@ -882,9 +894,12 @@ function findPythonBinary(pythonDir, target, pythonVersion) {
  * never install it. Which packages that compiles is pip's decision from
  * the index, so the verdict names no packages (see pipTargetArgs).
  */
-export function bundlePythonPlan(uvExe, cwd = REPO_ROOT, pythonVersion) {
+export function bundlePythonPlan(uvExe, cwd = REPO_ROOT, pythonVersion, target, probeImpl = probe) {
+  if (!target?.uvPython) {
+    throw new Error("bundlePythonPlan: a resolved target is required (its uvPython names the probe interpreter's platform)")
+  }
   const ask = (query) =>
-    probe(uvExe, ["run", "--no-project", "--python", pythonVersion, "-m", "tools.lazy_deps", query], { cwd })
+    probeImpl(uvExe, ["run", "--no-project", "--python", pythonRequest(target, pythonVersion), "-m", "tools.lazy_deps", query], { cwd })
       .split("\n")
       .map((line) => line.trim())
       // Keep only lines shaped like a package/extra name. lazy_deps prints
@@ -1313,10 +1328,12 @@ function main() {
   // does not exist yet at this point, and lazy_deps' query path is
   // stdlib-only by construction (hermes_bootstrap imports the module
   // during startup, before a broken venv is repaired). Same uv the rest
-  // of this script uses, pinned to the payload's python version so the
-  // markers it evaluates are the payload's markers.
+  // of this script uses, pinned to the payload's python version AND
+  // platform: the probe's own architecture decides lazy_deps' target
+  // verdicts, so a bare version request would let uv answer for the
+  // wrong arch (see bundlePythonPlan).
   const pythonVersion = payloadPythonVersion(pins.tools)
-  const plan = bundlePythonPlan("uv", REPO_ROOT, pythonVersion)
+  const plan = bundlePythonPlan("uv", REPO_ROOT, pythonVersion, target)
   console.log(`[stage-agent-payloads] bundling ${plan.extras.length} opt-in extras`)
 
   // The expensive stages (python install + site-packages) are reused

@@ -7,6 +7,7 @@ import {
   bannerExpectations,
   buildManifest,
   bundlePthLines,
+  bundlePythonPlan,
   PAYLOAD_SCHEMA_VERSION,
   payloadPythonVersion,
   pipTargetArgs,
@@ -545,4 +546,74 @@ test('assertPayloadArch rejects a payload with no runtimes.json at all', () => {
   const target = resolveTargets('linux', 'x64')
 
   assert.throws(() => assertPayloadArch(target, dir), /cannot read runtimes\.json/)
+})
+
+// ─── bundlePythonPlan ──────────────────────────────────────────────
+
+function capturePlanProbe(stdout = 'anthropic\nweb\n') {
+  const calls = []
+
+  const probeImpl = (cmd, args, opts) => {
+    calls.push({ cmd, args, opts })
+
+    return stdout
+  }
+
+  return { calls, probeImpl }
+}
+
+test('the extras probe names the target platform, never a bare version', () => {
+  // lazy_deps' target gates read the architecture of the interpreter
+  // ANSWERING them, so the probe interpreter must be the target's. A bare
+  // "3.11.15" lets uv substitute another arch: on arm64 Windows it
+  // installs an x86_64 CPython on purpose ("support for the native
+  // architecture (aarch64) is not yet mature"). That interpreter reports
+  // win32-x64, the win32-arm64 gates stay shut, and stt-whisper survives
+  // into the export — where ctranslate2 publishes no win_arm64 wheel and
+  // no sdist, and pip fails the release build.
+  for (const [platform, arch] of TARGET_PAIRS) {
+    const target = resolveTargets(platform, arch)
+    const { calls, probeImpl } = capturePlanProbe()
+
+    bundlePythonPlan('uv', '/repo', '3.11.15', target, probeImpl)
+
+    const request = calls[0].args[calls[0].args.indexOf('--python') + 1]
+    assert.equal(
+      request,
+      pythonRequest(target, '3.11.15'),
+      `${platform}-${arch}: the probe must request the target's own python build`
+    )
+    assert.notEqual(request, '3.11.15', `${platform}-${arch}: a bare version lets uv pick another architecture`)
+    assert.match(request, /-(x86_64|aarch64)-/, `${platform}-${arch}: the request must name an architecture`)
+  }
+})
+
+test('the extras probe and the payload interpreter request the same build', () => {
+  // One artifact, one architecture: the interpreter that decides which
+  // extras ship and the interpreter that installs them cannot disagree,
+  // or the export names packages the install cannot satisfy.
+  for (const [platform, arch] of TARGET_PAIRS) {
+    const target = resolveTargets(platform, arch)
+    const { calls, probeImpl } = capturePlanProbe()
+
+    bundlePythonPlan('uv', '/repo', '3.11.15', target, probeImpl)
+
+    assert.equal(calls[0].args[calls[0].args.indexOf('--python') + 1], pythonRequest(target, '3.11.15'))
+  }
+})
+
+test('bundlePythonPlan refuses to run without a resolved target', () => {
+  // Without a target there is no platform to request, and the old
+  // signature silently fell back to whatever uv picked for the host.
+  const { probeImpl } = capturePlanProbe()
+
+  assert.throws(() => bundlePythonPlan('uv', '/repo', '3.11.15', undefined, probeImpl), /resolved target is required/)
+  assert.throws(() => bundlePythonPlan('uv', '/repo', '3.11.15', {}, probeImpl), /resolved target is required/)
+})
+
+test('an empty extras answer fails the build instead of shipping a bare payload', () => {
+  const target = resolveTargets('win32', 'arm64')
+  const { probeImpl } = capturePlanProbe('\n  \n')
+
+  assert.throws(() => bundlePythonPlan('uv', '/repo', '3.11.15', target, probeImpl), /no bundle extras/)
 })
