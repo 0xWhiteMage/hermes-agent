@@ -2427,10 +2427,14 @@ def inject_fairshare_alternates(agent, alternates, *, provider: str = "") -> int
     index = int(getattr(agent, "_fallback_index", 0) or 0)
     index = max(0, min(index, len(chain)))
     current_model = (getattr(agent, "model", "") or "").strip()
-    # Dedupe on (provider, model): a configured static entry for the same
-    # model already covers it, whatever its base_url spelling.
+    # Dedupe on (provider, model) against the WHOLE chain, not just the
+    # entries ahead of the cursor: a model behind the cursor was already
+    # tried this turn (possibly with its own fair-share 429 whose
+    # retry_after hasn't elapsed), so re-splicing it would retry it
+    # immediately.  A configured static entry for the same model already
+    # covers it too, whatever its base_url spelling.
     existing = {
-        _fallback_entry_key(fb)[:2] for fb in chain[index:] if isinstance(fb, dict)
+        _fallback_entry_key(fb)[:2] for fb in chain if isinstance(fb, dict)
     }
     # Alternates are served by the SAME endpoint with the SAME credential
     # that just answered the 429, so seed both from the live session rather

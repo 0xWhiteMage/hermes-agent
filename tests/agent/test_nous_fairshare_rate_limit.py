@@ -382,6 +382,23 @@ class TestAlternatesPreferredOverStaticChain:
         assert [fb["model"] for fb in agent._fallback_chain] == ["model-x", "model-b", "gpt-4o"]
         assert agent._fallback_chain[agent._fallback_index]["model"] == "model-b"
 
+    def test_already_walked_model_is_not_reinjected(self):
+        """An alternate that was already tried this turn (now behind the
+        cursor — e.g. it returned its own fair-share 429) must not be
+        spliced in again for an immediate retry."""
+        from agent.chat_completion_helpers import inject_fairshare_alternates
+
+        agent = _make_agent(fallback_model=[{"provider": "openai", "model": "gpt-4o"}])
+        assert inject_fairshare_alternates(agent, ["model-b", "model-c"]) == 2
+        # Simulate having activated model-b, which then 429'd and named
+        # model-b/model-c as alternates again.
+        agent._fallback_index = 1
+        agent.model = "model-b"
+        assert inject_fairshare_alternates(agent, ["model-b", "model-c", "model-d"]) == 1
+        assert [fb["model"] for fb in agent._fallback_chain] == [
+            "model-b", "model-d", "model-c", "gpt-4o",
+        ]
+
     def test_activation_walks_alternates_first_then_static_chain(self):
         from agent.chat_completion_helpers import inject_fairshare_alternates
 
@@ -524,6 +541,18 @@ class TestUpgradeHint:
         assert _print_fairshare_upgrade_hint(agent, ctx) is False
         agent._vprint.assert_called_once()
         assert "https://portal.nousresearch.com/upgrade" in agent._vprint.call_args[0][0]
+
+    def test_upgrade_hint_rearms_on_primary_restore(self):
+        from agent.conversation_loop import _print_fairshare_upgrade_hint
+
+        agent = _make_agent(fallback_model=None)
+        agent._vprint = MagicMock()
+        ctx = classify_api_error(_fairshare_error(), provider="nous").error_context
+        assert _print_fairshare_upgrade_hint(agent, ctx) is True
+        assert _print_fairshare_upgrade_hint(agent, ctx) is False
+        agent._restore_primary_runtime()  # new turn
+        assert _print_fairshare_upgrade_hint(agent, ctx) is True
+        assert agent._vprint.call_count == 2
 
     def test_absent_upgrade_url_prints_nothing(self):
         from agent.conversation_loop import _print_fairshare_upgrade_hint

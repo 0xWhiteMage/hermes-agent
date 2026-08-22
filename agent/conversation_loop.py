@@ -561,7 +561,10 @@ def _nous_entitlement_message(capability: str) -> str:
 
 def _print_fairshare_upgrade_hint(agent, error_context) -> bool:
     """Surface a fair-share ``upgrade_url`` once per turn, in the same 💡 style
-    as the Nous entitlement guidance.  Returns True when a line was printed."""
+    as the Nous entitlement guidance.  Returns True when a line was printed.
+
+    The dedupe key ``_fairshare_upgrade_hinted_url`` is cleared by
+    ``restore_primary_runtime`` at the start of each turn."""
     url = (error_context or {}).get("upgrade_url") if isinstance(error_context, dict) else None
     if not url:
         return False
@@ -5423,11 +5426,8 @@ def run_conversation(
                     )
                     if not pool_may_recover:
                         if _fairshare_ctx is not None:
-                            _fs_model = _model or "This model"
-                            agent._buffer_status(
-                                f"⚠️ {_fs_model} is at its fair-share limit — "
-                                "switching to another model..."
-                            )
+                            # Status line is emitted after activation below,
+                            # once the target model is known (single line).
                             _print_fairshare_upgrade_hint(agent, _fairshare_ctx)
                         elif _is_upstream:
                             _upstream_name = (classified.error_context or {}).get(

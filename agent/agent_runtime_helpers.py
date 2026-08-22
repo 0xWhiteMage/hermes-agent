@@ -1502,6 +1502,10 @@ def restore_primary_runtime(agent) -> bool:
     # restored.  (Kept while a cooldown pins us to the fallback below.)
     from agent.chat_completion_helpers import strip_fairshare_alternates
 
+    # The fair-share upgrade hint is deduped per turn; re-arm it here so a
+    # long-lived (gateway-cached) agent shows it again on a later turn.
+    agent._fairshare_upgrade_hinted_url = None
+
     if not agent._fallback_activated:
         strip_fairshare_alternates(agent)
         # Reset the chain index even when no fallback was activated this
