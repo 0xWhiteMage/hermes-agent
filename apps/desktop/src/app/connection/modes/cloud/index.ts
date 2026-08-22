@@ -37,7 +37,9 @@ export const cloudMode: ConnectionModeModule<'cloud', CloudDraft> = {
   emptyDraft: (): CloudDraft => ({ org: '', agentUrl: '' }),
 
   fromSaved: (config: DesktopConnectionConfig | null): CloudDraft =>
-    config && config.mode === 'cloud' ? { org: config.cloudOrg, agentUrl: config.remoteUrl } : { org: '', agentUrl: '' },
+    config && config.mode === 'cloud'
+      ? { org: config.cloudOrg, agentUrl: config.remoteUrl }
+      : { org: '', agentUrl: '' },
 
   toPayload: (draft: CloudDraft, scope: null | string): DesktopConnectionConfigInput => ({
     mode: 'cloud',

@@ -167,6 +167,7 @@ test('two installs sharing one store resolve to the same bytes', () => {
   // 44 worktrees cost 44 facts files and ONE copy of node — that is the
   // entire reason the store exists.
   const relative = 'node-26.7.0-linux-x64/bin/node'
+
   const entries = ['/a/.hermes-runtime', '/b/.hermes-runtime'].map(runtimeDir => {
     const fsImpl = fakeFs(
       { [`${runtimeDir}/runtimes.json`]: factsFile({ node: { version: '26.7.0', path: relative } }) },
@@ -184,6 +185,7 @@ test('store-relative pathDirs spread against the store too', () => {
   // A PATH dir must resolve against the same base as the binary, or
   // PortableGit contributes three directories that are not there.
   const entry = 'git-2.53.0.3-win32-x64'
+
   const fsImpl = fakeFs(
     {
       [FACTS_PATH]: factsFile({
@@ -209,6 +211,7 @@ test('a self-contained payload is its own store when no storeDir is given', () =
   // one directory and cannot write to the machine-wide store. Omitting
   // storeDir has to keep those working unchanged.
   const payload = '/Applications/Hermes.app/Contents/Resources/agent-payload'
+
   const fsImpl = fakeFs(
     { [`${payload}/runtimes.json`]: factsFile({ node: { version: '26.7.0', path: 'node/bin/node' } }) },
     [`${payload}/node/bin/node`]
@@ -248,10 +251,9 @@ test('missing, malformed, and foreign-schema facts all read as unprovisioned', (
 })
 
 test('desktop backend PATH leads with managed tools, then venv, then sane entries', () => {
-  const fsImpl = fakeFs(
-    { [FACTS_PATH]: factsFile({ node: { version: '26.5.1', path: 'node/bin/node' } }) },
-    ['/install/.hermes-runtime/node/bin/node']
-  )
+  const fsImpl = fakeFs({ [FACTS_PATH]: factsFile({ node: { version: '26.5.1', path: 'node/bin/node' } }) }, [
+    '/install/.hermes-runtime/node/bin/node'
+  ])
 
   const result = buildDesktopBackendPath({
     runtimeDir: RUNTIME,
@@ -275,7 +277,14 @@ test('desktop backend PATH leads with managed tools, then venv, then sane entrie
 test('every managed dir outranks the inherited PATH on both platforms', () => {
   for (const [platform, pathModule, inherited, delimiter, binary, factsPath] of [
     ['darwin', path.posix, '/usr/local/bin:/usr/bin', ':', '/rt/node/bin/node', '/rt/runtimes.json'],
-    ['win32', path.win32, 'C:\\Program Files\\nodejs;C:\\Windows\\System32', ';', 'C:\\rt\\node\\node.exe', 'C:\\rt\\runtimes.json']
+    [
+      'win32',
+      path.win32,
+      'C:\\Program Files\\nodejs;C:\\Windows\\System32',
+      ';',
+      'C:\\rt\\node\\node.exe',
+      'C:\\rt\\runtimes.json'
+    ]
   ] as const) {
     const runtimeDir = platform === 'win32' ? 'C:\\rt' : '/rt'
     const relative = platform === 'win32' ? 'node/node.exe' : 'node/bin/node'
@@ -334,10 +343,9 @@ test('no runtime dir means system tools — a degrade, not a break', () => {
 })
 
 test('buildDesktopBackendEnv extends PYTHONPATH and backend PATH together', () => {
-  const fsImpl = fakeFs(
-    { [FACTS_PATH]: factsFile({ node: { version: '26.5.1', path: 'node/bin/node' } }) },
-    ['/install/.hermes-runtime/node/bin/node']
-  )
+  const fsImpl = fakeFs({ [FACTS_PATH]: factsFile({ node: { version: '26.5.1', path: 'node/bin/node' } }) }, [
+    '/install/.hermes-runtime/node/bin/node'
+  ])
 
   const env = buildDesktopBackendEnv({
     hermesHome: '/Users/test/.hermes',
@@ -455,10 +463,7 @@ test('gitOnPathSkippingShim returns null when only the shim exists', () => {
 })
 
 test('appendUniquePathEntries flattens arrays and strings alike', () => {
-  assert.equal(
-    appendUniquePathEntries([['/a', '/b'], '/b:/c', null, ''], { delimiter: ':' }),
-    '/a:/b:/c'
-  )
+  assert.equal(appendUniquePathEntries([['/a', '/b'], '/b:/c', null, ''], { delimiter: ':' }), '/a:/b:/c')
 })
 
 test('a self-contained runtime dir is named to the Python child as HERMES_RUNTIME_DIR', () => {

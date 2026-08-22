@@ -212,11 +212,7 @@ function readRuntimeFactsFile(
  */
 export function managedRuntimePathEntries(
   runtimeDir: string,
-  {
-    fsImpl = fs,
-    pathModule = path,
-    storeDir
-  }: { fsImpl?: typeof fs; pathModule?: typeof path; storeDir?: string } = {}
+  { fsImpl = fs, pathModule = path, storeDir }: { fsImpl?: typeof fs; pathModule?: typeof path; storeDir?: string } = {}
 ): string[] {
   const parsed = readRuntimeFactsFile(runtimeDir, { fsImpl, pathModule })
   const facts = parsed?.tools || {}
@@ -251,9 +247,7 @@ export function managedRuntimePathEntries(
       continue
     }
 
-    const entries = fact.pathDirs
-      ? fact.pathDirs.map(dir => pathModule.join(store, dir))
-      : [pathModule.dirname(binary)]
+    const entries = fact.pathDirs ? fact.pathDirs.map(dir => pathModule.join(store, dir)) : [pathModule.dirname(binary)]
 
     for (const entry of entries) {
       if (!dirs.includes(entry)) {
@@ -292,9 +286,9 @@ function buildDesktopBackendPath({
   fsImpl = fs
 }: any = {}) {
   const delimiter = delimiterForPlatform(platform)
-  const managedDirs = runtimeDir
-    ? managedRuntimePathEntries(runtimeDir, { fsImpl, pathModule, storeDir })
-    : []
+
+  const managedDirs = runtimeDir ? managedRuntimePathEntries(runtimeDir, { fsImpl, pathModule, storeDir }) : []
+
   const venvBin = venvRoot ? pathModule.join(venvRoot, platform === 'win32' ? 'Scripts' : 'bin') : null
   const saneEntries = platform === 'win32' ? [] : POSIX_SANE_PATH_ENTRIES
 

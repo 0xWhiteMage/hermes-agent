@@ -139,7 +139,10 @@ export function isNightlyTag(tag: string | null | undefined): boolean {
  * does not exist — a 404 that leaves the install permanently unable to
  * update. Everything else defaults to main, the source-checkout default.
  */
-export function defaultUpdateChannel(stampTag: string | null | undefined, mechanism: string | null | undefined): 'stable' | 'main' | 'nightly' {
+export function defaultUpdateChannel(
+  stampTag: string | null | undefined,
+  mechanism: string | null | undefined
+): 'stable' | 'main' | 'nightly' {
   if (mechanism !== 'electron-updater') {
     return 'main'
   }
@@ -182,9 +185,11 @@ export function updateChannelFromConfig(
 
   for (const raw of configText.split('\n')) {
     const line = raw.replace(/\s+$/, '')
+
     if (!line || /^\s*#/.test(line)) {
       continue
     }
+
     const indent = line.length - line.replace(/^\s+/, '').length
     const key = line.replace(/^\s+/, '')
 
@@ -192,33 +197,45 @@ export function updateChannelFromConfig(
       if (/^update:\s*$/.test(line)) {
         updateIndent = indent
       }
+
       continue
     }
+
     if (indent <= updateIndent) {
       break // the update block ended
     }
+
     if (installsIndent === null) {
       if (/^installs:\s*$/.test(key)) {
         installsIndent = indent
       }
+
       continue
     }
+
     if (indent <= installsIndent) {
       installsIndent = null
       idIndent = null
+
       continue
     }
+
     if (idIndent === null) {
       if (new RegExp(`^${installId}:\\s*$`).test(key)) {
         idIndent = indent
       }
+
       continue
     }
+
     if (indent <= idIndent) {
       idIndent = null
+
       continue
     }
+
     const match = key.match(/^channel:\s*["']?(stable|main|nightly)["']?\s*(#.*)?$/)
+
     if (match) {
       return match[1] as 'stable' | 'main' | 'nightly'
     }

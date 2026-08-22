@@ -2,8 +2,12 @@ import type { BackendCapabilities, ModeAvailability } from './backends'
 import { connectSavedRemote, ensureLocal, prepareLocal } from './backends'
 import type { FirstRunSetupDecision } from './first-run-setup-gate'
 
-export interface PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection>
-  extends BackendCapabilities<Backend, RuntimeBackend, Remote, Connection> {
+export interface PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection> extends BackendCapabilities<
+  Backend,
+  RuntimeBackend,
+  Remote,
+  Connection
+> {
   waitForDecision: (backend: Backend) => Promise<FirstRunSetupDecision>
   /**
    * The registry's availability entry for the local mode. When local is

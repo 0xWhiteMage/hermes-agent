@@ -31,6 +31,7 @@ export function classifyUpdateRoot(root: string, deps: ClassifyUpdateRootDeps): 
   }
 
   const stamp = deps.readStamp(root)
+
   return stamp && stamp.updateMechanism === 'self' ? 'managed-checkout' : 'unmanaged-checkout'
 }
 

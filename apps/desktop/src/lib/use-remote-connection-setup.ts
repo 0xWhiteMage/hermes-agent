@@ -200,8 +200,8 @@ export function useRemoteConnectionSetup({
 
   const canTest: boolean = Boolean(
     trimmedUrl &&
-      (canRetryProbe ||
-        (authResolved && (authMode === 'oauth' ? oauthConnected || hasSavedCredentials : remoteToken.trim())))
+    (canRetryProbe ||
+      (authResolved && (authMode === 'oauth' ? oauthConnected || hasSavedCredentials : remoteToken.trim())))
   )
 
   const payload = useCallback(

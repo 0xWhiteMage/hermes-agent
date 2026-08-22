@@ -164,6 +164,7 @@ const unavailableLocal = {
 
 test('with local unavailable, a saved remote still wins immediately', async () => {
   const savedRemote = { baseUrl: 'https://gateway.example.com/hermes' }
+
   const options = startupOptions({
     localMode: unavailableLocal,
     resolveRemote: vi.fn(async () => savedRemote)

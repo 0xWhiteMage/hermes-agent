@@ -34,10 +34,7 @@ const completeManifest = {
 test('resolvePayload returns null for dev runs, external stubs, and garbage', () => {
   assert.equal(resolvePayload(null), null)
   assert.equal(resolvePayload(undefined), null)
-  assert.equal(
-    resolvePayload('/res', readerFor({ schemaVersion: PAYLOAD_SCHEMA_VERSION, external: true })),
-    null
-  )
+  assert.equal(resolvePayload('/res', readerFor({ schemaVersion: PAYLOAD_SCHEMA_VERSION, external: true })), null)
   assert.equal(
     resolvePayload('/res', () => {
       throw new Error('ENOENT')
@@ -51,10 +48,7 @@ test('resolvePayload rejects old-schema manifests', () => {
   // The app and its payload travel together, so a mismatch means a
   // foreign artifact. Schema 3 is the pre-python-path shape: without the
   // recorded interpreter the shell would be back to guessing the layout.
-  assert.equal(
-    resolvePayload('/res', readerFor({ schemaVersion: 3, tag: 'v1.0.0', commit: 'a'.repeat(40) })),
-    null
-  )
+  assert.equal(resolvePayload('/res', readerFor({ schemaVersion: 3, tag: 'v1.0.0', commit: 'a'.repeat(40) })), null)
 })
 
 test('resolvePayload rejects a manifest whose python path is missing or absolute', () => {
@@ -88,12 +82,10 @@ test('findEmbeddedPython joins the recorded path and verifies the binary exists'
     dir: '/res/agent-payload',
     python: 'python/cpython-3.11.15-macos-aarch64-none/bin/python3'
   }
+
   const expected = '/res/agent-payload/python/cpython-3.11.15-macos-aarch64-none/bin/python3'
 
-  assert.equal(
-    findEmbeddedPython(payload, { existsSync: (p: string) => p === expected } as never),
-    expected
-  )
+  assert.equal(findEmbeddedPython(payload, { existsSync: (p: string) => p === expected } as never), expected)
 
   // Recorded but not on disk = damaged artifact → null, not a throw.
   assert.equal(findEmbeddedPython(payload, { existsSync: () => false } as never), null)
@@ -102,7 +94,8 @@ test('findEmbeddedPython joins the recorded path and verifies the binary exists'
 // ─── updateChannelFromConfig ───────────────────────────────────────
 
 const ID = 'a4f3b2c1d0e9f8a7'
-const record = (channel: string, id: string = ID) => `update:\n  installs:\n    ${id}:\n      path: /home/u/.hermes/hermes-agent\n      channel: ${channel}\n`
+const record = (channel: string, id: string = ID) =>
+  `update:\n  installs:\n    ${id}:\n      path: /home/u/.hermes/hermes-agent\n      channel: ${channel}\n`
 
 test('channel comes from the per-install record; absent means main', () => {
   assert.equal(updateChannelFromConfig(record('stable'), ID), 'stable')
@@ -184,7 +177,10 @@ test('channel parsing stays inside update.installs', () => {
 
 test('installIdForRoot matches boot_bootstrap._install_key (sha16 of the canonical path)', () => {
   // sha256('/home/u/.hermes/hermes-agent')[:16] — recomputed independently.
-  assert.equal(installIdForRoot('/home/u/.hermes/hermes-agent'), createHash('sha256').update('/home/u/.hermes/hermes-agent', 'utf8').digest('hex').slice(0, 16))
+  assert.equal(
+    installIdForRoot('/home/u/.hermes/hermes-agent'),
+    createHash('sha256').update('/home/u/.hermes/hermes-agent', 'utf8').digest('hex').slice(0, 16)
+  )
   // The canonicalizer output is what gets hashed (symlinked homes).
   assert.equal(
     installIdForRoot('/link/hermes-agent', () => '/real/hermes-agent'),
@@ -213,7 +209,11 @@ test('release picking is numeric, skips prereleases, prefers peeled shas', () =>
   assert.equal(latest?.sha, 'c'.repeat(40))
 
   const semverOnly = latestReleaseFromLsRemote(
-    [`${'a'.repeat(40)}\trefs/tags/v0.9.0`, `${'b'.repeat(40)}\trefs/tags/v0.10.0`, `${'c'.repeat(40)}\trefs/tags/v0.10.0^{}`].join('\n')
+    [
+      `${'a'.repeat(40)}\trefs/tags/v0.9.0`,
+      `${'b'.repeat(40)}\trefs/tags/v0.10.0`,
+      `${'c'.repeat(40)}\trefs/tags/v0.10.0^{}`
+    ].join('\n')
   )
 
   assert.equal(semverOnly?.tag, 'v0.10.0')

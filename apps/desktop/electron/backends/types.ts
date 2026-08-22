@@ -26,8 +26,7 @@ export interface AvailabilityFacts {
 export type UnavailableReason = 'light-artifact' | 'missing-ssh'
 
 export type ModeAvailability =
-  | { mode: ConnectionMode; available: true }
-  | { mode: ConnectionMode; available: false; reason: UnavailableReason }
+  { mode: ConnectionMode; available: true } | { mode: ConnectionMode; available: false; reason: UnavailableReason }
 
 /**
  * The impure powers a backend module may use, implemented by main.ts.

@@ -190,7 +190,13 @@ export function VersionHero({
  * remote backend's. The actual apply flow stays in the updates overlay —
  * "Update now" opens it and starts the install there.
  */
-export function UpdateStatusCard({ showReleaseNotes = true, target }: { showReleaseNotes?: boolean; target: UpdateTarget }) {
+export function UpdateStatusCard({
+  showReleaseNotes = true,
+  target
+}: {
+  showReleaseNotes?: boolean
+  target: UpdateTarget
+}) {
   const { t } = useI18n()
   const u = t.updates
   const isBackend = target === 'backend'

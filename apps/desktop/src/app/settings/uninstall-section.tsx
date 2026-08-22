@@ -107,9 +107,11 @@ export function UninstallSection() {
   // client). Older backends without allowed_modes get the classic set.
   const agentInstalled = summary?.agent_installed ?? false
   const allowedModes = summary?.allowed_modes ?? LEGACY_MODES
+
   const visibleOptions = OPTIONS.filter(opt => allowedModes.includes(opt.mode)).filter(
     opt => agentInstalled || !opt.needsAgent
   )
+
   const nativeRemoval = summary?.native_removal ?? null
 
   const handleConfirm = async () => {
@@ -176,8 +178,7 @@ export function UninstallSection() {
                 <div className="font-medium text-foreground">
                   {summary?.install_kind === 'nix'
                     ? 'This installation is managed by Nix. '
-                    :  'Hermes was installed as an app. '
-                      }
+                    : 'Hermes was installed as an app. '}
                 </div>
                 <div>{nativeRemoval}</div>
               </p>

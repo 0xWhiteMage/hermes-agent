@@ -201,14 +201,17 @@ export function defineConnectionMode<M extends ConnectionMode, Draft>(
       // whose panel has a different number of hooks throws "rendered more
       // hooks than during the previous render". An element makes each panel
       // its own component with its own hook list and its own mount/unmount.
-      return createElement(module.ConfigPanel as (props: ConnectionConfigPanelProps<unknown>) => ReactNode, {
-        draft: asTyped(draft),
-        onDraftChange: patch => onDraftChange(patch as Partial<ConnectionDraft>),
-        surface,
-        // Remounting on a mode switch is the point: a panel must not inherit
-        // the previous mode's local state.
-        key: module.mode
-      } as ConnectionConfigPanelProps<unknown> & { key: string })
+      return createElement(
+        module.ConfigPanel as (props: ConnectionConfigPanelProps<unknown>) => ReactNode,
+        {
+          draft: asTyped(draft),
+          onDraftChange: patch => onDraftChange(patch as Partial<ConnectionDraft>),
+          surface,
+          // Remounting on a mode switch is the point: a panel must not inherit
+          // the previous mode's local state.
+          key: module.mode
+        } as ConnectionConfigPanelProps<unknown> & { key: string }
+      )
     }
   }
 }

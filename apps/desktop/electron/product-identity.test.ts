@@ -41,7 +41,7 @@ test('light identity is fully distinct from the full identity', async () => {
 
   // Every OS-visible identity marker must differ, or side-by-side
   // installs collide (userData dir, handler registration, updater feed).
-  for(const prop of [...Object.keys(light), ...Object.keys(full)]) {
+  for (const prop of [...Object.keys(light), ...Object.keys(full)]) {
     assert.notEqual(light[prop], full[prop])
   }
 })

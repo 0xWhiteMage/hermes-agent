@@ -120,18 +120,18 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     }
 
     return (
-      payload.remoteAuthMode !== 'oauth' &&
-      Boolean(payload.remoteToken?.trim()) &&
-      config?.secureTokenStorage === false
+      payload.remoteAuthMode !== 'oauth' && Boolean(payload.remoteToken?.trim()) && config?.secureTokenStorage === false
     )
   }
 
   const commitConfig = async (apply: boolean, allowPlainTextToken = false): Promise<void> => {
     const seq = ++saveSeq.current
+
     const payload = {
       ...moduleFor(mode).toPayload(draftFor(mode), null),
       ...(allowPlainTextToken ? { allowPlainTextToken: true } : {})
     }
+
     setSaving(true)
 
     try {

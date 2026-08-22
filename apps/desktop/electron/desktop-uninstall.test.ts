@@ -66,8 +66,14 @@ test('nativeRemovalInstructions names the steward per kind and OS', () => {
   assert.match(nativeRemovalInstructions('nix', 'darwin'), /flake or profile/)
   assert.match(nativeRemovalInstructions('bundled', 'win32'), /Installed apps/)
   assert.match(nativeRemovalInstructions('bundled', 'darwin'), /Trash/)
-  assert.match(nativeRemovalInstructions('bundled', 'linux', '/home/x/Apps/Hermes.AppImage'), /\/home\/x\/Apps\/Hermes\.AppImage/)
-  assert.match(nativeRemovalInstructions('bundled', 'linux', '/opt/hermes/linux-unpacked'), /app directory at \/opt\/hermes\/linux-unpacked/)
+  assert.match(
+    nativeRemovalInstructions('bundled', 'linux', '/home/x/Apps/Hermes.AppImage'),
+    /\/home\/x\/Apps\/Hermes\.AppImage/
+  )
+  assert.match(
+    nativeRemovalInstructions('bundled', 'linux', '/opt/hermes/linux-unpacked'),
+    /app directory at \/opt\/hermes\/linux-unpacked/
+  )
   assert.match(nativeRemovalInstructions('bundled', 'linux'), /wherever you saved it/)
 })
 

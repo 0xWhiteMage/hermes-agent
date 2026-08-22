@@ -21,19 +21,26 @@ function runtimeSourceLabel(source: RuntimeSource): string {
 export function VersionDetails({ version }: { version: DesktopVersionInfo }) {
   const { t } = useI18n()
   const u = t.updates
-  const source = version.source === 'ci' ? 'CI' : version.source ? version.source[0].toUpperCase() + version.source.slice(1) : null
+  const source =
+    version.source === 'ci' ? 'CI' : version.source ? version.source[0].toUpperCase() + version.source.slice(1) : null
 
   const distribution =
-    version.distribution === 'nix' ? 'Nix'
-    : version.distribution === 'docker' ? 'Docker'
-    : version.distribution === 'desktop-app' ? u.versionDetailsDistributionDesktop
-    : null
+    version.distribution === 'nix'
+      ? 'Nix'
+      : version.distribution === 'docker'
+        ? 'Docker'
+        : version.distribution === 'desktop-app'
+          ? u.versionDetailsDistributionDesktop
+          : null
 
   const runtime =
-    version.hermesRuntime?.type === 'embedded' ? u.versionDetailsRuntimeEmbedded
-    : version.hermesRuntime?.type === 'external' && version.hermesRuntime.source ? runtimeSourceLabel(version.hermesRuntime.source)
-    : version.hermesRuntime?.type === 'external' ? u.versionDetailsRuntimeExternal
-    : null
+    version.hermesRuntime?.type === 'embedded'
+      ? u.versionDetailsRuntimeEmbedded
+      : version.hermesRuntime?.type === 'external' && version.hermesRuntime.source
+        ? runtimeSourceLabel(version.hermesRuntime.source)
+        : version.hermesRuntime?.type === 'external'
+          ? u.versionDetailsRuntimeExternal
+          : null
 
   return (
     <dl className="grid gap-2 rounded-lg border border-border/70 bg-muted/20 px-3 py-3 text-sm">
@@ -61,7 +68,10 @@ export function VersionDetails({ version }: { version: DesktopVersionInfo }) {
       {source && (
         <div className="flex justify-between gap-4">
           <dt className="text-muted-foreground">{u.versionDetailsBuildOrigin}</dt>
-          <dd>{source}{version.branch && version.branch !== 'main' ? ` (${version.branch})` : ''}</dd>
+          <dd>
+            {source}
+            {version.branch && version.branch !== 'main' ? ` (${version.branch})` : ''}
+          </dd>
         </div>
       )}
       {distribution && (

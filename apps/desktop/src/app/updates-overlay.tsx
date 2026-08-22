@@ -16,7 +16,13 @@ import { Loader } from '@/components/ui/loader'
 import { Progress } from '@/components/ui/progress'
 import { UpdateStatusCard, VersionHero } from '@/components/update-status'
 import { VersionDetails } from '@/components/version-details'
-import type { DesktopUpdateBlocker, DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus, DesktopVersionInfo } from '@/global'
+import type {
+  DesktopUpdateBlocker,
+  DesktopUpdateCommit,
+  DesktopUpdateStage,
+  DesktopUpdateStatus,
+  DesktopVersionInfo
+} from '@/global'
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
 import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
@@ -213,7 +219,9 @@ function IdleView({
     return (
       <div className="grid gap-4 px-6 pb-6 pt-1 pr-8">
         <VersionHero
-          renderHeading={heading => <DialogTitle className="text-lg font-semibold tracking-tight">{heading}</DialogTitle>}
+          renderHeading={heading => (
+            <DialogTitle className="text-lg font-semibold tracking-tight">{heading}</DialogTitle>
+          )}
           version={version}
         />
         <UpdateStatusCard target={target} />

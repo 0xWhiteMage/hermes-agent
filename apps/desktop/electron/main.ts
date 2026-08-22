@@ -65,7 +65,13 @@ import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from 
 import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
 import { detectBundleSkew } from './bundle-skew'
-import { findEmbeddedPython, installIdForRoot, latestReleaseFromLsRemote, resolvePayload, updateChannelFromConfig } from './bundled-runtime'
+import {
+  findEmbeddedPython,
+  installIdForRoot,
+  latestReleaseFromLsRemote,
+  resolvePayload,
+  updateChannelFromConfig
+} from './bundled-runtime'
 import { applyConnectionChange, resolveTerminalConnection } from './connection-apply'
 import {
   apiRequestRegistryConnectionId,
@@ -220,11 +226,7 @@ import { buildHudWindowUrl } from './hud-url'
 import { imageContextMenuItems } from './image-context-menu'
 import { INSTALL_STAMP, installShape } from './install-stamp'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
-import {
-  installLinuxDesktopEntry,
-  LINUX_DESKTOP_ENTRY,
-  resolveLauncherExec
-} from './linux-desktop-entry'
+import { installLinuxDesktopEntry, LINUX_DESKTOP_ENTRY, resolveLauncherExec } from './linux-desktop-entry'
 import { ensureMainWindow } from './main-window-lifecycle'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import {
@@ -2499,6 +2501,7 @@ function managedToolBinary(tool: string): string | null {
 
     roots.push({ facts: payload, store: payload })
   }
+
   roots.push({ facts: ACTIVE_RUNTIME_DIR, store: TOOL_STORE_DIR })
 
   for (const root of roots) {
@@ -2737,6 +2740,7 @@ function classifyResolvedUpdateRoot(updateRoot: string): UpdateRootKind {
         // readers use utf-8-sig for the same reason).
         const raw = fs.readFileSync(path.join(root, 'install-stamp.json'), 'utf8')
         const parsed: unknown = JSON.parse(raw.replace(/^\uFEFF/, ''))
+
         return parsed && typeof parsed === 'object' ? (parsed as { updateMechanism?: string }) : null
       } catch {
         return null
@@ -13083,12 +13087,15 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
   // only replaceable by electron-updater/reinstall, so repair degrades
   // to the soft restart rung and never escalates.
   if (installShape() === 'bundled') {
-    rememberLog('[bootstrap] repair requested on a bundled artifact — soft restart only (sealed payload; reinstall replaces it)')
+    rememberLog(
+      '[bootstrap] repair requested on a bundled artifact — soft restart only (sealed payload; reinstall replaces it)'
+    )
     bootstrapRepairRequested = false
     bootstrapFailure = null
     backendStartFailure = null
     remoteReauthFailure = null
     resetHermesConnection()
+
     return { ok: true }
   }
 
@@ -15717,11 +15724,12 @@ ipcMain.handle('hermes:version', async () => {
     // always run their payload; light artifacts have no runtime at all and
     // only connect to remote backends; bootstrap builds report the resolved
     // runtime source only after the backend has been spawned.
-    hermesRuntime: INSTALL_STAMP?.payload === 'light'
-      ? { type: 'light' }
-      : INSTALL_STAMP?.payload === 'bundled'
-        ? { type: 'embedded' }
-        : { type: 'external', source: activeBackendInfo?.source ?? undefined }
+    hermesRuntime:
+      INSTALL_STAMP?.payload === 'light'
+        ? { type: 'light' }
+        : INSTALL_STAMP?.payload === 'bundled'
+          ? { type: 'embedded' }
+          : { type: 'external', source: activeBackendInfo?.source ?? undefined }
   }
 })
 
@@ -15780,7 +15788,12 @@ function uninstallRunner(mode) {
       return null
     }
 
-    return { agentRoot: path.join(payload.dir, 'repo'), args: uninstallArgsForMode(mode), command: py, pythonPath: null }
+    return {
+      agentRoot: path.join(payload.dir, 'repo'),
+      args: uninstallArgsForMode(mode),
+      command: py,
+      pythonPath: null
+    }
   }
 
   if (kind === 'nix') {
@@ -15840,7 +15853,9 @@ async function getUninstallSummary() {
   const kindFacts = () => ({
     allowed_modes: allowedUninstallModes(kind),
     install_kind: kind,
-    native_removal: installKindAllowsCodeRemoval(kind) ? null : nativeRemovalInstructions(kind, process.platform, appPath),
+    native_removal: installKindAllowsCodeRemoval(kind)
+      ? null
+      : nativeRemovalInstructions(kind, process.platform, appPath),
     running_app_path: appPath
   })
 
@@ -15947,7 +15962,11 @@ async function runDesktopUninstall(mode) {
     return {
       ok: false,
       error: 'mode-not-allowed',
-      message: nativeRemovalInstructions(kind, process.platform, resolveRemovableAppPath(process.execPath, process.platform, process.env))
+      message: nativeRemovalInstructions(
+        kind,
+        process.platform,
+        resolveRemovableAppPath(process.execPath, process.platform, process.env)
+      )
     }
   }
 
@@ -15971,7 +15990,8 @@ async function runDesktopUninstall(mode) {
   // Only a standard install removes its own bundle. Managed installs hand
   // that to the steward (per nativeRemovalInstructions), so the script never
   // touches the store path / .app / AppImage.
-  const removeBundle = installKindAllowsCodeRemoval(kind) && shouldRemoveAppBundle(IS_PACKAGED, appPath) ? appPath : null
+  const removeBundle =
+    installKindAllowsCodeRemoval(kind) && shouldRemoveAppBundle(IS_PACKAGED, appPath) ? appPath : null
 
   // CRITICAL (Windows): tear down every backend the desktop owns and wait for
   // the venv shim to unlock BEFORE the cleanup script runs. lite/full delete

@@ -41,6 +41,7 @@ export function findGitBash(opts: GitBashOptions): string | null {
   // Checked before the Hermes-managed install and system locations so a
   // bundled app always uses its own git.
   const resourcesPath = env.HERMES_RESOURCES_PATH
+
   if (resourcesPath) {
     candidates.push(joinWin(resourcesPath, 'agent-payload', 'git', 'bin', 'bash.exe'))
     candidates.push(joinWin(resourcesPath, 'agent-payload', 'git', 'usr', 'bin', 'bash.exe'))

@@ -58,7 +58,11 @@ const INSTALL_KINDS = ['nix', 'bundled', 'standard']
  * 'bundled' flow — neither has agent code the app may remove, and the OS
  * owns app removal.
  */
-function resolveInstallKind({ distribution, source, payload = 'bootstrap' }: {distribution?: string | null, source?: string | null, payload?: ArtifactKind} = {}) {
+function resolveInstallKind({
+  distribution,
+  source,
+  payload = 'bootstrap'
+}: { distribution?: string | null; source?: string | null; payload?: ArtifactKind } = {}) {
   if (distribution === 'nix' || source === 'nix') {
     return 'nix'
   }
@@ -120,6 +124,7 @@ function nativeRemovalInstructions(kind, platform, appPath = null) {
 
   return 'Delete the Hermes AppImage (or app directory) from wherever you saved it.'
 }
+
 /**
  * Map an uninstall mode to the `python -m hermes_cli.uninstall` argv (after the
  * python executable). Uses the dedicated lightweight module entrypoint (not

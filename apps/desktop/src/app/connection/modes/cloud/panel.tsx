@@ -36,7 +36,7 @@ export function CloudPanel({ draft, onDraftChange, surface }: ConnectionConfigPa
   const [connectingId, setConnectingId] = useState<null | string>(null)
   // Discovery resolves the org asynchronously and a click can land in the
   // same tick, so connect reads the ref rather than a captured render value.
-   
+
   const orgRef = useRef<string>(draft.org)
   const seq = useRef(0)
 
@@ -53,8 +53,8 @@ export function CloudPanel({ draft, onDraftChange, surface }: ConnectionConfigPa
   const isConnected = (agent: DesktopCloudAgent): boolean =>
     Boolean(
       connectedUrl &&
-        agent.dashboardUrl &&
-        savedCloudConnectionUrl({ mode: 'cloud', remoteUrl: agent.dashboardUrl }) === connectedUrl
+      agent.dashboardUrl &&
+      savedCloudConnectionUrl({ mode: 'cloud', remoteUrl: agent.dashboardUrl }) === connectedUrl
     )
 
   const runDiscover = async (org?: string): Promise<void> => {
