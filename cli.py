@@ -21049,7 +21049,6 @@ def main(
             toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
     
     parsed_skills = _parse_skills_argument(skills)
-    loaded_skills: list[str] = []
 
     # Create CLI instance
     cli = HermesCLI(

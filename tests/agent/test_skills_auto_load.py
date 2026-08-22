@@ -271,6 +271,7 @@ def test_cli_merges_auto_load_with_cli_skills(monkeypatch):
         auto_calls.append(kwargs)
         return "auto prompt", list(auto_load), []
 
+    _real_cli_cls = cli_mod.HermesCLI
     monkeypatch.setattr(cli_mod, "HermesCLI", lambda **kw: _DummyCLI(**kw))
     monkeypatch.setattr(cli_mod, "CLI_CONFIG", {})
 
@@ -292,6 +293,10 @@ def test_cli_merges_auto_load_with_cli_skills(monkeypatch):
         cli_mod.main(skills="cli-skill", list_tools=True)
 
     cli_obj = created["cli"]
+    # main() backgrounds the --skills load; the display merge happens when
+    # the preload is finalized (normally at agent init). Run the real
+    # finalize logic against the dummy to join the thread and fold in names.
+    _real_cli_cls.finalize_preloaded_skills(cli_obj)
     assert "auto-skill" in cli_obj.preloaded_skills
     assert "cli-skill" in cli_obj.preloaded_skills
     assert auto_calls == [{"task_id": "sess-001", "user_config": {}}]
@@ -316,6 +321,7 @@ def test_cli_deduplicates_overlapping_skills(monkeypatch):
         def show_toolsets(self): pass
         def run(self): pass
 
+    _real_cli_cls = cli_mod.HermesCLI
     monkeypatch.setattr(cli_mod, "HermesCLI", lambda **kw: _DummyCLI(**kw))
     monkeypatch.setattr(cli_mod, "CLI_CONFIG", {})
 
@@ -366,6 +372,7 @@ def test_cli_does_not_error_on_missing_auto_load_skills(monkeypatch):
         def show_toolsets(self): pass
         def run(self): pass
 
+    _real_cli_cls = cli_mod.HermesCLI
     monkeypatch.setattr(cli_mod, "HermesCLI", lambda **kw: _DummyCLI(**kw))
     monkeypatch.setattr(cli_mod, "CLI_CONFIG", {})
 
@@ -389,6 +396,8 @@ def test_cli_does_not_error_on_missing_auto_load_skills(monkeypatch):
         cli_mod.main(skills="valid-cli-skill", list_tools=True)
 
     cli_obj = created["cli"]
+    # Join the backgrounded --skills load; must not raise for auto_load misses.
+    _real_cli_cls.finalize_preloaded_skills(cli_obj)
     # Only successfully loaded canonical names appear in the display.
     assert "valid-cli-skill" in cli_obj.preloaded_skills
 
@@ -397,18 +406,22 @@ def test_cli_still_errors_for_missing_cli_skills(monkeypatch):
     """Missing --skills still produce a ValueError (not auto_load)."""
     import cli as cli_mod
 
+    created = {}
+
     class _DummyCLI:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
             self.session_id = "sess-004"
             self.system_prompt = "base"
             self.preloaded_skills = []
+            created["cli"] = self
 
         def show_banner(self): pass
         def show_tools(self): pass
         def show_toolsets(self): pass
         def run(self): pass
 
+    _real_cli_cls = cli_mod.HermesCLI
     monkeypatch.setattr(cli_mod, "HermesCLI", lambda **kw: _DummyCLI(**kw))
     monkeypatch.setattr(cli_mod, "CLI_CONFIG", {})
 
@@ -424,8 +437,13 @@ def test_cli_still_errors_for_missing_cli_skills(monkeypatch):
         ),
     )
 
-    with pytest.raises(ValueError, match=r"Unknown skill\(s\): missing-cli"):
+    with pytest.raises(SystemExit):
         cli_mod.main(skills="missing-cli", list_tools=True)
+
+    # The backgrounded load surfaces the hard failure at finalize time
+    # (normally agent init), matching the synchronous path's old contract.
+    with pytest.raises(ValueError, match=r"Unknown skill\(s\): missing-cli"):
+        _real_cli_cls.finalize_preloaded_skills(created["cli"])
 
 
 # ── AIAgent._build_system_prompt ──
