@@ -252,7 +252,8 @@ stageMsixAssets()
 // reasons only surface when makeappx runs against a plain directory):
 //   * xmlns:uap3 rides on the fragment root — the stock manifest template
 //     declares no uap3 prefix. A/B-verified fine (namespace placement is
-//     NOT what 0x80080204 was about; msix.minVersion was).
+//     NOT what 0x80080204 was about; msix.minVersion and the alias
+//     element family were).
 //   * children of uap3:Properties are UNPREFIXED (xs:any content, per
 //     Microsoft's copilot-key-state sample).
 //
@@ -264,6 +265,29 @@ stageMsixAssets()
 // aliases point at the ONE packaged shim (hermes.exe in the payload bin);
 // the shim dispatches on argv[0], which carries the alias name. The light
 // variant ships no payload, so it gets no aliases.
+//
+// Alias content rules, verified against the real makeappx (26100 kit) by
+// packing a staged directory and reading the C00CE015 detail text that the
+// bare 0x80080204 hides:
+//   * The alias rides on uap5:Extension, NOT uap3:Extension. uap3's
+//     AppExecutionAlias takes no attributes and its children are
+//     uap3:ExecutionAliasChoice, so a desktop4:Subsystem attribute on a
+//     uap3:Extension is rejected outright: "The attribute ...desktop/
+//     windows10/4}Subsystem on the element ...uap/windows10/3}Extension is
+//     not defined in the DTD/Schema."
+//   * Subsystem is NOT declared here. The validator refuses
+//     Subsystem="console" unless SupportsMultipleInstances="true" appears
+//     "in element Application" — and the fragment cannot supply it:
+//     uap11:SupportsMultipleInstances on the uap5:Extension is rejected
+//     with the same message. Putting it on Application would mean forking
+//     app-builder-lib's manifest template AND multi-instancing the whole
+//     app, which fights the requestSingleInstanceLock() the deep-link
+//     routing depends on (electron/main.ts).
+//     Dropping the attribute costs nothing measurable: the shim's own PE
+//     is console-subsystem, so an installed package with no Subsystem
+//     declaration still blocks its caller for the child's full runtime and
+//     still hands back stdout — A/B-measured on Windows 11 against an
+//     installed, signed package.
 function msixExtensionsPath() {
   const shimExecutable = 'app\\resources\\agent-payload\\bin\\hermes.exe'
   const aliasNames = ['hermes.exe', 'hermes-agent.exe', 'hermes-acp.exe']
@@ -271,11 +295,10 @@ function msixExtensionsPath() {
     ? ''
     : `<uap5:Extension
     xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
-    xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
     Category="windows.appExecutionAlias"
     Executable="${shimExecutable}"
     EntryPoint="Windows.FullTrustApplication">
-  <uap5:AppExecutionAlias desktop4:Subsystem="console">
+  <uap5:AppExecutionAlias>
 ${aliasNames.map((alias) => `    <uap5:ExecutionAlias Alias="${alias}" />`).join('\n')}
   </uap5:AppExecutionAlias>
 </uap5:Extension>
