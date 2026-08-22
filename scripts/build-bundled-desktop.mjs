@@ -262,7 +262,7 @@ if (fs.existsSync(installStampPath) && fs.readFileSync(installStampPath, "utf8")
   console.log("[build-bundled] node_modules matches its install stamp — npm ci output already present")
 } else {
   fs.rmSync(installStampPath, { force: true })
-  run("npm", ["ci", "--no-audit", "--no-fund"], {
+  run("npm", ["ci", "--no-audit", "--no-fund", "--fetch-retries=5"], {
     env: {
       ...process.env, // spawnSync env REPLACES the child environment; keep PATH etc.
       "CI": "true" // skip annoying unicode install banner
