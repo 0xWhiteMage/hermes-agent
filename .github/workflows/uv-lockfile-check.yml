@@ -49,6 +49,15 @@ on:
       review_status:
         description: "JSON review status for the review-status aggregator"
         value: ${{ jobs.check.outputs.review_status }}
+  # The Requires-Python job below audits pins against the live package
+  # index, so it can start failing without anything in this repo changing:
+  # a package can be yanked, or republished with a narrower constraint.
+  # The PR-gated run only fires when uv.lock or pyproject.toml move, which
+  # would leave a lockfile that was fine at merge time quietly broken until
+  # the next release lane. A nightly tick catches that within a day.
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -61,6 +70,10 @@ jobs:
   check:
     name: uv lock --check
     runs-on: ubuntu-latest
+    # A scheduled tick exists for the index-reading job below; re-resolving
+    # the lockfile on a timer would only ever restate what the last PR
+    # already proved. Forks do not run the timer at all.
+    if: github.event_name != 'schedule'
     timeout-minutes: 5
     outputs:
       review_status: ${{ steps.verify.outputs.review_status }}
@@ -178,3 +191,48 @@ jobs:
           retention-days: 1
           overwrite: true
           if-no-files-found: ignore
+
+  # A lockfile can be perfectly in sync with pyproject.toml and still hold a
+  # pin the installer refuses. uv treats a locked pin's Requires-Python as
+  # advisory and installs it anyway; pip treats it as binding and fails. The
+  # bundled payload staging is the one place uv-resolved requirements meet
+  # real pip, so the disagreement surfaces there — as a red release lane, on
+  # whichever target happens to stage the offending extra, long after merge.
+  #
+  # Separate job rather than more steps on `check`: this one reads the
+  # package index (Requires-Python is in neither uv.lock nor the wheel
+  # filename), and a network sweep should not be able to fail the
+  # cheap in-sync check. Same `uv_lock` gate, so it costs nothing on a
+  # docs-only PR.
+  requires-python:
+    name: Payload pins accept the payload python
+    runs-on: ubuntu-latest
+    # The timer is this repo's own watchdog: a fork inherits the cron on
+    # clone and would run it against upstream's index for no one's benefit.
+    # A workflow_call from CI is unaffected.
+    if: github.event_name != 'schedule' || github.repository == 'NousResearch/hermes-agent'
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          # Pinned for the same reason as the job above.
+          version: "0.9.28"
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          # Runs the checker, NOT the interpreter under audit — the audited
+          # version comes from installation/runtime-pins.json, so this one
+          # only has to be new enough to run the script.
+          python-version: "3.12"
+
+      - name: Install checker dependencies
+        uses: ./.github/actions/retry
+        with:
+          command: python -m pip install packaging==26.0
+
+      - name: Every payload pin accepts the payload interpreter
+        run: python scripts/check_payload_requires_python.py

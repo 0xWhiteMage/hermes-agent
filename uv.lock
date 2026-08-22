@@ -28,6 +28,7 @@ nemo-relay = false
 
 [manifest]
 overrides = [
+    { name = "backports-strenum", specifier = "<1.3" },
     { name = "cryptography", specifier = ">=50,<51" },
     { name = "pynacl", specifier = ">=1.6,<1.7" },
 ]
@@ -517,11 +518,11 @@ wheels = [
 
 [[package]]
 name = "backports-strenum"
-version = "1.3.1"
+version = "1.2.8"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/35/c7/2ed54c32fed313591ffb21edbd48db71e68827d43a61938e5a0bc2b6ec91/backports_strenum-1.3.1.tar.gz", hash = "sha256:77c52407342898497714f0596e86188bb7084f89063226f4ba66863482f42414", size = 7257, upload-time = "2023-12-09T14:36:40.937Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/57/f1/611f9ce7f5ede2e8156d3bc6cd2c62a7f2ff07d73b948925da84785cf331/backports_strenum-1.2.8.tar.gz", hash = "sha256:4dd47365fd427ac8028aeb1ad3628ea38e67c4d0336ceebd5c0f113e0c487ce9", size = 7110, upload-time = "2023-09-19T16:10:33.042Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d6/50/56cf20e2ee5127b603b81d5a69580a1a325083e2b921aa8f067da83927c0/backports_strenum-1.3.1-py3-none-any.whl", hash = "sha256:cdcfe36dc897e2615dc793b7d3097f54d359918fc448754a517e6f23044ccf83", size = 8304, upload-time = "2023-12-09T14:36:39.905Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/d0/a70b2e038cdab32ed2dbbf06d292d010fc208508bb187714306a87384c54/backports_strenum-1.2.8-py3-none-any.whl", hash = "sha256:fc297cb26971f7d5e15a478a06a78575197f81daea47975771b1aae996dcccf4", size = 7862, upload-time = "2023-09-19T16:10:31.827Z" },
 ]
 
 [[package]]

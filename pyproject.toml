@@ -403,6 +403,29 @@ override-dependencies = [
   # requests with RSA and AES, and that API did not break in 49 or 50.
   # Remove this line when alibabacloud-tea-openapi lifts the cap.
   "cryptography>=50,<51",
+  # ai-edge-litert declares `backports.strenum` with NO environment marker,
+  # but its own code imports the backport only below python 3.11:
+  #
+  #   if sys.version_info >= (3, 11):
+  #     from enum import StrEnum
+  #   else:
+  #     from backports.strenum import StrEnum
+  #
+  # StrEnum is stdlib from 3.11, so on the payload interpreter (3.11) the
+  # backport is declared, downloaded, and never imported. Its latest
+  # release, 1.3.1, then caps ITSELF at Requires-Python >=3.8.6,<3.11 —
+  # the maintainer's way of saying the backport is obsolete. So the
+  # resolver picks the one version that excludes our interpreter.
+  #
+  # uv treats a locked pin's Requires-Python as advisory and installs it
+  # anyway; pip treats it as binding and refuses. The payload staging is
+  # where uv-resolved requirements meet real pip, so only the bundled
+  # darwin-arm64 lane failed (wake-tflite is the only consumer, and its
+  # dependency edge carries sys_platform == 'darwin').
+  #
+  # 1.2.8 allows 3.11 and is never imported there anyway. Remove this line
+  # when ai-edge-litert marks the dependency python_version < '3.11'.
+  "backports-strenum<1.3",
 ]
 exclude-newer = "14 days"
 # h2: temporary exclude-newer exception for the CVE-2026-71554 (GHSA-6hr6-w5qg-qmwg,
