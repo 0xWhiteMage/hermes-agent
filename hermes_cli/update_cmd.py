@@ -3181,7 +3181,7 @@ def _ensure_fhs_path_guard() -> None:
         print("    (reload your shell or run 'source ~/.bashrc' to pick it up)")
 
 def _ensure_acp_launcher() -> None:
-    """Self-heal: install a ``hermes-acp`` launcher next to the ``hermes`` one.
+    r"""Self-heal: install a ``hermes-acp`` launcher next to the ``hermes`` one.
 
     Mirrors the launcher block in ``scripts/install.sh`` so existing installs
     gain the ACP command on ``hermes update`` without a reinstall.  ACP hosts
@@ -3197,10 +3197,12 @@ def _ensure_acp_launcher() -> None:
 
     No-op on Windows (install.ps1 copies ``hermes.exe`` + ``hermes-acp.exe``
     into ``$InstallDir\bin`` and puts THAT on the user PATH — never the whole
-    ``venv\Scripts`` dir, which would shadow the user's ``python`` (#83797) —
-    so ``hermes-acp.exe`` already resolves) and wherever a ``hermes-acp`` is
-    already present next to the ``hermes`` command.  Unwritable directories
-    (e.g. ``/usr/local/bin`` as non-root) are skipped silently.  Idempotent.
+    ``venv\Scripts`` dir, which would shadow the user's ``python`` (#83797);
+    when those copies go missing, ``hermes_cli._install_repair.
+    ensure_windows_bin_launchers`` re-stages them) and wherever a
+    ``hermes-acp`` is already present next to the ``hermes`` command.
+    Unwritable directories (e.g. ``/usr/local/bin`` as non-root) are skipped
+    silently.  Idempotent.
     """
     if _m().sys.platform == "win32":
         return
