@@ -1121,7 +1121,131 @@ export function prunePayload(outDir, target, fsImpl = fs) {
     }
   }
 
+  // site-packages/: pure-Python wheels (py3-none-any) that carry native
+  // libraries for EVERY platform, because one wheel has to serve all of
+  // them. pip cannot filter these — the wheel is not arch-tagged — so a
+  // linux-x64 payload ships Windows DLLs, macOS dylibs and Raspberry Pi
+  // .so files that no code path on this host can load.
+  //
+  // Each entry below keeps the directory the package's OWN selector
+  // resolves to for this target and drops its siblings. Verified against
+  // the selector source, not guessed: deleting the wrong sibling here
+  // breaks a feature silently at runtime.
+  reclaimed += prunePayloadForeignPlatformLibs(outDir, target, fsImpl)
+
   console.log(`[stage-agent-payloads] pruned ${(reclaimed / (1024 * 1024)).toFixed(1)} MB of unreachable payload members`)
+  return reclaimed
+}
+
+/**
+ * Drop per-platform native libraries that this target can never load.
+ *
+ * The audit (`audit-bundle-arch.mjs`) fails a bundle that carries a
+ * binary whose arch does not match `--arch`, and these wheels tripped it
+ * with 16 mismatches per Linux lane. They are not a packaging mistake by
+ * us: `pvporcupine` and `discord.py` publish `py3-none-any` wheels that
+ * bundle every platform's libraries, so pip installs all of them
+ * everywhere. The fix is to keep the one this target resolves.
+ *
+ * Every rule is read off the package's own loader:
+ *
+ *  - `pvporcupine/_util.py::pv_library_path` switches on
+ *    `platform.system()` + `platform.machine()`. Note linux-arm64 does
+ *    NOT use `lib/linux/` — that directory is x86_64 only. An aarch64
+ *    Linux host resolves `lib/raspberry-pi/<cortex-*>-aarch64/`, and
+ *    WHICH cortex comes from `/proc/cpuinfo` at import time, so all
+ *    three aarch64 variants stay. The 32-bit `arm11`/`cortex-*` dirs
+ *    require a 32-bit interpreter (`_is_64bit()` is false), which the
+ *    payload's CPython never is.
+ *  - `discord/opus.py::_load_default` loads `bin/libopus-0.<x64|x86>.dll`
+ *    ONLY under `sys.platform == 'win32'`; every other platform goes to
+ *    `ctypes.util.find_library('opus')`. So the whole `bin/` DLL pair is
+ *    unreachable off Windows, and on Windows the bitness test picks x64
+ *    (including win-arm64, where `struct.calcsize('P') * 8` is 64 and
+ *    the x64 DLL runs under emulation — discord.py ships no arm64 opus).
+ *  - `setuptools/_scripts.py::get_win_launcher` chooses a `cli`/`gui`
+ *    stub by host platform when setuptools writes a console script.
+ *    They are Windows PE launchers, inert on POSIX.
+ *
+ * Deliberately NOT pruned: `pvporcupine/lib/common` (the model file,
+ * platform-neutral) and `resources/keyword_files/*` (data, not binaries).
+ */
+export function prunePayloadForeignPlatformLibs(outDir, target, fsImpl = fs) {
+  const sitePackages = path.join(outDir, "site-packages")
+  if (!fsImpl.existsSync(sitePackages)) return 0
+
+  const isWin = target.platform === "win32"
+  const isMac = target.platform === "darwin"
+  const isLinux = target.platform === "linux"
+  const arm = target.arch === "arm64"
+
+  // pvporcupine: the ONE lib dir this target's selector resolves to.
+  // Linux arm64 keeps all three aarch64 cortex variants because the
+  // choice is made from /proc/cpuinfo on the user's machine.
+  let keep = []
+  if (isMac) keep = [arm ? "mac/arm64" : "mac/x86_64"]
+  else if (isWin) keep = [arm ? "windows/arm64" : "windows/amd64"]
+  else if (isLinux) {
+    keep = arm
+      ? [
+          "raspberry-pi/cortex-a53-aarch64",
+          "raspberry-pi/cortex-a72-aarch64",
+          "raspberry-pi/cortex-a76-aarch64",
+        ]
+      : ["linux/x86_64"]
+  }
+
+  let reclaimed = 0
+  const pvLib = path.join(sitePackages, "pvporcupine", "lib")
+  if (fsImpl.existsSync(pvLib) && keep.length > 0) {
+    const keepSet = new Set(keep.map((k) => k.split("/").join(path.sep)))
+    for (const osDir of fsImpl.readdirSync(pvLib, { withFileTypes: true })) {
+      // `common` holds the platform-neutral model file the loader always reads.
+      if (!osDir.isDirectory() || osDir.name === "common") continue
+      const osPath = path.join(pvLib, osDir.name)
+      for (const archDir of fsImpl.readdirSync(osPath, { withFileTypes: true })) {
+        if (!archDir.isDirectory()) continue
+        const rel = path.join(osDir.name, archDir.name)
+        if (keepSet.has(rel)) continue
+        reclaimed += duBytes(path.join(pvLib, rel), fsImpl)
+        fsImpl.rmSync(path.join(pvLib, rel), { recursive: true, force: true })
+      }
+      // Drop the now-empty OS directory too. Leaving `lib/linux/` behind on
+      // an arm64 build implies a library that is not there — pvporcupine
+      // treats lib/linux as x86_64-only, so the empty shell is misleading.
+      if (fsImpl.readdirSync(osPath).length === 0) {
+        fsImpl.rmSync(osPath, { recursive: true, force: true })
+      }
+    }
+  }
+
+  // discord.py's bundled opus: Windows-only by loader, x64-only in practice.
+  const opusDir = path.join(sitePackages, "discord", "bin")
+  if (fsImpl.existsSync(opusDir)) {
+    const keepOpus = isWin ? "libopus-0.x64.dll" : null
+    for (const entry of fsImpl.readdirSync(opusDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".dll")) continue
+      if (entry.name === keepOpus) continue
+      reclaimed += duBytes(path.join(opusDir, entry.name), fsImpl)
+      fsImpl.rmSync(path.join(opusDir, entry.name), { force: true })
+    }
+  }
+
+  // setuptools' Windows launcher stubs: PE templates, inert on POSIX.
+  // On Windows keep the pair this host would stamp into a console script.
+  const stubDir = path.join(sitePackages, "setuptools")
+  if (fsImpl.existsSync(stubDir)) {
+    const keepStubs = isWin
+      ? new Set(arm ? ["cli-arm64.exe", "gui-arm64.exe"] : ["cli-64.exe", "gui-64.exe"])
+      : new Set()
+    for (const entry of fsImpl.readdirSync(stubDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !/^(cli|gui).*\.exe$/i.test(entry.name)) continue
+      if (keepStubs.has(entry.name)) continue
+      reclaimed += duBytes(path.join(stubDir, entry.name), fsImpl)
+      fsImpl.rmSync(path.join(stubDir, entry.name), { force: true })
+    }
+  }
+
   return reclaimed
 }
 

@@ -209,6 +209,15 @@ const EXEMPT_PATTERNS = [
   // pattern diverging from the store naming is exactly how the win32-x64
   // lane failed with 91 GCM ia32 "mismatches".
   /agent-payload[/\\]git(-[^/\\]+)?[/\\](mingw64|clangarm64|usr|cmd)[/\\]/i,
+  // discord.py's bundled libopus on win32-arm64. The wheel ships exactly
+  // two DLLs, x64 and x86 — upstream publishes no arm64 build — and
+  // `discord/opus.py::_load_default` selects by BITNESS
+  // (`struct.calcsize('P') * 8`), which is 64 on win-arm64, so it asks
+  // for the x64 DLL and Windows runs it under x64 emulation. The staging
+  // prune already deletes the x86 one and everything off Windows; this
+  // single x64 file on an arm64 Windows bundle is the one foreign-arch
+  // binary that is deliberately there and genuinely loadable.
+  /agent-payload[/\\]site-packages[/\\]discord[/\\]bin[/\\]libopus-0\.x64\.dll$/i,
 ]
 
 export function isExemptPath(relPath) {
