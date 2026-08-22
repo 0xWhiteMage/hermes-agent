@@ -4,12 +4,18 @@ Regression guard for the "browser tool advertised but Chromium missing"
 class of bug — where ``agent-browser`` CLI is discoverable but no
 Chromium build is on disk, causing every browser_* tool call to hang
 for the full command timeout before surfacing a useless error.
-"""
 
-import os
+The engine is a pinned tool now, so presence is a question about the
+pin table and one explicit override. The directory-name scan of
+``~/.cache/ms-playwright`` that used to answer here is gone: it
+accepted any ``chromium-*`` name, so whatever revision an unrelated
+``npx playwright install`` happened to leave behind decided which
+browser Hermes drove.
+"""
 
 import pytest
 
+from installation import browser as ib
 from tools import browser_tool as bt
 
 
@@ -20,69 +26,71 @@ def _reset_chromium_cache():
     bt._cached_chromium_installed = None
 
 
-class TestChromiumSearchRoots:
-    def test_respects_playwright_browsers_path_env(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
-        roots = bt._chromium_search_roots()
-        assert str(tmp_path) == roots[0]
-
-
-    def test_always_includes_default_ms_playwright_cache(self, monkeypatch):
-        monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
-        roots = bt._chromium_search_roots()
-        home = os.path.expanduser("~")
-        assert any(r == os.path.join(home, ".cache", "ms-playwright") for r in roots)
-
-    def test_managed_store_included_when_browser_fact_exists(
-        self, monkeypatch, tmp_path
-    ):
-        """A staged chromium fact makes the tool store a search root — the
-        parent process consults the registry directly, since nothing spawned
-        IT with PLAYWRIGHT_BROWSERS_PATH set."""
-        from installation import registry as rr
-
-        rel = "chromium-1208/chrome-linux64/chrome"
-        binary = tmp_path / rel
-        binary.parent.mkdir(parents=True)
-        binary.write_text("#!/bin/sh\n")
-        facts = {"chromium": rr.RuntimeFact(version="1208", path=rel)}
-        rr.save_facts(facts, tmp_path)
-
-        monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
-        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path))
-
-        roots = bt._chromium_search_roots()
-
-        assert str(tmp_path) in roots
-        # env var (rung 1) outranks the registry consult (rung 2)
-        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "/explicit")
-        assert bt._chromium_search_roots()[0] == "/explicit"
-
-    def test_no_browser_fact_means_no_store_root(self, monkeypatch, tmp_path):
-        monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
-        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path))
-        roots = bt._chromium_search_roots()
-        assert str(tmp_path) not in roots
+@pytest.fixture
+def no_managed_engine(monkeypatch):
+    """No staged pin, and no override, unless a test adds one."""
+    monkeypatch.setattr(ib, "_managed", lambda tool: None)
+    monkeypatch.delenv(ib.ENGINE_OVERRIDE_ENV, raising=False)
 
 
 class TestChromiumInstalled:
-    def test_true_when_plain_chromium_on_path(self, monkeypatch):
-        monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+    def test_plain_chromium_on_path_is_not_an_engine(self, no_managed_engine, monkeypatch, tmp_path):
+        """A PATH Chrome is not the pinned engine, so it does not answer.
+
+        It is an unpinned build behind a driver pinned to one revision,
+        and that pair is what the pin table corrects.
+        """
+        for name in ("google-chrome", "chromium", "chromium-browser", "chrome"):
+            binary = tmp_path / name
+            binary.write_text("#!/bin/sh\n")
+            binary.chmod(0o755)
+        monkeypatch.setenv("PATH", str(tmp_path))
+
+        assert bt._chromium_installed() is False
+
+    def test_stray_playwright_cache_is_not_an_engine(
+        self, no_managed_engine, monkeypatch, tmp_path
+    ):
+        """An unpinned cache directory does not answer either.
+
+        This is the rung that made the suite depend on host state: a
+        developer machine with ``~/.cache/ms-playwright/chromium-1208``
+        reported an engine that no fact backed.
+        """
+        cache = tmp_path / "ms-playwright"
+        (cache / "chromium-1187").mkdir(parents=True)
+        (cache / "chromium_headless_shell-1187").mkdir()
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(cache))
+
+        assert bt._chromium_installed() is False
+
+    def test_staged_pin_is_an_engine(self, monkeypatch, tmp_path):
+        staged = tmp_path / "chrome"
+        staged.write_text("#!/bin/sh\n")
+        monkeypatch.delenv(ib.ENGINE_OVERRIDE_ENV, raising=False)
         monkeypatch.setattr(
-            bt.shutil,
-            "which",
-            lambda name, path=None: "/usr/bin/chromium" if name == "chromium" else None,
+            ib, "_managed", lambda tool: staged if tool == "chromium" else None
         )
 
         assert bt._chromium_installed() is True
 
+    def test_explicit_override_is_an_engine(self, no_managed_engine, monkeypatch, tmp_path):
+        """The one honored override. Docker resolves its own Chromium into
+        this variable at boot, and a user who sets it has named the browser
+        they mean."""
+        override = tmp_path / "chrome"
+        override.write_text("#!/bin/sh\n")
+        monkeypatch.setenv(ib.ENGINE_OVERRIDE_ENV, str(override))
 
-    def test_result_cached(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
-        (tmp_path / "chromium-1208").mkdir()
         assert bt._chromium_installed() is True
-        # Delete after first call — cached True should still return True.
-        (tmp_path / "chromium-1208").rmdir()
+
+    def test_result_cached(self, no_managed_engine, monkeypatch, tmp_path):
+        override = tmp_path / "chrome"
+        override.write_text("#!/bin/sh\n")
+        monkeypatch.setenv(ib.ENGINE_OVERRIDE_ENV, str(override))
+        assert bt._chromium_installed() is True
+        # Delete after the first call — the cached True still answers.
+        override.unlink()
         assert bt._chromium_installed() is True
 
 
@@ -92,24 +100,13 @@ class TestCheckBrowserRequirementsChromium:
         monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
         monkeypatch.setattr(bt, "_find_agent_browser", lambda **_kw: "/usr/local/bin/agent-browser")
         monkeypatch.setattr(bt, "_get_cloud_provider", lambda: None)
-        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
-        (tmp_path / "chromium-1208").mkdir()
+        staged = tmp_path / "chrome"
+        staged.write_text("#!/bin/sh\n")
+        monkeypatch.setenv(ib.ENGINE_OVERRIDE_ENV, str(staged))
 
         assert bt.check_browser_requirements() is True
 
-
-    def test_camofox_mode_does_not_require_chromium(self, monkeypatch, tmp_path):
+    def test_camofox_mode_does_not_require_chromium(self, no_managed_engine, monkeypatch):
         monkeypatch.setattr(bt, "_is_camofox_mode", lambda: True)
         # Even with no chromium on disk, camofox drives its own backend.
-        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
-        monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "fakehome"))
-
         assert bt.check_browser_requirements() is True
-
-
-class TestRunBrowserCommandChromiumGuard:
-    """Verify _run_browser_command fails fast (no timeout hang) when
-    Chromium is missing in local mode.
-    """
-
-

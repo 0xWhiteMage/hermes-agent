@@ -5075,62 +5075,19 @@ def cleanup_all_browsers() -> None:
 _cached_chromium_installed: Optional[bool] = None
 
 
-def _chromium_search_roots() -> List[str]:
-    """Directories to scan for a Chromium / headless-shell build.
-
-    Order mirrors what agent-browser and Playwright actually probe:
-
-    1. ``PLAYWRIGHT_BROWSERS_PATH`` when set (Docker image sets this to
-       ``/opt/hermes/.playwright``).
-    2. The managed tool store, when the runtime registry records a browser
-       fact. Children spawned through ``hermes_subprocess_env`` get this as
-       ``PLAYWRIGHT_BROWSERS_PATH``, but THIS process was not spawned that
-       way — without the registry consult here, ``_chromium_installed()``
-       misses a staged browser and ``_maybe_autoinstall_chromium`` re-downloads
-       ~170MB that is already in the store.
-    3. ``~/.cache/ms-playwright`` — Playwright's default on Linux/macOS.
-    4. ``~/Library/Caches/ms-playwright`` — Playwright's default on macOS.
-    5. ``%USERPROFILE%\\AppData\\Local\\ms-playwright`` — Playwright's default
-       on Windows.
-    """
-    roots: List[str] = []
-    env_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
-    if env_path and env_path != "0":
-        roots.append(env_path)
-    # Fail-open, resolved per call: a managed tree can appear mid-process
-    # (a heal, a first provisioner run), and a broken runtime dir must not
-    # break the browser tool. Same posture as _apply_managed_runtime_tool_env.
-    try:
-        from installation.env import managed_tool_env
-
-        managed = managed_tool_env().get("PLAYWRIGHT_BROWSERS_PATH", "")
-        if managed and managed not in roots:
-            roots.append(managed)
-    except Exception:
-        pass
-    home = os.path.expanduser("~")
-    roots.append(os.path.join(home, ".cache", "ms-playwright"))
-    if sys.platform == "darwin":
-        roots.append(os.path.join(home, "Library", "Caches", "ms-playwright"))
-    if sys.platform == "win32":
-        local = os.environ.get("LOCALAPPDATA") or os.path.join(
-            home, "AppData", "Local"
-        )
-        roots.append(os.path.join(local, "ms-playwright"))
-    return roots
-
-
 def _chromium_installed() -> bool:
-    """Return True when a usable Chromium (or headless-shell) build is on disk.
+    """Return True when the engine this install should drive is on disk.
 
-    Delegates the whole question to :func:`installation.browser.engine_path`,
-    which honours ``AGENT_BROWSER_EXECUTABLE_PATH`` and then the pinned
-    chromium pair, plus the legacy Playwright cache scan below for installs
-    whose browsers predate the pin table.
+    :func:`installation.browser.engine_path` owns the whole question: an
+    explicit ``AGENT_BROWSER_EXECUTABLE_PATH``, then the pinned chromium
+    pair from the tool store.
 
-    A Chrome that merely happens to be on PATH is deliberately NOT a rung:
-    it is an unpinned version driven by a driver pinned to one revision,
-    and the pair is what the pin table exists to fix.
+    Neither a Chrome on PATH nor a stray Playwright cache directory is a
+    rung. Both are unpinned builds behind a driver pinned to one
+    revision, and that pair is what the pin table corrects. The cache
+    scan that used to answer here accepted any ``chromium-*`` directory
+    name, so an unrelated ``npx playwright install`` decided which
+    browser Hermes drove.
     """
     global _cached_chromium_installed
     if _cached_chromium_installed is not None:
@@ -5138,29 +5095,8 @@ def _chromium_installed() -> bool:
 
     from installation.browser import engine_path
 
-    if engine_path() is not None:
-        _cached_chromium_installed = True
-        return True
-
-    # Playwright browser cache (legacy — chromium-* / chromium_headless_shell-* dirs)
-    for root in _chromium_search_roots():
-        if not root or not os.path.isdir(root):
-            continue
-        try:
-            entries = os.listdir(root)
-        except OSError:
-            continue
-        # Playwright names them ``chromium-<build>`` and
-        # ``chromium_headless_shell-<build>``; agent-browser accepts either.
-        for entry in entries:
-            if entry.startswith("chromium-") or entry.startswith(
-                "chromium_headless_shell-"
-            ):
-                _cached_chromium_installed = True
-                return True
-
-    _cached_chromium_installed = False
-    return False
+    _cached_chromium_installed = engine_path() is not None
+    return _cached_chromium_installed
 
 
 # One-shot per process: a 170MB download that fails (or is slow) must not be
@@ -5328,8 +5264,6 @@ if __name__ == "__main__":
             browser_cmd = _find_agent_browser()
             if _cp is None and not _chromium_installed():
                 print("   - Chromium browser binary not found")
-                searched = ", ".join(_chromium_search_roots()) or "(no candidate paths)"
-                print(f"     Searched: {searched}")
                 if _running_in_docker():
                     print(
                         "     Docker: pull the latest image — the current one "
@@ -5337,9 +5271,7 @@ if __name__ == "__main__":
                     )
                     print("       docker pull ghcr.io/nousresearch/hermes-agent:latest")
                 else:
-                    print("     Install it with:")
-                    print("       npx agent-browser install --with-deps")
-                    print("     Or:  npx playwright install --with-deps chromium")
+                    print(f"     {_browser_install_hint()}")
         except FileNotFoundError:
             print("   - agent-browser CLI not found")
             print(f"     Install: {_browser_install_hint()}")
