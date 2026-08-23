@@ -880,3 +880,41 @@ def test_pricing_overrides_skip_entries_missing_required_fields(monkeypatch):
     # The first (incomplete) entry should be skipped; the second wins.
     assert entry is not None
     assert float(entry.input_cost_per_million) == 0.95
+
+
+def test_pricing_overrides_custom_prefix_matches_normalized_route(monkeypatch):
+    """resolve_billing_route normalizes recognized custom endpoints to their
+    canonical provider name (custom:fireworks routes as provider="fireworks").
+    An override written with the config-visible custom:<name> spelling must
+    still match that normalized route."""
+    monkeypatch.setattr(
+        "agent.usage_pricing._load_user_pricing_overrides",
+        lambda: [
+            {
+                "provider": "custom:fireworks",
+                "model": "kimi-k2p6",
+                "input_per_million": 0.5,
+                "output_per_million": 1.5,
+            }
+        ],
+    )
+
+    from agent.usage_pricing import resolve_billing_route
+
+    route = resolve_billing_route(
+        "accounts/fireworks/models/kimi-k2p6",
+        provider="custom:fireworks",
+        base_url="https://api.fireworks.ai/inference/v1",
+    )
+    # Precondition: this test only exercises the bug when the router
+    # actually normalizes away the custom: prefix.
+    assert route.provider == "fireworks"
+
+    entry = get_pricing_entry(
+        "accounts/fireworks/models/kimi-k2p6",
+        provider="custom:fireworks",
+        base_url="https://api.fireworks.ai/inference/v1",
+    )
+    assert entry is not None
+    assert entry.source == "user_override"
+    assert float(entry.input_cost_per_million) == 0.5

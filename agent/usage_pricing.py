@@ -1232,7 +1232,13 @@ def _lookup_user_override_pricing(route: BillingRoute) -> Optional[PricingEntry]
         em = str(raw.get("model", "")).strip().lower()
         if not ep or not em:
             continue
-        if ep != target_provider:
+        # ``resolve_billing_route`` normalizes recognized custom endpoints to
+        # their canonical provider name (e.g. ``custom:fireworks`` routes as
+        # ``fireworks``). Accept the ``custom:<name>`` spelling users see in
+        # their config alongside the normalized name so overrides keep
+        # matching regardless of which form the router produces.
+        ep_normalized = ep.split(":", 1)[1] if ep.startswith("custom:") else ep
+        if target_provider not in (ep, ep_normalized):
             continue
         em_basename = em.rsplit("/", 1)[-1]
         # Match either form on either side: lets users write the full
