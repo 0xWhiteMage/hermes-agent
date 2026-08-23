@@ -298,10 +298,10 @@ _LEGACY_TOOLSET_MAP = {
 #
 # Invalidation happens transparently via the registry's _generation counter,
 # which bumps on register() / deregister() / register_toolset_alias(), plus a
-# TTL-cached snapshot of every check_fn verdict in the cache key. The verdict
-# snapshot is what lets environment drift (Docker daemon start/stop, env var
-# changes, credential logins) propagate through THIS cache on the inner TTL's
-# ~30 s horizon — the generation counter alone never re-probes on a hit.
+# Short-TTL aggregate snapshot of every cached check_fn verdict in the cache
+# key. The snapshot lets external availability drift propagate through THIS
+# cache on the combined probe/snapshot TTL horizon — the generation counter
+# alone never re-probes on a hit.
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
 _tool_defs_cache_lock = threading.Lock()
 
@@ -372,7 +372,7 @@ def get_tool_definitions(
             # one (Docker daemon starts, credential lands, OAuth login),
             # and before this key member a memo hit skipped probing
             # entirely — the tool list stayed stale for the process
-            # lifetime. TTL-cached, so hits cost dict lookups; a flip
+            # lifetime. The aggregate is TTL-cached, so hits cost one lookup; a flip
             # changes the tuple and forces a recompute within ~35 s worst case.
             # Held in a named local (not just a key slot) because the
             # TOCTOU guard below re-checks it after compute.

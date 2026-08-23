@@ -362,9 +362,9 @@ def _tool_search_scoped_names(agent) -> frozenset:
     set: the deferrable subset of the session's own enabled/disabled toolset
     scope.
 
-    Result is cached on the agent and refreshed when the tool registry's
-    generation changes (e.g. an MCP server reconnects), so the common case is
-    a dict lookup, not a full tool-defs rebuild on every tool call.
+    Result is cached on the agent and refreshed when the registry generation,
+    availability snapshot, or config fingerprint changes, so the common case
+    is a dict lookup, not a full tool-defs rebuild on every tool call.
     """
     try:
         import model_tools
@@ -375,6 +375,13 @@ def _tool_search_scoped_names(agent) -> frozenset:
 
     enabled = getattr(agent, "enabled_toolsets", None)
     disabled = getattr(agent, "disabled_toolsets", None)
+    try:
+        from hermes_cli.config import get_config_path
+
+        cfg_stat = get_config_path().stat()
+        cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
+    except (FileNotFoundError, OSError, ImportError):
+        cfg_fp = None
     try:
         # Same staleness class as get_tool_definitions' memo: the generation
         # only moves on registry MUTATIONS, but a check_fn verdict can flip
@@ -391,6 +398,7 @@ def _tool_search_scoped_names(agent) -> frozenset:
         getattr(_registry, "_generation", 0),
         frozenset(enabled) if enabled is not None else None,
         frozenset(disabled) if disabled is not None else None,
+        cfg_fp,
         verdicts,
     )
     cached = getattr(agent, "_tool_search_scope_cache", None)
