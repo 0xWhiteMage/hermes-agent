@@ -386,7 +386,8 @@ def _entry_search_text(td: Dict[str, Any], source_label: str = "") -> str:
     param_names = " ".join(params.keys())
     # Break snake_case and dotted names into words for BM25.
     name_words = name.replace("_", " ").replace(".", " ").replace("-", " ").replace(":", " ")
-    return f"{name_words} {source_label} {desc} {param_names}"
+    extra = source_label if source_label and source_label not in name_words.split() else ""
+    return f"{name_words} {extra} {desc} {param_names}"
 
 
 def _classify_source(name: str) -> Tuple[str, str]:
@@ -470,10 +471,10 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5) -> L
     Falls back to a stable name-substring match when every query token
     misses every document — e.g. the query ``"hub"`` against ``github_*``
     tools ("hub" is a substring of the name but never a token, so BM25
-    scores nothing). The Lucene IDF variant used here,
+    scores nothing). The IDF variant used here,
     ``log(1 + (N - df + 0.5) / (df + 0.5))``, is strictly positive even
-    when a term appears in every document, so a tokenizable query always
-    produces positive scores and the fallback stays out of the way.
+    when a term appears in every document, so the fallback only runs when
+    no query token appears in any document.
     """
     if not catalog or limit <= 0:
         return []
@@ -514,65 +515,24 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5) -> L
 # ---------------------------------------------------------------------------
 
 
-# A sentence ends at ., !, or ? followed by whitespace or end-of-string.
-# A bare ``[.!?]`` search is NOT a sentence detector: "e.g.", "v1.2",
-# "api.github.com", and decimals all contain periods that used to truncate
-# a listing line to fragments like "Create an issue (e." — the period had
-# only to appear, not to end anything. Whitespace is collapsed before
-# matching, so a newline class here would be dead code.
-_SENTENCE_END_RE = re.compile(r"[.!?](?=\s|$)")
-
-# Dotted abbreviations whose trailing period does not end a sentence even
-# when followed by whitespace ("Create an issue (e.g. a bug report) ...").
-_ABBREV_NO_SENTENCE_END_RE = re.compile(
-    r"\b(?:e\.g|i\.e|etc|et al|vs|cf|approx|dr|mr|mrs|ms|st|jr|sr)\.$",
-    re.IGNORECASE,
-)
-
-# Look-behind window for the abbreviation check: longest listed entry plus
-# a leading word-boundary character, derived so adding a longer abbreviation
-# can never silently outgrow the window. ("et al" is 5 chars + "." + 1.)
-_ABBREV_WINDOW_CHARS = max(
-    len(a) for a in (
-        "e.g", "i.e", "etc", "et al", "vs", "cf", "approx",
-        "dr", "mr", "mrs", "ms", "st", "jr", "sr",
-    )
-) + 4
+# A sentence ends at ., !, or ? followed by whitespace or end-of-string, but
+# not at the end of a common dotted abbreviation.
+_SENTENCE_END_RE = re.compile(r"(?<!\be\.g)(?<!\bi\.e)(?<!\betc)[.!?](?=\s|$)")
 
 
 def _short_desc(description: str, max_chars: int = 60) -> str:
     """First sentence of a tool description, clipped to ``max_chars``.
 
-    Mirrors the skills-listing convention: one terse line per capability.
-    Whitespace is collapsed; a hard clip never cuts mid-word unless the
-    first word itself exceeds the budget. Sentence detection requires the
-    terminator to be followed by whitespace or end-of-string and not to
-    close a known abbreviation, so hostnames, version strings, decimals,
-    and "e.g."/"i.e." pass through intact.
-
-    Bounded work on hostile input: the abbreviation check looks at a small
-    fixed window before each candidate terminator (never a growing prefix
-    slice), and scanning stops once a candidate starts past ``max_chars`` —
-    beyond that point the hard clip decides the output regardless, so a
-    description with thousands of dotted abbreviations costs O(max_chars),
-    not O(len**2). MCP descriptions are third-party input.
+    A terminator must be followed by whitespace or end-of-string; ``e.g.``,
+    ``i.e.``, and ``etc.`` do not end a sentence. Whitespace normalization and
+    the unbounded regex search both remain linear-time on hostile input.
     """
     text = " ".join((description or "").split())
     if not text:
         return ""
-    for m in _SENTENCE_END_RE.finditer(text):
-        if m.start() > max_chars:
-            # The first sentence (if any) ends beyond the clip budget; the
-            # hard clip below yields the same output either way.
-            break
-        end = m.end()
-        # Window derived from the abbreviation list, so the end-anchored
-        # regex sees everything it needs without rescanning the prefix.
-        window = text[max(0, end - _ABBREV_WINDOW_CHARS):end]
-        if text[m.start()] == "." and _ABBREV_NO_SENTENCE_END_RE.search(window):
-            continue
-        text = text[:end]
-        break
+    m = _SENTENCE_END_RE.search(text)
+    if m:
+        text = text[:m.end()]
     if len(text) <= max_chars:
         return text
     clipped = text[:max_chars]
