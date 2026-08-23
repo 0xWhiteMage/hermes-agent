@@ -111,17 +111,19 @@ class TestBridgePeelInPlanner:
         assert _kinds(segments) == ["parallel"]
         assert _flatten_ids(segments) == ["a", "b"]
 
-    def test_bridged_call_to_non_opted_in_tool_stays_sequential(self, mcp_pair, monkeypatch):
+    def test_bridged_call_to_non_opted_in_tool_stays_sequential(self, mcp_pair):
         from tools import mcp_tool
+
         with mcp_tool._lock:
             mcp_tool._parallel_safe_servers.discard("pytestsrv")
-        alpha, beta = mcp_pair
-        calls = [_bridge_tc(alpha, call_id="a"), _bridge_tc(beta, call_id="b")]
-        segments = _plan_tool_batch_segments(calls)
-        assert _kinds(segments) == ["sequential"]
-        # restore for the fixture's teardown symmetry
-        with mcp_tool._lock:
-            mcp_tool._parallel_safe_servers.add("pytestsrv")
+        try:
+            alpha, beta = mcp_pair
+            calls = [_bridge_tc(alpha, call_id="a"), _bridge_tc(beta, call_id="b")]
+            segments = _plan_tool_batch_segments(calls)
+            assert _kinds(segments) == ["sequential"]
+        finally:
+            with mcp_tool._lock:
+                mcp_tool._parallel_safe_servers.add("pytestsrv")
 
     def test_bridge_lookups_are_parallel_safe(self):
         calls = [
@@ -173,22 +175,15 @@ class TestBridgePeelInPlanner:
         assert [(k, [c.id for c in cs]) for k, cs in direct] == \
                [(k, [c.id for c in cs]) for k, cs in bridged]
 
-    def test_bridged_path_tools_get_path_conflict_analysis(self, tmp_path, monkeypatch):
-        """A write_file smuggled through the bridge must not share a parallel
-        segment with a bridged read of the same file — the peel exposes the
-        underlying args to the path-overlap analysis."""
-        monkeypatch.chdir(tmp_path)
+    def test_core_file_tools_cannot_be_smuggled_through_the_bridge(self):
+        """Wrapped core file tools remain sequential because they are not deferrable."""
         calls = [
             _bridge_tc("write_file", {"path": "a.py", "content": "x"}, call_id="w"),
             _bridge_tc("read_file", {"path": "a.py"}, call_id="r"),
         ]
-        # write_file/read_file are core tools, not deferrable, so the peel
-        # refuses them (resolve_underlying_call errors) and both stay
-        # sequential barriers — same net safety as before the fix.
         segments = _plan_tool_batch_segments(calls)
-        for kind, seg_calls in segments:
-            ids = [tc.id for tc in seg_calls]
-            assert not (kind == "parallel" and {"w", "r"} <= set(ids))
+        assert _kinds(segments) == ["sequential"]
+        assert _flatten_ids(segments) == ["w", "r"]
 
 
 class TestShortDescSentenceBoundary:
@@ -283,6 +278,34 @@ class TestSourceNameIndexing:
         finally:
             for n in names:
                 registry.deregister(n)
+
+    def test_source_label_is_indexed_once_for_native_and_plugin_names(self):
+        from tools.registry import registry
+
+        source_label = "catalogsource"
+        names = [
+            self._register(
+                "mcp__catalogsource__native_action",
+                "mcp-catalogsource",
+                "Perform a native action.",
+            ),
+            self._register(
+                "plugin_action",
+                "mcp-catalogsource",
+                "Perform a plugin action.",
+            ),
+        ]
+        try:
+            catalog = build_catalog([
+                _td("mcp__catalogsource__native_action", "Perform a native action."),
+                _td("plugin_action", "Perform a plugin action."),
+            ])
+            tokens_by_name = {entry.name: entry._tokens for entry in catalog}
+            assert tokens_by_name[names[0]].count(source_label) == 1
+            assert tokens_by_name[names[1]].count(source_label) == 1
+        finally:
+            for name in names:
+                registry.deregister(name)
 
     def test_substring_fallback_covers_token_misses(self):
         """"hub" is a substring of github but never a token — the fallback
@@ -394,6 +417,93 @@ class TestCheckFnFlipBustsToolDefsMemo:
         finally:
             registry.deregister("mcp__scopeflip__gated")
             model_tools._clear_tool_defs_cache()
+            invalidate_check_fn_cache()
+
+    def test_scope_cache_observes_config_fingerprint(self, monkeypatch, tmp_path):
+        import model_tools
+        from agent.tool_executor import _tool_search_scoped_names
+        from tools.registry import (
+            _NO_CACHE_CHECK_FNS,
+            invalidate_check_fn_cache,
+            no_cache_check_fn,
+            registry,
+        )
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("off", encoding="utf-8")
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: config_path)
+
+        def _config_check():
+            return config_path.read_text(encoding="utf-8") == "enabled"
+
+        no_cache_check_fn(_config_check)
+        tool_name = "mcp__configscope__gated"
+        registry.register(
+            name=tool_name,
+            toolset="mcp-configscope",
+            schema=_td(tool_name, "Config-gated test tool.")["function"],
+            handler=lambda args, **kw: json.dumps({"ok": True}),
+            check_fn=_config_check,
+        )
+        agent = SimpleNamespace(
+            enabled_toolsets=["mcp-configscope"],
+            disabled_toolsets=None,
+        )
+        try:
+            model_tools._clear_tool_defs_cache()
+            invalidate_check_fn_cache()
+            assert tool_name not in _tool_search_scoped_names(agent)
+
+            config_path.write_text("enabled", encoding="utf-8")
+            assert tool_name in _tool_search_scoped_names(agent)
+        finally:
+            registry.deregister(tool_name)
+            _NO_CACHE_CHECK_FNS.discard(_config_check)
+            model_tools._clear_tool_defs_cache()
+            invalidate_check_fn_cache()
+
+    def test_snapshot_coalesces_grace_probe_and_invalidation(self, monkeypatch):
+        import tools.registry as registry_module
+        from tools.registry import ToolRegistry, invalidate_check_fn_cache
+
+        local_registry = ToolRegistry()
+        available = {"value": True}
+        probe_calls = {"n": 0}
+        clock = {"now": 1000.0}
+
+        def _probe():
+            probe_calls["n"] += 1
+            return available["value"]
+
+        monkeypatch.setattr(registry_module.time, "monotonic", lambda: clock["now"])
+        local_registry.register(
+            name="snapshot_gated_tool",
+            toolset="snapshottest",
+            schema=_td("snapshot_gated_tool", "Snapshot test tool.")["function"],
+            handler=lambda args, **kw: json.dumps({"ok": True}),
+            check_fn=_probe,
+        )
+        try:
+            invalidate_check_fn_cache()
+            assert local_registry.check_fn_verdict_snapshot()[0][1] is True
+
+            available["value"] = False
+            clock["now"] += registry_module._CHECK_FN_TTL_SECONDS + 1
+            calls_before_grace = probe_calls["n"]
+            grace_snapshots = [
+                local_registry.check_fn_verdict_snapshot()
+                for _ in range(8)
+            ]
+
+            assert probe_calls["n"] - calls_before_grace == 1
+            assert all(snapshot == grace_snapshots[0] for snapshot in grace_snapshots)
+            assert grace_snapshots[0][0][1] is True
+
+            invalidate_check_fn_cache()
+            refreshed = local_registry.check_fn_verdict_snapshot()
+            assert probe_calls["n"] - calls_before_grace == 2
+            assert refreshed[0][1] is False
+        finally:
             invalidate_check_fn_cache()
 
     def test_memo_still_hits_within_ttl(self, monkeypatch):
