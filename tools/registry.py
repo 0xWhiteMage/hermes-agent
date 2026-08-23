@@ -509,6 +509,48 @@ class ToolRegistry:
         """Return a stable snapshot of registered tool entries."""
         return self._snapshot_state()[0]
 
+    def check_fn_verdict_snapshot(self, scope: Optional[str] = None) -> tuple:
+        """Return a hashable snapshot of every availability probe's verdict.
+
+        Built for outer memo keys (``get_tool_definitions``' cache): the
+        registry generation captures registry *mutations*, but a ``check_fn``
+        verdict can flip without any mutation — a daemon starts, a credential
+        file appears, an OAuth login lands. Before this existed, an outer
+        memo keyed only on the generation served stale tool lists
+        indefinitely after such a flip, because nothing on the cache-hit
+        path ever re-probed.
+
+        Each distinct probe runs through :func:`_check_fn_cached`, so within
+        a TTL window this is dictionary lookups; at most one real probe per
+        function per TTL. When a verdict flips after its TTL expires (or
+        after :func:`invalidate_check_fn_cache`), the returned tuple changes
+        and any memo keyed on it recomputes. Verdicts propagate on the same
+        ~30 s horizon the TTL cache already promises.
+
+        Probes marked :func:`no_cache_check_fn` are skipped: they are local,
+        config-backed checks that execute UNCACHED on every call (some with
+        deliberate side effects, e.g. the memory tool's flag snapshot), and
+        their verdicts only change when config changes — which the outer
+        memo key already captures through the config-file fingerprint.
+        """
+        entries, toolset_checks = self._snapshot_state(scope)
+        fns: Dict[Callable, str] = {}
+        for entry in entries:
+            if entry.check_fn is not None and entry.check_fn not in fns:
+                fns[entry.check_fn] = getattr(
+                    entry.check_fn, "__qualname__", repr(entry.check_fn)
+                )
+        for fn in toolset_checks.values():
+            if fn is not None and fn not in fns:
+                fns[fn] = getattr(fn, "__qualname__", repr(fn))
+        verdicts = [
+            (label, id(fn), _check_fn_cached(fn))
+            for fn, label in fns.items()
+            if fn not in _NO_CACHE_CHECK_FNS
+        ]
+        verdicts.sort(key=lambda item: (item[0], item[1]))
+        return tuple((label, value) for label, _, value in verdicts)
+
     def _toolset_has_exposable_tools(
         self,
         toolset: str,

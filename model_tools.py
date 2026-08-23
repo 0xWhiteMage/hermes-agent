@@ -297,9 +297,11 @@ _LEGACY_TOOLSET_MAP = {
 # because quiet_mode=False has stdout side effects (tool-selection prints).
 #
 # Invalidation happens transparently via the registry's _generation counter,
-# which bumps on register() / deregister() / register_toolset_alias(). The
-# inner check_fn TTL cache in registry.py handles environment drift (Docker
-# daemon start/stop, env var changes, etc.) on a 30 s horizon.
+# which bumps on register() / deregister() / register_toolset_alias(), plus a
+# TTL-cached snapshot of every check_fn verdict in the cache key. The verdict
+# snapshot is what lets environment drift (Docker daemon start/stop, env var
+# changes, credential logins) propagate through THIS cache on the inner TTL's
+# ~30 s horizon — the generation counter alone never re-probes on a hit.
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
 _tool_defs_cache_lock = threading.Lock()
 
@@ -374,6 +376,14 @@ def get_tool_definitions(
                 _is_delegated_child_context(),
                 _is_dispatcher_owned_worker(),
                 profile_scope,
+                # check_fn verdicts: the registry generation only captures
+                # registry MUTATIONS. An availability probe can flip without
+                # one (Docker daemon starts, credential lands, OAuth login),
+                # and before this key member a memo hit skipped probing
+                # entirely — the tool list stayed stale for the process
+                # lifetime. TTL-cached, so hits cost dict lookups; a flip
+                # changes the tuple and forces a recompute within ~30 s.
+                registry.check_fn_verdict_snapshot(),
             )
         with _tool_defs_cache_lock:
             cached = _tool_defs_cache.get(cache_key) if cache_key is not None else None
