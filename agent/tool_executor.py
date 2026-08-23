@@ -375,11 +375,23 @@ def _tool_search_scoped_names(agent) -> frozenset:
 
     enabled = getattr(agent, "enabled_toolsets", None)
     disabled = getattr(agent, "disabled_toolsets", None)
+    try:
+        # Same staleness class as get_tool_definitions' memo: the generation
+        # only moves on registry MUTATIONS, but a check_fn verdict can flip
+        # without one (credential lands, daemon starts). Without the verdict
+        # snapshot in this key, the unwrap kept rejecting a tool the bridge
+        # could already discover — or kept admitting one whose availability
+        # probe had gone false. The snapshot is memoized in the registry, so
+        # the common case stays a dict lookup.
+        verdicts = _registry.check_fn_verdict_snapshot()
+    except Exception:
+        verdicts = ()
     cache_key = (
         _registry.current_scope_key(),
         getattr(_registry, "_generation", 0),
         frozenset(enabled) if enabled is not None else None,
         frozenset(disabled) if disabled is not None else None,
+        verdicts,
     )
     cached = getattr(agent, "_tool_search_scope_cache", None)
     if cached is not None and cached[0] == cache_key:
@@ -395,7 +407,13 @@ def _tool_search_scoped_names(agent) -> frozenset:
     except Exception:
         names = frozenset()
     try:
-        agent._tool_search_scope_cache = (cache_key, names)
+        # TOCTOU guard (same as get_tool_definitions' memo): the verdicts in
+        # cache_key were snapshotted BEFORE the rebuild above. If a verdict
+        # flipped during it, `names` reflects the new state but the key
+        # carries the old — storing would poison the old key. Skip the store;
+        # the next call re-keys coherently.
+        if _registry.check_fn_verdict_snapshot() == verdicts:
+            agent._tool_search_scope_cache = (cache_key, names)
     except Exception:
         pass
     return names

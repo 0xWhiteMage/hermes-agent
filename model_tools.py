@@ -355,6 +355,7 @@ def get_tool_definitions(
     # mode, discord action allowlist, etc.) without needing an explicit
     # invalidate hook on every config-writer.
     cache_key = None
+    verdict_snapshot: tuple = ()
     if quiet_mode:
         try:
             from hermes_cli.config import get_config_path
@@ -365,6 +366,16 @@ def get_tool_definitions(
             cfg_fp = None
         profile_scope = check_fn_cache_scope()
         if profile_scope != CHECK_FN_CACHE_BYPASS:
+            # check_fn verdicts: the registry generation only captures
+            # registry MUTATIONS. An availability probe can flip without
+            # one (Docker daemon starts, credential lands, OAuth login),
+            # and before this key member a memo hit skipped probing
+            # entirely — the tool list stayed stale for the process
+            # lifetime. TTL-cached, so hits cost dict lookups; a flip
+            # changes the tuple and forces a recompute within ~35 s worst case.
+            # Held in a named local (not just a key slot) because the
+            # TOCTOU guard below re-checks it after compute.
+            verdict_snapshot = registry.check_fn_verdict_snapshot()
             cache_key = (
                 registry.current_scope_key(),
                 frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
@@ -376,14 +387,7 @@ def get_tool_definitions(
                 _is_delegated_child_context(),
                 _is_dispatcher_owned_worker(),
                 profile_scope,
-                # check_fn verdicts: the registry generation only captures
-                # registry MUTATIONS. An availability probe can flip without
-                # one (Docker daemon starts, credential lands, OAuth login),
-                # and before this key member a memo hit skipped probing
-                # entirely — the tool list stayed stale for the process
-                # lifetime. TTL-cached, so hits cost dict lookups; a flip
-                # changes the tuple and forces a recompute within ~30 s.
-                registry.check_fn_verdict_snapshot(),
+                verdict_snapshot,
             )
         with _tool_defs_cache_lock:
             cached = _tool_defs_cache.get(cache_key) if cache_key is not None else None
@@ -399,6 +403,16 @@ def get_tool_definitions(
     result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
                                        skip_tool_search_assembly=skip_tool_search_assembly)
     if quiet_mode and cache_key is not None:
+        # TOCTOU guard: the verdict snapshot in cache_key was taken BEFORE
+        # compute. If a verdict flipped (and the snapshot cache was
+        # invalidated) while compute ran, the result reflects the NEW
+        # verdicts but cache_key carries the OLD ones — caching it would
+        # poison the old key: flip back later and the memo would serve this
+        # mismatched list. Skip caching when the snapshot moved; the next
+        # call re-keys and recomputes coherently. (cache_key is not None
+        # implies verdict_snapshot was bound above.)
+        if verdict_snapshot != registry.check_fn_verdict_snapshot():
+            return list(result)
         # Cache the freshly-computed list, but hand callers a shallow copy so
         # downstream mutations (e.g. run_agent appending memory/LCM tool
         # schemas to self.tools) don't poison the cache. Without this, a

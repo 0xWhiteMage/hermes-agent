@@ -298,6 +298,8 @@ def _prune_check_fn_caches(now: float) -> None:
             _check_fn_last_good.pop(key, None)
     while len(_check_fn_cache) >= _CHECK_FN_CACHE_MAX:
         _check_fn_cache.pop(next(iter(_check_fn_cache)))
+    # Same hard cap as _check_fn_cache: TTL pruning alone leaves last-good
+    # unbounded under high (fn, scope) churn inside one grace window.
     while len(_check_fn_last_good) >= _CHECK_FN_CACHE_MAX:
         _check_fn_last_good.pop(next(iter(_check_fn_last_good)))
 
@@ -522,10 +524,10 @@ class ToolRegistry:
 
         Each distinct probe runs through :func:`_check_fn_cached`, so within
         a TTL window this is dictionary lookups; at most one real probe per
-        function per TTL. When a verdict flips after its TTL expires (or
-        after :func:`invalidate_check_fn_cache`), the returned tuple changes
-        and any memo keyed on it recomputes. Verdicts propagate on the same
-        ~30 s horizon the TTL cache already promises.
+        function per TTL. When a verdict flips, the returned tuple changes
+        and any memo keyed on it recomputes — worst case within the probe
+        TTL plus the snapshot TTL (~35 s); immediately after
+        :func:`invalidate_check_fn_cache`, which clears both layers.
 
         Probes marked :func:`no_cache_check_fn` are skipped: they are local,
         config-backed checks that execute UNCACHED on every call (some with

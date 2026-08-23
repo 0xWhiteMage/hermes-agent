@@ -529,6 +529,16 @@ _ABBREV_NO_SENTENCE_END_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Look-behind window for the abbreviation check: longest listed entry plus
+# a leading word-boundary character, derived so adding a longer abbreviation
+# can never silently outgrow the window. ("et al" is 5 chars + "." + 1.)
+_ABBREV_WINDOW_CHARS = max(
+    len(a) for a in (
+        "e.g", "i.e", "etc", "et al", "vs", "cf", "approx",
+        "dr", "mr", "mrs", "ms", "st", "jr", "sr",
+    )
+) + 4
+
 
 def _short_desc(description: str, max_chars: int = 60) -> str:
     """First sentence of a tool description, clipped to ``max_chars``.
@@ -539,13 +549,27 @@ def _short_desc(description: str, max_chars: int = 60) -> str:
     terminator to be followed by whitespace or end-of-string and not to
     close a known abbreviation, so hostnames, version strings, decimals,
     and "e.g."/"i.e." pass through intact.
+
+    Bounded work on hostile input: the abbreviation check looks at a small
+    fixed window before each candidate terminator (never a growing prefix
+    slice), and scanning stops once a candidate starts past ``max_chars`` —
+    beyond that point the hard clip decides the output regardless, so a
+    description with thousands of dotted abbreviations costs O(max_chars),
+    not O(len**2). MCP descriptions are third-party input.
     """
     text = " ".join((description or "").split())
     if not text:
         return ""
     for m in _SENTENCE_END_RE.finditer(text):
+        if m.start() > max_chars:
+            # The first sentence (if any) ends beyond the clip budget; the
+            # hard clip below yields the same output either way.
+            break
         end = m.end()
-        if text[m.start()] == "." and _ABBREV_NO_SENTENCE_END_RE.search(text[:end]):
+        # Window derived from the abbreviation list, so the end-anchored
+        # regex sees everything it needs without rescanning the prefix.
+        window = text[max(0, end - _ABBREV_WINDOW_CHARS):end]
+        if text[m.start()] == "." and _ABBREV_NO_SENTENCE_END_RE.search(window):
             continue
         text = text[:end]
         break

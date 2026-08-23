@@ -153,6 +153,26 @@ class TestBridgePeelInPlanner:
         segments = _plan_tool_batch_segments(calls)
         assert _flatten_ids(segments) == ["a", "t", "b"]
 
+    def test_bridged_mcp_admission_matches_direct_admission(self, mcp_pair, tmp_path, monkeypatch):
+        """The peel restores PARITY, not extra permissiveness: a bridged call
+        to an opted-in MCP tool gets exactly the admission the same tool gets
+        when called directly. Opted-in MCP tools have always shared parallel
+        runs with core path-scoped tools (the server opt-in is the owner's
+        declared contract; the planner has never had per-MCP-tool resource
+        scopes) — the bridge must not silently upgrade OR downgrade that."""
+        monkeypatch.chdir(tmp_path)
+        alpha, _ = mcp_pair
+        direct = _plan_tool_batch_segments([
+            _tc(alpha, "{}", call_id="m1"),
+            _tc("write_file", '{"path":"x.py","content":"a"}', call_id="w1"),
+        ])
+        bridged = _plan_tool_batch_segments([
+            _bridge_tc(alpha, {}, call_id="m1"),
+            _tc("write_file", '{"path":"x.py","content":"a"}', call_id="w1"),
+        ])
+        assert [(k, [c.id for c in cs]) for k, cs in direct] == \
+               [(k, [c.id for c in cs]) for k, cs in bridged]
+
     def test_bridged_path_tools_get_path_conflict_analysis(self, tmp_path, monkeypatch):
         """A write_file smuggled through the bridge must not share a parallel
         segment with a bridged read of the same file — the peel exposes the
@@ -337,6 +357,42 @@ class TestCheckFnFlipBustsToolDefsMemo:
             assert "flip_gated_tool" in names_after
         finally:
             registry.deregister("flip_gated_tool")
+            model_tools._clear_tool_defs_cache()
+            invalidate_check_fn_cache()
+
+    def test_scope_cache_observes_verdict_flip(self):
+        """Sibling site of the same staleness class: the executor's per-agent
+        deferred-scope cache must also observe an availability flip, or the
+        bridge unwrap keeps rejecting (or admitting) a tool whose probe
+        verdict changed with no registry mutation."""
+        from types import SimpleNamespace as NS
+
+        import model_tools
+        from agent.tool_executor import _tool_search_scoped_names
+        from tools.registry import registry, invalidate_check_fn_cache
+
+        available = {"value": False}
+
+        registry.register(
+            name="mcp__scopeflip__gated",
+            toolset="mcp-scopeflip",
+            schema=_td("mcp__scopeflip__gated", "Gated test tool.")["function"],
+            handler=lambda args, **kw: json.dumps({"ok": True}),
+            check_fn=lambda: available["value"],
+        )
+        agent = NS(enabled_toolsets=["mcp-scopeflip"], disabled_toolsets=None)
+        try:
+            model_tools._clear_tool_defs_cache()
+            invalidate_check_fn_cache()
+
+            assert "mcp__scopeflip__gated" not in _tool_search_scoped_names(agent)
+
+            available["value"] = True
+            invalidate_check_fn_cache()
+
+            assert "mcp__scopeflip__gated" in _tool_search_scoped_names(agent)
+        finally:
+            registry.deregister("mcp__scopeflip__gated")
             model_tools._clear_tool_defs_cache()
             invalidate_check_fn_cache()
 
