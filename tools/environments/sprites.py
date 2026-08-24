@@ -8,6 +8,7 @@ name (``hermes-{task_id}`` on the default profile). Cleanup leaves the Sprite
 running when ``persistent_filesystem`` is True; the Sprite is deleted otherwise.
 """
 
+import hashlib
 import logging
 import os
 import re
@@ -33,8 +34,21 @@ def _slugify_name_component(value: str) -> str:
     Sprite names are DNS-ish: lowercase ``[a-z0-9-]`` with no leading/trailing
     or doubled hyphens. Anything else (``/``, ``.``, uppercase, unicode from a
     profile directory or subagent id) is collapsed to a single hyphen.
+
+    Because a Sprite name is a durable trust boundary (it selects a live VM,
+    not just a label), the mapping must stay injective: two distinct inputs
+    must never yield the same name. When collapsing is lossy (the slug is not
+    byte-identical to the input), a short hash of the raw value is appended so
+    e.g. the ``team_prod`` and ``team-prod`` profiles get distinct Sprites.
+    Values that are already slug-clean — every name the backend historically
+    produced — are unchanged, so existing Sprites keep resolving.
     """
-    return re.sub(r"[^a-z0-9]+", "-", (value or "").lower()).strip("-")
+    raw = value or ""
+    slug = re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")
+    if slug == raw:
+        return slug
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:6]
+    return f"{slug}-{digest}" if slug else digest
 
 
 def _resolve_sprite_name(task_id: str) -> str:
@@ -48,12 +62,19 @@ def _resolve_sprite_name(task_id: str) -> str:
 
     The default profile keeps the historical ``hermes-{task_id}`` name so
     already-created Sprites keep resolving after this change.
+
+    Profile resolution failure raises rather than falling back: silently
+    entering the default profile's durable namespace would put a named
+    profile's session inside another trust domain's live VM.
     """
     try:
         from agent.file_safety import _resolve_active_profile_name
         profile = _resolve_active_profile_name()
-    except Exception:
-        profile = "default"
+    except Exception as e:
+        raise RuntimeError(
+            "Sprites backend could not resolve the active Hermes profile; "
+            f"refusing to fall back to the default profile's Sprite: {e}"
+        ) from e
     task_slug = _slugify_name_component(task_id) or "default"
     profile_slug = _slugify_name_component(profile) if profile else ""
     if profile_slug and profile_slug != "default":

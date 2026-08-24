@@ -238,17 +238,36 @@ class TestSpriteNaming:
         from tools.environments.sprites import _resolve_sprite_name
         self._set_profile(monkeypatch, "Team/Prod.01")
         name = _resolve_sprite_name("sub agent_42")
-        assert name == "hermes-team-prod-01-sub-agent-42"
+        # Lossy components carry a short hash suffix so distinct raw values
+        # can never collapse to the same durable Sprite identity.
+        assert name.startswith("hermes-team-prod-01-")
+        assert "sub-agent-42-" in name
         # Only lowercase alnum + single interior hyphens (Fly/DNS-safe).
         assert re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name)
+
+    def test_clean_components_are_unchanged(self, monkeypatch):
+        """Already-slug-clean values get no hash suffix (legacy names resolve)."""
+        from tools.environments.sprites import _resolve_sprite_name
+        self._set_profile(monkeypatch, "work")
+        assert _resolve_sprite_name("mytask") == "hermes-work-mytask"
+
+    def test_lossy_profile_slugs_do_not_collide(self, monkeypatch):
+        """team_prod and team-prod are distinct profiles → distinct Sprites."""
+        from tools.environments.sprites import _resolve_sprite_name
+        self._set_profile(monkeypatch, "team_prod")
+        a = _resolve_sprite_name("default")
+        self._set_profile(monkeypatch, "team-prod")
+        b = _resolve_sprite_name("default")
+        assert a != b
 
     def test_empty_task_id_falls_back(self, monkeypatch):
         from tools.environments.sprites import _resolve_sprite_name
         self._set_profile(monkeypatch, "default")
         assert _resolve_sprite_name("") == "hermes-default"
 
-    def test_profile_resolution_failure_is_non_fatal(self, monkeypatch):
-        """A broken profile resolver must not break Sprite naming."""
+    def test_profile_resolution_failure_fails_closed(self, monkeypatch):
+        """A broken profile resolver must not enter the default namespace."""
+        import pytest
         from tools.environments import sprites as sprites_mod
 
         def _boom():
@@ -257,7 +276,8 @@ class TestSpriteNaming:
         monkeypatch.setattr(
             "agent.file_safety._resolve_active_profile_name", _boom, raising=False
         )
-        assert sprites_mod._resolve_sprite_name("x") == "hermes-x"
+        with pytest.raises(RuntimeError, match="refusing to fall back"):
+            sprites_mod._resolve_sprite_name("x")
 
 
 class TestDispatchWiring:
