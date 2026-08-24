@@ -47,10 +47,16 @@ def _force_sprites(monkeypatch):
 
 @pytest.fixture()
 def task_id(request):
-    """Unique task_id per test; sprite is cleaned up afterwards."""
+    """Unique task_id per test; environment is cleaned up afterwards.
+
+    Cleanup must use the collapsed container key (ordinary ids map to
+    "default" in `_resolve_container_task_id`) — the raw id would pop
+    nothing and leak the live env across tests.
+    """
     tid = f"sprites_test_{request.node.name}"
     yield tid
-    cleanup_vm(tid)
+    from tools.terminal_tool import _resolve_container_task_id
+    cleanup_vm(_resolve_container_task_id(tid))
 
 
 def _run(command, task_id, **kwargs):
@@ -118,16 +124,40 @@ class TestSpritesIdentity:
 
 class TestSpritesPersistence:
     def test_filesystem_survives_session_recycle(self):
-        """Write a marker, tear down the env, resume — file should still be there."""
+        """Write a marker, tear down the env, resume — file should still be there.
+
+        NOTE: `_resolve_container_task_id` collapses ordinary task ids to
+        "default", so `_active_environments` keys the live env under
+        "default" — NOT under the raw task string. `cleanup_vm(<raw task>)`
+        would pop nothing (a vacuous recycle that silently reuses the same
+        in-memory env object). Tear down via the collapsed key so the second
+        _run genuinely re-creates the environment and resumes the Sprite by
+        name over the API.
+        """
         task = "sprites_test_persist"
+        from tools.terminal_tool import _resolve_container_task_id
+        env_key = _resolve_container_task_id(task)
         try:
             os.environ["TERMINAL_CONTAINER_PERSISTENT"] = "true"
             _run("echo 'survive' > /tmp/sprites_persist.txt", task)
-            cleanup_vm(task)  # persistent=true → leaves the sprite alive
+
+            # Prove the env actually lives under the collapsed key, then
+            # recycle it. persistent=true → the Sprite itself stays alive.
+            from tools.terminal_tool import _active_environments
+            assert env_key in _active_environments, (
+                f"env registered under {list(_active_environments)}, "
+                f"expected key {env_key!r}"
+            )
+            first_env = _active_environments[env_key]
+            cleanup_vm(env_key)
+            assert env_key not in _active_environments
 
             r = _run("cat /tmp/sprites_persist.txt", task)
             assert r["exit_code"] == 0
             assert "survive" in r["output"]
+            # And the read ran in a NEW environment object (a real resume,
+            # not a lingering reference to the old one).
+            assert _active_environments.get(env_key) is not first_env
         finally:
             os.environ["TERMINAL_CONTAINER_PERSISTENT"] = "false"
-            cleanup_vm(task)  # force-delete on the way out
+            cleanup_vm(env_key)  # force-delete on the way out
