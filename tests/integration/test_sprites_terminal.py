@@ -81,9 +81,11 @@ def _force_sprites(monkeypatch):
 def task_id(request):
     """Unique task_id per test; environment is cleaned up afterwards.
 
-    Cleanup must use the collapsed container key (ordinary ids map to
-    "default" in `_resolve_container_task_id`) — the raw id would pop
-    nothing and leak the live env across tests.
+    Cleanup must use the CONTAINER key the env was registered under —
+    `_resolve_container_task_id` is mode-dependent: with this suite's
+    non-persistent config, session isolation keys per task id; under
+    persistent mode ordinary ids collapse to "default". Resolving at
+    teardown time (same env state) always yields the registration key.
     """
     tid = f"sprites_test_{request.node.name}"
     yield tid
@@ -154,19 +156,25 @@ class TestSpritesPersistence:
     def test_filesystem_survives_session_recycle(self):
         """Write a marker, tear down the env, resume — file should still be there.
 
-        NOTE: `_resolve_container_task_id` collapses ordinary task ids to
+        NOTE: `_resolve_container_task_id` is persistence-mode-dependent.
+        Under persistent mode (this test) ordinary task ids collapse to
         "default", so `_active_environments` keys the live env under
-        "default" — NOT under the raw task string. `cleanup_vm(<raw task>)`
+        "default" — NOT under the raw task string; `cleanup_vm(<raw task>)`
         would pop nothing (a vacuous recycle that silently reuses the same
-        in-memory env object). Tear down via the collapsed key so the second
-        _run genuinely re-creates the environment and resumes the Sprite by
-        name over the API. All registry reads use the SAME module object the
-        commands executed through (`terminal_module`, bound at import).
+        in-memory env object). Tear down via the registration key so the
+        second _run genuinely re-creates the environment and resumes the
+        Sprite by name over the API. All registry reads use the SAME module
+        object the commands executed through (`terminal_module`, bound at
+        import).
         """
         task = "sprites_test_persist"
+        # Persistence must be set BEFORE computing the env key: with
+        # container_persistent=false this suite runs session-isolated
+        # (per-task keys), while persistent mode collapses ordinary ids
+        # to the shared "default" key — the key is mode-dependent.
+        os.environ["TERMINAL_CONTAINER_PERSISTENT"] = "true"
         env_key = _resolve_container_task_id(task)
         try:
-            os.environ["TERMINAL_CONTAINER_PERSISTENT"] = "true"
             _run("echo 'survive' > /tmp/sprites_persist.txt", task)
 
             # Prove the env actually lives under the collapsed key, then
