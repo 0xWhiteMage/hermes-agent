@@ -3,8 +3,9 @@
 Uses the sprites-py SDK (https://github.com/superfly/sprites-py) to run
 commands in Sprites — stateful cloud sandboxes on Fly.io, with
 checkpoint & restore. Persistent by default: each Sprite outlives the session
-and is reused via a deterministic, profile-scoped ``hermes-{profile}-{task_id}``
-name (``hermes-{task_id}`` on the default profile). Cleanup leaves the Sprite
+and is reused via a deterministic, profile-scoped name — ``hermes-{task_id}``
+on the default profile, ``hermes-{display}-{digest}`` on named profiles (see
+``_resolve_sprite_name`` for the full contract). Cleanup leaves the Sprite
 running when ``persistent_filesystem`` is True; the Sprite is deleted otherwise.
 """
 
@@ -27,9 +28,47 @@ from tools.environments.file_sync import (
 logger = logging.getLogger(__name__)
 
 
+#: Hard bound on generated Sprite names. The name feeds the
+#: ``{name}-random.sprites.app`` hostname, so it must fit a DNS label.
+_MAX_NAME_LEN = 63
+
+#: Hex chars of identity digest carried in non-legacy names (48 bits — a
+#: collision needs ~2^24 coexisting identities, versus 2^12 at the previous
+#: 6 chars, where a collision between valid profile names was demonstrated).
+_DIGEST_LEN = 12
+
+
 def _collapse_slug(value: str) -> str:
     """Plain DNS-safe collapse: lowercase, non-alnum runs become one hyphen."""
     return re.sub(r"[^a-z0-9]+", "-", (value or "").lower()).strip("-")
+
+
+def _identity_digest(*parts: str) -> str:
+    """Collision-resistant digest of an ordered tuple of raw strings.
+
+    Each component is length-prefixed before hashing, so the encoding is
+    unambiguous: ``("a\\x1fb", "c")`` and ``("a", "b\\x1fc")`` digest
+    differently no matter what bytes the components contain.
+    """
+    h = hashlib.sha256()
+    for part in parts:
+        b = (part or "").encode("utf-8")
+        h.update(len(b).to_bytes(4, "big"))
+        h.update(b)
+    return h.hexdigest()[:_DIGEST_LEN]
+
+
+def _bounded_name(display: str, digest: str) -> str:
+    """Compose ``hermes-{display}-{digest}`` within ``_MAX_NAME_LEN``.
+
+    The digest is the authoritative identity and is never truncated; the
+    human-readable display slug absorbs all the shortening.
+    """
+    budget = _MAX_NAME_LEN - len("hermes-") - 1 - len(digest)
+    display = (display or "")[:budget].strip("-")
+    if display:
+        return f"hermes-{display}-{digest}"
+    return f"hermes-{digest}"
 
 
 def _slugify_name_component(value: str) -> str:
@@ -100,31 +139,39 @@ def _resolve_sprite_name(task_id: str) -> str:
     identity of a session's live sandbox (processes, sockets, PID space — not
     just a filesystem snapshot). Naming contract:
 
-    - Default profile: ``hermes-{task_slug}`` — byte-compatible with the
-      historical names, so already-created Sprites keep resolving. Clean
-      task ids are verbatim-injective; lossy ones carry a per-component
-      hash (see ``_slugify_name_component``).
-    - Named profile / custom HERMES_HOME: ``hermes-{profile_slug}-
-      {task_slug}-{digest6}`` where the digest covers the raw
-      ``(profile, task_id)`` pair. The digest makes the full identity
-      injective across component boundaries — profile ``a-b`` + task ``c``
-      and profile ``a`` + task ``b-c`` no longer collapse to one name —
-      and across profiles whose display slugs collide.
+    - Default profile, short task: ``hermes-{task_slug}`` — byte-compatible
+      with the historical names, so already-created Sprites keep resolving.
+      Clean task ids are verbatim-injective; lossy ones carry a
+      per-component hash (see ``_slugify_name_component``).
+    - Named profile / custom HERMES_HOME: ``hermes-{display}-{digest12}``
+      where the digest covers the raw ``(profile, task_id)`` pair via a
+      length-prefixed encoding (see ``_identity_digest``). The digest is the
+      authoritative identity: it is collision-resistant across component
+      boundaries, display-slug collisions, and separator forgery; the
+      display prefix is cosmetic and is truncated to keep the whole name
+      within a DNS label.
+    - Any name that would exceed the DNS bound is composed via
+      ``_bounded_name`` with the digest preserved intact.
 
     Profile resolution failure raises rather than falling back: silently
     entering the default profile's durable namespace would put a named
     profile's session inside another trust domain's live VM.
     """
     profile_raw = _resolve_profile_identity()
-    task_slug = _slugify_name_component(task_id) or "default"
     if profile_raw is None:
-        return f"hermes-{task_slug}"
+        task_slug = _slugify_name_component(task_id) or "default"
+        legacy = f"hermes-{task_slug}"
+        if len(legacy) <= _MAX_NAME_LEN:
+            return legacy
+        # Too long for a DNS label (e.g. a session-keyed task id): fall to
+        # the bounded form; the pair digest carries the identity.
+        return _bounded_name(
+            _collapse_slug(task_id), _identity_digest("", task_id or "")
+        )
     profile_slug = _collapse_slug(profile_raw) or "profile"
     task_display = _collapse_slug(task_id) or "default"
-    digest = hashlib.sha256(
-        f"{profile_raw}\x1f{task_id or ''}".encode("utf-8")
-    ).hexdigest()[:6]
-    return f"hermes-{profile_slug}-{task_display}-{digest}"
+    digest = _identity_digest(profile_raw, task_id or "")
+    return _bounded_name(f"{profile_slug}-{task_display}", digest)
 
 
 class SpritesEnvironment(BaseEnvironment):

@@ -110,13 +110,12 @@ def make_env(sprites_sdk, monkeypatch):
     )
     # Keep the base class from blocking forever on interrupt polling
     monkeypatch.setattr("tools.environments.base.is_interrupted", lambda: False)
-    # Pin the active profile to "default" so Sprite names are deterministic
-    # regardless of the test runner's HERMES_HOME. Profile-scoping itself is
-    # covered explicitly in TestSpriteNaming.
+    # Pin the profile identity to default (None) so Sprite names are
+    # deterministic regardless of the test runner's HERMES_HOME.
+    # Profile-scoping itself is covered explicitly in TestSpriteNaming.
     monkeypatch.setattr(
-        "agent.file_safety._resolve_active_profile_name",
-        lambda: "default",
-        raising=False,
+        "tools.environments.sprites._resolve_profile_identity",
+        lambda: None,
     )
 
     def _factory(get_side_effect=None, sprite=None, **kwargs):
@@ -243,8 +242,8 @@ class TestSpriteNaming:
         self._set_profile(monkeypatch, "work")
         # Exact literals: profile slug + task slug + 6-hex digest over the
         # raw (profile, task) pair.
-        assert _resolve_sprite_name("default") == "hermes-work-default-4d0282"
-        assert _resolve_sprite_name("mytask") == "hermes-work-mytask-34c27a"
+        assert _resolve_sprite_name("default") == "hermes-work-default-a092ad600654"
+        assert _resolve_sprite_name("mytask") == "hermes-work-mytask-0bba1287573c"
 
     def test_independent_profiles_do_not_collide(self, monkeypatch):
         """Same task_id under two different profiles → distinct Sprites."""
@@ -253,8 +252,8 @@ class TestSpriteNaming:
         a = _resolve_sprite_name("default")
         self._set_profile(monkeypatch, "beta")
         b = _resolve_sprite_name("default")
-        assert a == "hermes-alpha-default-179156"
-        assert b == "hermes-beta-default-0b80a2"
+        assert a == "hermes-alpha-default-f763b5cbf547"
+        assert b == "hermes-beta-default-8ab8e3ddf43d"
         assert a != b
 
     def test_component_boundaries_do_not_collide(self, monkeypatch):
@@ -264,8 +263,8 @@ class TestSpriteNaming:
         x = _resolve_sprite_name("c")
         self._set_profile(monkeypatch, "a")
         y = _resolve_sprite_name("b-c")
-        assert x == "hermes-a-b-c-e09594"
-        assert y == "hermes-a-b-c-6726a6"
+        assert x == "hermes-a-b-c-78208f2b509c"
+        assert y == "hermes-a-b-c-590074485363"
         assert x != y
 
     def test_same_identity_resumes(self, monkeypatch):
@@ -275,8 +274,49 @@ class TestSpriteNaming:
         assert (
             _resolve_sprite_name("t")
             == _resolve_sprite_name("t")
-            == "hermes-work-t-2634a3"
+            == "hermes-work-t-4825428fa506"
         )
+
+    def test_names_are_dns_bounded(self, monkeypatch):
+        """No generated name exceeds a DNS label; the digest survives intact."""
+        import re
+        from tools.environments.sprites import (
+            _MAX_NAME_LEN,
+            _identity_digest,
+            _resolve_sprite_name,
+        )
+        long_home = "home:/Users/someone/Library/Application Support/custom-hermes-home"
+        long_task = "session:agent:main:telegram:" + "x" * 60
+        cases = [
+            (long_home, "default"),
+            (long_home, long_task),
+            ("work", long_task),
+            (None, long_task),  # default profile, oversized session task
+        ]
+        for profile, task in cases:
+            self._set_profile(monkeypatch, profile)
+            name = _resolve_sprite_name(task)
+            assert len(name) <= _MAX_NAME_LEN, (profile, task, name)
+            assert re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name)
+            # The authoritative digest is the untruncated tail.
+            expected_digest = _identity_digest(profile or "", task or "")
+            assert name.endswith(expected_digest), (name, expected_digest)
+
+    def test_short_default_profile_names_stay_legacy(self, monkeypatch):
+        """The DNS bound must not disturb historical default-profile names."""
+        from tools.environments.sprites import _resolve_sprite_name
+        self._set_profile(monkeypatch, None)
+        assert _resolve_sprite_name("default") == "hermes-default"
+        assert _resolve_sprite_name("mytask") == "hermes-mytask"
+
+    def test_separator_forgery_does_not_collide(self, monkeypatch):
+        """Length-prefixed digest: embedded separators cannot forge a boundary."""
+        from tools.environments.sprites import _resolve_sprite_name
+        self._set_profile(monkeypatch, "a\x1fb")
+        x = _resolve_sprite_name("c")
+        self._set_profile(monkeypatch, "a")
+        y = _resolve_sprite_name("b\x1fc")
+        assert x != y
 
     def test_names_are_sanitized(self, monkeypatch):
         """Messy profile/task components collapse to a Sprite-safe slug.
@@ -289,7 +329,7 @@ class TestSpriteNaming:
         from tools.environments.sprites import _resolve_sprite_name
         self._set_profile(monkeypatch, "Team.Prod")
         name = _resolve_sprite_name("sub agent_42")
-        assert name == "hermes-team-prod-sub-agent-42-078311"
+        assert name == "hermes-team-prod-sub-agent-42-ca9aa4d02adc"
         # Only lowercase alnum + single interior hyphens (Fly/DNS-safe).
         assert re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name)
 
@@ -306,8 +346,8 @@ class TestSpriteNaming:
         a = _resolve_sprite_name("default")
         self._set_profile(monkeypatch, "team-prod")
         b = _resolve_sprite_name("default")
-        assert a == "hermes-team-prod-default-2ae4a8"
-        assert b == "hermes-team-prod-default-c4b2de"
+        assert a == "hermes-team-prod-default-e11db62b701d"
+        assert b == "hermes-team-prod-default-264eccd5d608"
         assert a != b
 
     def test_empty_task_id_falls_back(self, monkeypatch):
