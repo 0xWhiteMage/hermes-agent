@@ -1608,19 +1608,23 @@ def setup_terminal_backend(config: dict):
             print_info("Installing sprites-py SDK...")
             import subprocess
 
+            # Keep this spec in sync with pyproject.toml's [sprites] extra —
+            # a bare install here would bypass the reviewed supply-chain bound.
+            _SPRITES_SPEC = "sprites-py>=0.5.0,<0.6"
+
             # Managed uv first — same rationale as the Vercel branch above.
             from hermes_cli.managed_uv import ensure_uv
 
             uv_bin = ensure_uv()
             if uv_bin:
                 result = subprocess.run(
-                    [uv_bin, "pip", "install", "--python", sys.executable, "sprites-py"],
+                    [uv_bin, "pip", "install", "--python", sys.executable, _SPRITES_SPEC],
                     capture_output=True,
                     text=True,
                 )
             else:
                 result = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "sprites-py"],
+                    [sys.executable, "-m", "pip", "install", _SPRITES_SPEC],
                     capture_output=True,
                     text=True,
                 )
