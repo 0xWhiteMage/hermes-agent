@@ -261,7 +261,8 @@ class SpritesEnvironment(BaseEnvironment):
         # the shell-level ``timeout`` wrapper used by other backends. Never
         # pass None: the SDK has no kill hook on a running Cmd
         # (cancel_fn=None below), so an unbounded exec in a persistent VM
-        # could run — and bill — forever. Cap at a generous ceiling instead.
+        # could run — and bill — forever. Absent/nonpositive timeouts get a
+        # generous fallback deadline (explicit positive values pass through).
         cmd_timeout = float(timeout) if timeout and timeout > 0 else 3600.0
 
         def exec_fn() -> tuple[str, int]:
