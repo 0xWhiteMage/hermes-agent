@@ -1363,20 +1363,36 @@ def _resolve_container_alias(task_id: str) -> str:
     return key
 
 
-def _docker_session_isolation_enabled() -> bool:
-    """True when docker sessions get their OWN containers (issue: stale
-    workspace mounts leaking between desktop sessions).
+def _session_isolation_enabled() -> bool:
+    """True when non-persistent sandboxes get per-session identities.
 
-    Gated on ``terminal.backend: docker`` + ``container_persistent: false``:
-    a non-persistent sandbox is a statement that state must not survive the
-    session, so sharing one container across sessions contradicts it. With
-    ``container_persistent: true`` the documented ONE-long-lived-container
-    contract is unchanged.
+    ``container_persistent: false`` is a repository-wide contract (#82731):
+    a non-persistent sandbox is a statement that state must not survive or
+    be shared across sessions, so sharing one sandbox across sessions
+    contradicts it. Backends whose non-persistent mode is session-scoped:
+
+    - ``docker`` — per-session containers (the original #82731 fix).
+    - ``sprites`` — per-session/per-process ephemeral Sprites; a durable
+      Sprite is resumed *by name*, so a shared deterministic name under
+      non-persistent mode would let two independent ephemeral runs attach
+      one live VM and delete it out from under each other.
     """
     _ensure_terminal_env_bridged()
-    if os.getenv("TERMINAL_ENV", "local") != "docker":
+    if os.getenv("TERMINAL_ENV", "local") not in {"docker", "sprites"}:
         return False
     return os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() not in {"true", "1", "yes"}
+
+
+def _docker_session_isolation_enabled() -> bool:
+    """Docker-specific view of :func:`_session_isolation_enabled`.
+
+    Kept separate because several docker-only paths (workspace mount
+    selection, session-scoped container teardown) key off it; those must
+    not fire for other backends.
+    """
+    if os.getenv("TERMINAL_ENV", "local") != "docker":
+        return False
+    return _session_isolation_enabled()
 
 
 _ISOLATION_OVERRIDE_KEYS = frozenset({
@@ -1430,7 +1446,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     """
     if task_id and _has_isolation_overrides(task_id):
         return task_id
-    if task_id and _docker_session_isolation_enabled():
+    if task_id and _session_isolation_enabled():
         return _resolve_container_alias(task_id)
     # Per-session isolation: when a session key is present (the WebUI streaming
     # layer sets it per-session, the gateway per-message via contextvars), scope

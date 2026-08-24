@@ -14,6 +14,7 @@ import logging
 import re
 import shlex
 import threading
+import uuid
 from pathlib import Path
 
 from tools.environments.base import (
@@ -174,6 +175,19 @@ def _resolve_sprite_name(task_id: str) -> str:
     return _bounded_name(f"{profile_slug}-{task_display}", digest)
 
 
+def _ephemeral_sprite_name(task_id: str) -> str:
+    """Unique, non-resumable Sprite name for a non-persistent run.
+
+    Ephemeral Sprites are created fresh and deleted on cleanup; their names
+    deliberately contain a random component so no two runs — concurrent or
+    sequential, same process or not — can ever attach the same live VM, and
+    a stale survivor of a crashed run is never silently resumed.
+    """
+    nonce = uuid.uuid4().hex[:12]
+    display = _collapse_slug(task_id) or "default"
+    return _bounded_name(f"eph-{display}", nonce)
+
+
 class SpritesEnvironment(BaseEnvironment):
     """Sprites backend: stateful cloud sandboxes on Fly.io.
 
@@ -229,37 +243,53 @@ class SpritesEnvironment(BaseEnvironment):
         # storage / region) — sandboxes get default sizing. We omit SpriteConfig
         # entirely so the wire format stays minimal until the platform exposes
         # these knobs.
-        sprite_name = _resolve_sprite_name(task_id)
-        self._sprite_name = sprite_name
-        try:
-            self._sprite = self._client.get_sprite(sprite_name)
-            logger.info(
-                "Sprites: resumed existing sprite %s for task %s",
-                self._sprite.name, task_id,
-            )
-        except NotFoundError:
-            # Cross-process first-use race: two processes can both see 404
-            # here; one create wins and the other gets a duplicate-name
-            # error. Adopt the winner instead of failing — re-GET the exact
-            # deterministic name, and only re-raise the create error if the
-            # Sprite genuinely does not exist (a real create failure, not a
-            # race).
+        if persistent_filesystem:
+            sprite_name = _resolve_sprite_name(task_id)
+            self._sprite_name = sprite_name
             try:
-                self._sprite = self._client.create_sprite(sprite_name)
+                self._sprite = self._client.get_sprite(sprite_name)
                 logger.info(
-                    "Sprites: created sprite %s for task %s",
+                    "Sprites: resumed existing sprite %s for task %s",
                     self._sprite.name, task_id,
                 )
-            except SpriteError as create_err:
+            except NotFoundError:
+                # Cross-process first-use race: two processes can both see
+                # 404 here; one create wins and the other gets a duplicate-
+                # name error. Adopt the winner instead of failing — re-GET
+                # the exact deterministic name, and only re-raise the create
+                # error if the Sprite genuinely does not exist (a real
+                # create failure, not a race).
                 try:
-                    self._sprite = self._client.get_sprite(sprite_name)
+                    self._sprite = self._client.create_sprite(sprite_name)
                     logger.info(
-                        "Sprites: adopted sprite %s created concurrently "
-                        "by another process (task %s)",
+                        "Sprites: created sprite %s for task %s",
                         self._sprite.name, task_id,
                     )
-                except NotFoundError:
-                    raise create_err
+                except SpriteError as create_err:
+                    try:
+                        self._sprite = self._client.get_sprite(sprite_name)
+                        logger.info(
+                            "Sprites: adopted sprite %s created concurrently "
+                            "by another process (task %s)",
+                            self._sprite.name, task_id,
+                        )
+                    except NotFoundError:
+                        raise create_err
+        else:
+            # Ephemeral (container_persistent: false): the sandbox must not
+            # survive or be shared across sessions (#82731 contract). A
+            # deterministic name would let two independent ephemeral runs
+            # attach one live VM — and either cleanup would delete it out
+            # from under the other — or silently resume a stale survivor of
+            # a crashed prior run. Mint a unique name and NEVER adopt: this
+            # constructor only ever creates.
+            sprite_name = _ephemeral_sprite_name(task_id)
+            self._sprite_name = sprite_name
+            self._sprite = self._client.create_sprite(sprite_name)
+            logger.info(
+                "Sprites: created ephemeral sprite %s for task %s",
+                self._sprite.name, task_id,
+            )
 
         # Detect remote home dir for .hermes sync target.
         self._remote_home = "/root"

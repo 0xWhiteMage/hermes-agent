@@ -184,6 +184,53 @@ class TestConstruction:
         assert kwargs == {}
 
 
+class TestEphemeralIsolation:
+    """container_persistent: false — the #82731 contract on Sprites.
+
+    A non-persistent sandbox must not survive or be shared across sessions.
+    An ephemeral constructor therefore mints a unique name and only ever
+    CREATES — it must never adopt a pre-existing Sprite (a peer's live VM,
+    or the stale survivor of a crashed prior run).
+    """
+
+    def test_ephemeral_never_adopts(self, make_env):
+        env = make_env(task_id="mine", persistent_filesystem=False)
+        env._mock_client.get_sprite.assert_not_called()
+        env._mock_client.create_sprite.assert_called_once()
+
+    def test_ephemeral_names_are_unique_per_construction(self, make_env):
+        a = make_env(task_id="mine", persistent_filesystem=False)
+        b = make_env(task_id="mine", persistent_filesystem=False)
+        assert a._sprite_name != b._sprite_name
+        assert a._sprite_name.startswith("hermes-eph-mine-")
+        assert b._sprite_name.startswith("hermes-eph-mine-")
+
+    def test_ephemeral_names_are_dns_bounded(self):
+        import re
+        from tools.environments.sprites import (
+            _MAX_NAME_LEN,
+            _ephemeral_sprite_name,
+        )
+        name = _ephemeral_sprite_name("session:agent:main:telegram:" + "x" * 60)
+        assert len(name) <= _MAX_NAME_LEN
+        assert re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name)
+
+    def test_session_isolation_covers_sprites(self, monkeypatch):
+        """terminal_tool keys non-persistent sprites per session, not 'default'."""
+        import tools.terminal_tool as tt
+        monkeypatch.setenv("TERMINAL_ENV", "sprites")
+        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "false")
+        assert tt._session_isolation_enabled() is True
+        # Docker-only paths (workspace mounts, container teardown) stay off.
+        assert tt._docker_session_isolation_enabled() is False
+        # An ordinary session task id no longer collapses onto the shared key.
+        assert tt._resolve_container_task_id("session-abc123") != "default"
+        # Persistent mode keeps the documented shared-Sprite contract.
+        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+        assert tt._session_isolation_enabled() is False
+        assert tt._resolve_container_task_id("session-abc123") == "default"
+
+
 class TestPersistentCreateRace:
     """Cross-process first-use TOCTOU: GET 404 → CREATE loses to a peer."""
 

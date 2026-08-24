@@ -69,8 +69,12 @@ def _force_sprites(monkeypatch):
     # Sandbox every test into the run-unique namespace: without this, task-id
     # collapse would resume the operator's REAL hermes-{profile}-default
     # Sprite and the ephemeral teardown would DELETE it (filesystem and all).
+    # Both naming paths are pinned: persistent envs resolve via
+    # _resolve_sprite_name, ephemeral envs (this suite's default) via
+    # _ephemeral_sprite_name.
     import tools.environments.sprites as sprites_mod
     monkeypatch.setattr(sprites_mod, "_resolve_sprite_name", _test_sprite_name)
+    monkeypatch.setattr(sprites_mod, "_ephemeral_sprite_name", _test_sprite_name)
 
 
 @pytest.fixture()

@@ -462,6 +462,8 @@ terminal:
   container_persistent: true       # Leave the Sprite alive on cleanup (delete if false)
 ```
 
+With `container_persistent: false`, every session gets its **own single-use Sprite** (a unique `hermes-eph-…` name, created fresh and deleted on cleanup) — matching the repository-wide contract that a non-persistent sandbox never survives or is shared across sessions. The identity scheme above applies to persistent mode, where resume-by-name is the point.
+
 Sprites allocates compute dynamically (up to 8 CPU / 16 GB RAM per Sprite); user-selectable CPU/memory/disk/region knobs aren't exposed yet, so the usual `container_cpu` / `container_memory` / `container_disk` settings are ignored on this backend.
 
 **Required install:** Install the optional SDK extra:
