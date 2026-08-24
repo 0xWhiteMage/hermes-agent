@@ -278,12 +278,17 @@ class SpritesEnvironment(BaseEnvironment):
         remote.write_bytes(data)
 
     def _sprite_delete(self, remote_paths: list[str]) -> None:
-        """Delete remote files; missing entries are tolerated."""
+        """Delete remote files.
+
+        Missing files are benign (``missing_ok=True``); any OTHER failure
+        must propagate so ``FileSyncManager`` rolls back and retries on the
+        next cycle. Swallowing errors here would falsely commit the deletion
+        — the manager drops the path from its synced set and never retries,
+        which can leave stale credential material in a durable Sprite
+        permanently.
+        """
         for rp in remote_paths:
-            try:
-                (self._fs / rp).unlink(missing_ok=True)
-            except Exception as e:
-                logger.debug("Sprites: delete %s failed: %s", rp, e)
+            (self._fs / rp).unlink(missing_ok=True)
 
     # ------------------------------------------------------------------
     # Execution

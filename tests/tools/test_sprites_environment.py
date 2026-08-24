@@ -184,6 +184,61 @@ class TestConstruction:
         assert kwargs == {}
 
 
+class TestDeleteFailurePropagates:
+    """_sprite_delete must honor FileSyncManager's rollback transaction.
+
+    The manager commits a deletion (drops it from _synced_files, never
+    retries) when the delete callback RETURNS; it rolls back and retries
+    only when the callback RAISES. Swallowing a transient remote failure
+    therefore leaves stale credential material in a durable Sprite forever.
+    """
+
+    def test_unlink_failure_raises(self, make_env):
+        env = make_env(task_id="del", persistent_filesystem=True)
+        remote = MagicMock()
+        remote.unlink.side_effect = OSError("websocket dropped")
+        env._fs = MagicMock()
+        env._fs.__truediv__ = MagicMock(return_value=remote)
+        with pytest.raises(OSError, match="websocket dropped"):
+            env._sprite_delete(["/home/sprite/.hermes/.env"])
+
+    def test_sync_manager_rolls_back_and_retries_on_delete_failure(self, tmp_path):
+        """End-to-end against the real FileSyncManager transaction."""
+        from tools.environments.file_sync import FileSyncManager
+
+        secret = tmp_path / "cred.env"
+        secret.write_text("KEY=old")
+        files = [(str(secret), "/remote/.hermes/cred.env")]
+
+        deletes: list[list[str]] = []
+        fail_next = {"flag": False}
+
+        def _delete(paths):
+            deletes.append(list(paths))
+            if fail_next["flag"]:
+                fail_next["flag"] = False
+                raise OSError("transient remote failure")
+
+        mgr = FileSyncManager(
+            get_files_fn=lambda: list(files),
+            upload_fn=lambda h, r: None,
+            delete_fn=_delete,
+        )
+        mgr.sync(force=True)  # baseline: credential synced
+
+        # Rotate the credential away locally; first delete attempt fails.
+        files.clear()
+        fail_next["flag"] = True
+        mgr.sync(force=True)
+        assert "/remote/.hermes/cred.env" in mgr._synced_files, (
+            "failed deletion must not be committed"
+        )
+        # Next cycle retries and clears it.
+        mgr.sync(force=True)
+        assert "/remote/.hermes/cred.env" not in mgr._synced_files
+        assert len(deletes) == 2
+
+
 class TestSpriteNaming:
     """`_resolve_sprite_name`: deterministic, profile-scoped Sprite identity.
 
