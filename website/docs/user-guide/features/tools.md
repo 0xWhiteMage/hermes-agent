@@ -192,7 +192,7 @@ pip install 'hermes-agent[sprites]'
 hermes config set terminal.backend sprites
 ```
 
-Authenticate with `SPRITES_TOKEN` (`sprite login`, or `sprite auth setup --token …` from the [Sprites CLI](https://sprites.dev)). Hermes names each sandbox `hermes-{profile}-{task_id}` (just `hermes-{task_id}` on the default profile) and on every session start either resumes the existing Sprite or creates a fresh one. Scoping the name by profile keeps independent Hermes profiles from sharing one live Sprite.
+Authenticate with `SPRITES_TOKEN` (`sprite login`, or `sprite auth setup --token …` from the [Sprites CLI](https://sprites.dev)). Hermes names each sandbox `hermes-{task_id}` on the default profile and `hermes-{profile}-{task_id}-{digest}` on named profiles (the digest hashes the exact profile+task identity), and on every session start either resumes the existing Sprite or creates a fresh one. Scoping the name by profile keeps independent Hermes profiles from sharing one live Sprite.
 
 **Restricted tokens (recommended for CI / shared envs):** in the Sprites dashboard you can mint a token scoped to a name prefix and a max-sprites cap. Setting the prefix to `hermes` matches Hermes' deterministic naming exactly — the token can manage every sandbox Hermes spawns and nothing else in the account.
 

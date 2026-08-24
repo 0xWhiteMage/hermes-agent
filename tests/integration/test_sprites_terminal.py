@@ -3,9 +3,10 @@
 Requires SPRITES_TOKEN to be set. Run with:
     TERMINAL_ENV=sprites pytest tests/integration/test_sprites_terminal.py -v
 
-SAFETY: every test runs in a run-unique ``hermes-test-…`` Sprite namespace
-(see ``_force_sprites``); the suite can never resume or delete a real
-profile's ``hermes-{profile}-default`` Sprite.
+SAFETY: every test runs in a run-unique ``hermes-test-{uuid8}-…`` Sprite
+namespace (see ``_force_sprites``), so the suite does not touch the real
+profile Sprite names production naming emits (a production task id would
+have to spell out this run's random uuid hex to collide).
 """
 
 import json
