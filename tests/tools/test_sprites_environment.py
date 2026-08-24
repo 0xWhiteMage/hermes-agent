@@ -189,31 +189,62 @@ class TestSpriteNaming:
     """`_resolve_sprite_name`: deterministic, profile-scoped Sprite identity.
 
     A Sprite is resumed *by name*, so the name is the durable identity of a
-    session's live sandbox. The name must (a) stay stable so resume works and
+    session's live sandbox. The name must (a) stay stable so resume works,
     (b) differ across independent Hermes profiles so they never resume into
-    one another's live Sprite.
+    one another's live Sprite, and (c) be injective — no two distinct
+    (profile, task) identities may map to one name. Named-profile names are
+    pinned to exact literals (including the identity digest) so any change
+    to the digest scheme — which silently orphans every live named-profile
+    Sprite — fails loudly here.
     """
 
     @staticmethod
     def _set_profile(monkeypatch, name):
+        """Point profile-identity resolution at profile *name* (None=default)."""
         monkeypatch.setattr(
-            "agent.file_safety._resolve_active_profile_name",
+            "tools.environments.sprites._resolve_profile_identity",
             lambda: name,
-            raising=False,
         )
 
     def test_default_profile_keeps_legacy_name(self, monkeypatch):
         from tools.environments.sprites import _resolve_sprite_name
-        self._set_profile(monkeypatch, "default")
+        self._set_profile(monkeypatch, None)
         # Backward compatible with Sprites created before profile scoping.
         assert _resolve_sprite_name("default") == "hermes-default"
         assert _resolve_sprite_name("mytask") == "hermes-mytask"
 
+    def test_default_profile_resolution_from_paths(self, monkeypatch, tmp_path):
+        """The real path-based resolver maps ~/.hermes and profiles/default → None."""
+        import tools.environments.sprites as sprites_mod
+        root = tmp_path / ".hermes"
+        for home in (root, root / "profiles" / "default"):
+            home.mkdir(parents=True, exist_ok=True)
+            monkeypatch.setattr(
+                "agent.file_safety._hermes_home_path", lambda h=home: h
+            )
+            monkeypatch.setattr(
+                "agent.file_safety._hermes_root_path", lambda r=root: r
+            )
+            assert sprites_mod._resolve_profile_identity() is None
+        # A named profile dir resolves to its name.
+        named = root / "profiles" / "work"
+        named.mkdir(parents=True)
+        monkeypatch.setattr("agent.file_safety._hermes_home_path", lambda: named)
+        assert sprites_mod._resolve_profile_identity() == "work"
+        # A custom HERMES_HOME outside the tree is its own identity, not default.
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        monkeypatch.setattr("agent.file_safety._hermes_home_path", lambda: outside)
+        ident = sprites_mod._resolve_profile_identity()
+        assert ident is not None and ident.startswith("home:")
+
     def test_named_profile_is_scoped(self, monkeypatch):
         from tools.environments.sprites import _resolve_sprite_name
         self._set_profile(monkeypatch, "work")
-        assert _resolve_sprite_name("default") == "hermes-work-default"
-        assert _resolve_sprite_name("mytask") == "hermes-work-mytask"
+        # Exact literals: profile slug + task slug + 6-hex digest over the
+        # raw (profile, task) pair.
+        assert _resolve_sprite_name("default") == "hermes-work-default-4d0282"
+        assert _resolve_sprite_name("mytask") == "hermes-work-mytask-34c27a"
 
     def test_independent_profiles_do_not_collide(self, monkeypatch):
         """Same task_id under two different profiles → distinct Sprites."""
@@ -222,34 +253,51 @@ class TestSpriteNaming:
         a = _resolve_sprite_name("default")
         self._set_profile(monkeypatch, "beta")
         b = _resolve_sprite_name("default")
-        assert a == "hermes-alpha-default"
-        assert b == "hermes-beta-default"
+        assert a == "hermes-alpha-default-179156"
+        assert b == "hermes-beta-default-0b80a2"
         assert a != b
+
+    def test_component_boundaries_do_not_collide(self, monkeypatch):
+        """(profile a-b, task c) and (profile a, task b-c) → distinct names."""
+        from tools.environments.sprites import _resolve_sprite_name
+        self._set_profile(monkeypatch, "a-b")
+        x = _resolve_sprite_name("c")
+        self._set_profile(monkeypatch, "a")
+        y = _resolve_sprite_name("b-c")
+        assert x == "hermes-a-b-c-e09594"
+        assert y == "hermes-a-b-c-6726a6"
+        assert x != y
 
     def test_same_identity_resumes(self, monkeypatch):
         """Same (profile, task_id) is stable across calls → resume works."""
         from tools.environments.sprites import _resolve_sprite_name
         self._set_profile(monkeypatch, "work")
-        assert _resolve_sprite_name("t") == _resolve_sprite_name("t") == "hermes-work-t"
+        assert (
+            _resolve_sprite_name("t")
+            == _resolve_sprite_name("t")
+            == "hermes-work-t-2634a3"
+        )
 
     def test_names_are_sanitized(self, monkeypatch):
-        """Messy profile/task components collapse to a Sprite-safe slug."""
+        """Messy profile/task components collapse to a Sprite-safe slug.
+
+        Pinned to the exact literal (display slugs + identity digest): a
+        silent change to the collapse or digest scheme renames — and
+        orphans — every live lossy-named Sprite, so it must fail here.
+        """
         import re
         from tools.environments.sprites import _resolve_sprite_name
-        self._set_profile(monkeypatch, "Team/Prod.01")
+        self._set_profile(monkeypatch, "Team.Prod")
         name = _resolve_sprite_name("sub agent_42")
-        # Lossy components carry a short hash suffix so distinct raw values
-        # can never collapse to the same durable Sprite identity.
-        assert name.startswith("hermes-team-prod-01-")
-        assert "sub-agent-42-" in name
+        assert name == "hermes-team-prod-sub-agent-42-078311"
         # Only lowercase alnum + single interior hyphens (Fly/DNS-safe).
         assert re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name)
 
-    def test_clean_components_are_unchanged(self, monkeypatch):
-        """Already-slug-clean values get no hash suffix (legacy names resolve)."""
+    def test_clean_default_profile_tasks_are_unchanged(self, monkeypatch):
+        """Default-profile clean task ids keep legacy names (resume works)."""
         from tools.environments.sprites import _resolve_sprite_name
-        self._set_profile(monkeypatch, "work")
-        assert _resolve_sprite_name("mytask") == "hermes-work-mytask"
+        self._set_profile(monkeypatch, None)
+        assert _resolve_sprite_name("mytask") == "hermes-mytask"
 
     def test_lossy_profile_slugs_do_not_collide(self, monkeypatch):
         """team_prod and team-prod are distinct profiles → distinct Sprites."""
@@ -258,24 +306,27 @@ class TestSpriteNaming:
         a = _resolve_sprite_name("default")
         self._set_profile(monkeypatch, "team-prod")
         b = _resolve_sprite_name("default")
+        assert a == "hermes-team-prod-default-2ae4a8"
+        assert b == "hermes-team-prod-default-c4b2de"
         assert a != b
 
     def test_empty_task_id_falls_back(self, monkeypatch):
         from tools.environments.sprites import _resolve_sprite_name
-        self._set_profile(monkeypatch, "default")
+        self._set_profile(monkeypatch, None)
         assert _resolve_sprite_name("") == "hermes-default"
 
     def test_profile_resolution_failure_fails_closed(self, monkeypatch):
-        """A broken profile resolver must not enter the default namespace."""
+        """A broken HOME/path resolver must not enter the default namespace."""
         import pytest
         from tools.environments import sprites as sprites_mod
 
         def _boom():
-            raise RuntimeError("no home")
+            raise OSError("no home")
 
-        monkeypatch.setattr(
-            "agent.file_safety._resolve_active_profile_name", _boom, raising=False
-        )
+        # Break the underlying path resolution the identity is derived from —
+        # the exact failure file_safety's own resolver would swallow into
+        # "default" (the fail-open this guards against).
+        monkeypatch.setattr("agent.file_safety._hermes_home_path", _boom)
         with pytest.raises(RuntimeError, match="refusing to fall back"):
             sprites_mod._resolve_sprite_name("x")
 

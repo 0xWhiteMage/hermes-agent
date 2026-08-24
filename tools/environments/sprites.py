@@ -27,6 +27,11 @@ from tools.environments.file_sync import (
 logger = logging.getLogger(__name__)
 
 
+def _collapse_slug(value: str) -> str:
+    """Plain DNS-safe collapse: lowercase, non-alnum runs become one hyphen."""
+    return re.sub(r"[^a-z0-9]+", "-", (value or "").lower()).strip("-")
+
+
 def _slugify_name_component(value: str) -> str:
     """Reduce an arbitrary string to a Sprite/Fly-safe name component.
 
@@ -35,19 +40,57 @@ def _slugify_name_component(value: str) -> str:
     profile directory or subagent id) is collapsed to a single hyphen.
 
     Because a Sprite name is a durable trust boundary (it selects a live VM,
-    not just a label), the mapping must stay injective: two distinct inputs
-    must never yield the same name. When collapsing is lossy (the slug is not
-    byte-identical to the input), a short hash of the raw value is appended so
-    e.g. the ``team_prod`` and ``team-prod`` profiles get distinct Sprites.
-    Values that are already slug-clean — every name the backend historically
-    produced — are unchanged, so existing Sprites keep resolving.
+    not just a label), lossy collapsing must not merge distinct inputs: when
+    the slug is not byte-identical to the input, a short hash of the raw value
+    is appended so e.g. ``team_prod`` and ``team-prod`` stay distinct. Values
+    that are already slug-clean — every name the backend historically
+    produced — are unchanged, so existing Sprites keep resolving. (A
+    crafted clean value that equals another value's slug+hash output can
+    still impersonate it; within one component this is accepted — task ids
+    are internal, not attacker-supplied across trust domains.)
     """
     raw = value or ""
-    slug = re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")
+    slug = _collapse_slug(raw)
     if slug == raw:
         return slug
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:6]
     return f"{slug}-{digest}" if slug else digest
+
+
+def _resolve_profile_identity() -> str | None:
+    """Raw profile identity for Sprite naming, derived from HERMES_HOME.
+
+    Returns ``None`` for the default profile (``~/.hermes`` or
+    ``~/.hermes/profiles/default``), the profile directory name for a
+    standard named profile, and a unique ``home:<path>`` identity for a
+    custom HERMES_HOME outside the profiles tree — a nonstandard home is
+    its own trust domain and must never silently share the default
+    profile's Sprite.
+
+    Deliberately does NOT use ``file_safety._resolve_active_profile_name``:
+    that helper swallows resolution failures and returns ``"default"``,
+    which for a durable sandbox identity is a fail-open into another trust
+    domain. Here a resolution failure raises instead (fail closed).
+    """
+    try:
+        from agent.file_safety import _hermes_home_path, _hermes_root_path
+        home = _hermes_home_path().resolve()
+        root = _hermes_root_path().resolve()
+    except Exception as e:
+        raise RuntimeError(
+            "Sprites backend could not resolve the active Hermes profile; "
+            f"refusing to fall back to the default profile's Sprite: {e}"
+        ) from e
+    if home == root:
+        return None
+    try:
+        rel = home.relative_to(root / "profiles")
+    except ValueError:
+        return f"home:{home}"
+    name = rel.parts[0] if rel.parts else None
+    if name is None or name == "default":
+        return None
+    return name
 
 
 def _resolve_sprite_name(task_id: str) -> str:
@@ -55,30 +98,33 @@ def _resolve_sprite_name(task_id: str) -> str:
 
     A Sprite is persistent and resumed *by name*, so its name is the durable
     identity of a session's live sandbox (processes, sockets, PID space — not
-    just a filesystem snapshot). We scope the name by the active Hermes profile
-    so two independent profiles never resume into one another's live Sprite,
-    while the same ``(profile, task_id)`` always resumes the same Sprite.
+    just a filesystem snapshot). Naming contract:
 
-    The default profile keeps the historical ``hermes-{task_id}`` name so
-    already-created Sprites keep resolving after this change.
+    - Default profile: ``hermes-{task_slug}`` — byte-compatible with the
+      historical names, so already-created Sprites keep resolving. Clean
+      task ids are verbatim-injective; lossy ones carry a per-component
+      hash (see ``_slugify_name_component``).
+    - Named profile / custom HERMES_HOME: ``hermes-{profile_slug}-
+      {task_slug}-{digest6}`` where the digest covers the raw
+      ``(profile, task_id)`` pair. The digest makes the full identity
+      injective across component boundaries — profile ``a-b`` + task ``c``
+      and profile ``a`` + task ``b-c`` no longer collapse to one name —
+      and across profiles whose display slugs collide.
 
     Profile resolution failure raises rather than falling back: silently
     entering the default profile's durable namespace would put a named
     profile's session inside another trust domain's live VM.
     """
-    try:
-        from agent.file_safety import _resolve_active_profile_name
-        profile = _resolve_active_profile_name()
-    except Exception as e:
-        raise RuntimeError(
-            "Sprites backend could not resolve the active Hermes profile; "
-            f"refusing to fall back to the default profile's Sprite: {e}"
-        ) from e
+    profile_raw = _resolve_profile_identity()
     task_slug = _slugify_name_component(task_id) or "default"
-    profile_slug = _slugify_name_component(profile) if profile else ""
-    if profile_slug and profile_slug != "default":
-        return f"hermes-{profile_slug}-{task_slug}"
-    return f"hermes-{task_slug}"
+    if profile_raw is None:
+        return f"hermes-{task_slug}"
+    profile_slug = _collapse_slug(profile_raw) or "profile"
+    task_display = _collapse_slug(task_id) or "default"
+    digest = hashlib.sha256(
+        f"{profile_raw}\x1f{task_id or ''}".encode("utf-8")
+    ).hexdigest()[:6]
+    return f"hermes-{profile_slug}-{task_display}-{digest}"
 
 
 class SpritesEnvironment(BaseEnvironment):
