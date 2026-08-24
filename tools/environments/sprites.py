@@ -238,11 +238,28 @@ class SpritesEnvironment(BaseEnvironment):
                 self._sprite.name, task_id,
             )
         except NotFoundError:
-            self._sprite = self._client.create_sprite(sprite_name)
-            logger.info(
-                "Sprites: created sprite %s for task %s",
-                self._sprite.name, task_id,
-            )
+            # Cross-process first-use race: two processes can both see 404
+            # here; one create wins and the other gets a duplicate-name
+            # error. Adopt the winner instead of failing — re-GET the exact
+            # deterministic name, and only re-raise the create error if the
+            # Sprite genuinely does not exist (a real create failure, not a
+            # race).
+            try:
+                self._sprite = self._client.create_sprite(sprite_name)
+                logger.info(
+                    "Sprites: created sprite %s for task %s",
+                    self._sprite.name, task_id,
+                )
+            except SpriteError as create_err:
+                try:
+                    self._sprite = self._client.get_sprite(sprite_name)
+                    logger.info(
+                        "Sprites: adopted sprite %s created concurrently "
+                        "by another process (task %s)",
+                        self._sprite.name, task_id,
+                    )
+                except NotFoundError:
+                    raise create_err
 
         # Detect remote home dir for .hermes sync target.
         self._remote_home = "/root"

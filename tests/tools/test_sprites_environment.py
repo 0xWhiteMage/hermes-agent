@@ -184,6 +184,85 @@ class TestConstruction:
         assert kwargs == {}
 
 
+class TestPersistentCreateRace:
+    """Cross-process first-use TOCTOU: GET 404 → CREATE loses to a peer."""
+
+    def test_create_race_adopts_winner(self, make_env):
+        winner = _make_sprite(name="hermes-fresh")
+        gets = iter([_NotFoundError("404"), winner])
+
+        def _get(name):
+            result = next(gets)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        env = make_env(
+            get_side_effect=_get,
+            sprite=winner,
+            task_id="fresh",
+            persistent_filesystem=True,
+        )
+        env._mock_client.create_sprite.side_effect = None
+        # Constructor path: first get 404s, create raises (peer won), re-get
+        # adopts the peer's Sprite.
+        assert env._sprite is winner
+
+    def test_create_race_wiring(self, sprites_sdk, monkeypatch):
+        """Drive the constructor directly: create fails, re-GET adopts."""
+        self._prep(monkeypatch)
+        winner = _make_sprite(name="hermes-fresh")
+        mock_client = MagicMock()
+        gets = iter([_NotFoundError("404"), winner])
+        mock_client.get_sprite.side_effect = (
+            lambda name: (_ for _ in ()).throw(g) if isinstance(g := next(gets), Exception) else g
+        )
+        mock_client.create_sprite.side_effect = _SpriteError("name already exists")
+        sprites_mod, _ = sprites_sdk
+        sprites_mod.SpritesClient = MagicMock(return_value=mock_client)
+
+        from tools.environments.sprites import SpritesEnvironment
+        env = SpritesEnvironment(task_id="fresh", persistent_filesystem=True)
+        assert env._sprite is winner
+        assert mock_client.get_sprite.call_count == 2
+
+    def test_genuine_create_error_not_masked(self, sprites_sdk, monkeypatch):
+        """create fails AND the re-GET still 404s → the create error surfaces."""
+        self._prep(monkeypatch)
+        mock_client = MagicMock()
+        mock_client.get_sprite.side_effect = _NotFoundError("404")
+        mock_client.create_sprite.side_effect = _SpriteError("quota exceeded")
+        sprites_mod, _ = sprites_sdk
+        sprites_mod.SpritesClient = MagicMock(return_value=mock_client)
+
+        from tools.environments.sprites import SpritesEnvironment
+        with pytest.raises(_SpriteError, match="quota exceeded"):
+            SpritesEnvironment(task_id="fresh", persistent_filesystem=True)
+
+    @staticmethod
+    def _prep(monkeypatch):
+        monkeypatch.setenv("SPRITES_TOKEN", "test-token")
+        monkeypatch.setattr(
+            "tools.lazy_deps.ensure", lambda *a, **k: None, raising=False
+        )
+        monkeypatch.setattr(
+            "tools.credential_files.get_credential_file_mounts", lambda: []
+        )
+        monkeypatch.setattr(
+            "tools.credential_files.iter_skills_files", lambda **kw: []
+        )
+        monkeypatch.setattr(
+            "tools.credential_files.iter_cache_files", lambda **kw: []
+        )
+        monkeypatch.setattr(
+            "tools.environments.base.is_interrupted", lambda: False
+        )
+        monkeypatch.setattr(
+            "tools.environments.sprites._resolve_profile_identity",
+            lambda: None,
+        )
+
+
 class TestDeleteFailurePropagates:
     """_sprite_delete must honor FileSyncManager's rollback transaction.
 
