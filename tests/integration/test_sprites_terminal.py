@@ -2,11 +2,16 @@
 
 Requires SPRITES_TOKEN to be set. Run with:
     TERMINAL_ENV=sprites pytest tests/integration/test_sprites_terminal.py -v
+
+SAFETY: every test runs in a run-unique ``hermes-test-…`` Sprite namespace
+(see ``_force_sprites``); the suite can never resume or delete a real
+profile's ``hermes-{profile}-default`` Sprite.
 """
 
 import json
 import os
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -20,7 +25,13 @@ _SPRITES_TOKEN = os.getenv("SPRITES_TOKEN")
 if not _SPRITES_TOKEN:
     pytest.skip("SPRITES_TOKEN not set", allow_module_level=True)
 
-# Import terminal_tool via importlib to avoid tools/__init__.py side effects
+# Import terminal_tool via importlib to avoid tools/__init__.py side effects.
+# IMPORTANT: this creates a module object DISTINCT from `tools.terminal_tool`;
+# every helper and global this file touches (terminal_tool, cleanup_vm,
+# _resolve_container_task_id, _active_environments) must come from THIS
+# module object, or assertions would read a registry the executed code never
+# wrote to. (tools.environments.sprites is imported normally by both, so
+# patching it affects the executed path.)
 import importlib.util
 
 parent_dir = Path(__file__).parent.parent.parent
@@ -34,6 +45,17 @@ spec.loader.exec_module(terminal_module)
 
 terminal_tool = terminal_module.terminal_tool
 cleanup_vm = terminal_module.cleanup_vm
+_resolve_container_task_id = terminal_module._resolve_container_task_id
+_active_environments = terminal_module._active_environments
+
+# One unique Sprite namespace per test run, so parallel/repeated runs don't
+# collide and — critically — the suite never touches a production Sprite name.
+_RUN_ID = uuid.uuid4().hex[:8]
+
+
+def _test_sprite_name(task_id: str) -> str:
+    from tools.environments.sprites import _collapse_slug
+    return f"hermes-test-{_RUN_ID}-{_collapse_slug(task_id) or 'default'}"
 
 
 @pytest.fixture(autouse=True)
@@ -43,6 +65,11 @@ def _force_sprites(monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "sprites")
     # Match the documented "ephemeral test" default — tests clean up after themselves.
     monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "false")
+    # Sandbox every test into the run-unique namespace: without this, task-id
+    # collapse would resume the operator's REAL hermes-{profile}-default
+    # Sprite and the ephemeral teardown would DELETE it (filesystem and all).
+    import tools.environments.sprites as sprites_mod
+    monkeypatch.setattr(sprites_mod, "_resolve_sprite_name", _test_sprite_name)
 
 
 @pytest.fixture()
@@ -55,7 +82,6 @@ def task_id(request):
     """
     tid = f"sprites_test_{request.node.name}"
     yield tid
-    from tools.terminal_tool import _resolve_container_task_id
     cleanup_vm(_resolve_container_task_id(tid))
 
 
@@ -106,14 +132,11 @@ class TestSpritesIdentity:
         assert r["exit_code"] == 0
         if "MISSING" in r["output"]:
             pytest.skip("sprite-env CLI not present inside the Sprite")
-        # Terminal-tool's `_resolve_container_task_id` collapses every
-        # incoming task_id to "default", and the Sprite name is then scoped by
-        # the active Hermes profile via `_resolve_sprite_name` (see the unit
-        # tests in tests/tools/test_sprites_environment.py::TestSpriteNaming).
-        # Assert against the resolved name for whatever profile this run is in,
-        # rather than hard-coding "hermes-default".
-        from tools.environments.sprites import _resolve_sprite_name
-        expected_name = _resolve_sprite_name("default")
+        # `_resolve_container_task_id` collapses every ordinary task_id to
+        # "default", and the suite pins Sprite naming to the run-unique test
+        # namespace (see _force_sprites). Production naming semantics are
+        # covered by tests/tools/test_sprites_environment.py::TestSpriteNaming.
+        expected_name = _test_sprite_name(_resolve_container_task_id(task_id))
         assert expected_name in r["output"]
         # Sanity: the boot_id from inside the Sprite must differ from this
         # process's view (i.e. command did NOT run on the host).
@@ -132,10 +155,10 @@ class TestSpritesPersistence:
         would pop nothing (a vacuous recycle that silently reuses the same
         in-memory env object). Tear down via the collapsed key so the second
         _run genuinely re-creates the environment and resumes the Sprite by
-        name over the API.
+        name over the API. All registry reads use the SAME module object the
+        commands executed through (`terminal_module`, bound at import).
         """
         task = "sprites_test_persist"
-        from tools.terminal_tool import _resolve_container_task_id
         env_key = _resolve_container_task_id(task)
         try:
             os.environ["TERMINAL_CONTAINER_PERSISTENT"] = "true"
@@ -143,7 +166,6 @@ class TestSpritesPersistence:
 
             # Prove the env actually lives under the collapsed key, then
             # recycle it. persistent=true → the Sprite itself stays alive.
-            from tools.terminal_tool import _active_environments
             assert env_key in _active_environments, (
                 f"env registered under {list(_active_environments)}, "
                 f"expected key {env_key!r}"
@@ -160,4 +182,11 @@ class TestSpritesPersistence:
             assert _active_environments.get(env_key) is not first_env
         finally:
             os.environ["TERMINAL_CONTAINER_PERSISTENT"] = "false"
-            cleanup_vm(env_key)  # force-delete on the way out
+            # The live env was constructed while persistence was "true", so
+            # its baked-in _persistent flag would make plain cleanup LEAVE the
+            # test Sprite running (billing forever). Flip the flag on the
+            # object before cleanup so teardown genuinely deletes it.
+            live = _active_environments.get(env_key)
+            if live is not None and hasattr(live, "_persistent"):
+                live._persistent = False
+            cleanup_vm(env_key)
