@@ -595,6 +595,8 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "MODAL_TOKEN_ID",
     "MODAL_TOKEN_SECRET",
     "DAYTONA_API_KEY",
+    "SPRITES_TOKEN",
+    "SPRITE_TOKEN",
 })
 
 

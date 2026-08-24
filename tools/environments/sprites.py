@@ -10,7 +10,6 @@ running when ``persistent_filesystem`` is True; the Sprite is deleted otherwise.
 
 import hashlib
 import logging
-import os
 import re
 import shlex
 import threading
@@ -117,7 +116,8 @@ class SpritesEnvironment(BaseEnvironment):
         self._NotFoundError = NotFoundError
         self._SpriteError = SpriteError
 
-        token = os.getenv("SPRITES_TOKEN") or os.getenv("SPRITE_TOKEN")
+        from agent.secret_scope import get_secret
+        token = get_secret("SPRITES_TOKEN") or get_secret("SPRITE_TOKEN")
         if not token:
             raise ValueError(
                 "Sprites backend requires SPRITES_TOKEN. "

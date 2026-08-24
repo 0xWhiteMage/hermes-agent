@@ -3887,7 +3887,8 @@ def check_terminal_requirements() -> bool:
                     "pip install 'hermes-agent[sprites]'"
                 )
                 return False
-            if not (os.getenv("SPRITES_TOKEN") or os.getenv("SPRITE_TOKEN")):
+            from agent.secret_scope import get_secret
+            if not (get_secret("SPRITES_TOKEN") or get_secret("SPRITE_TOKEN")):
                 logger.error("SPRITES_TOKEN is required for sprites terminal backend")
                 return False
             return True
