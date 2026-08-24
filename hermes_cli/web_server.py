@@ -15388,6 +15388,11 @@ _TERMINAL_BACKENDS: List[Dict[str, str]] = [
         "description": "Run commands in a Daytona cloud sandbox.",
     },
     {
+        "name": "sprites",
+        "label": "Sprites",
+        "description": "Run commands in a Sprite — a stateful cloud sandbox on Fly.io with checkpoint & restore.",
+    },
+    {
         "name": "ssh",
         "label": "SSH",
         "description": "Run commands on a remote host over SSH.",
@@ -15494,6 +15499,24 @@ def _probe_daytona_backend() -> tuple:
     return ("needs_setup", "Set DAYTONA_API_KEY to use the Daytona backend.")
 
 
+def _probe_sprites_backend() -> tuple:
+    import importlib.util as _iu
+
+    if _iu.find_spec("sprites") is None:
+        return (
+            "needs_setup",
+            "sprites-py SDK not installed — pip install 'hermes-agent[sprites]'.",
+        )
+    try:
+        from hermes_cli.config import get_env_value
+
+        if get_env_value("SPRITES_TOKEN") or get_env_value("SPRITE_TOKEN"):
+            return ("ready", "")
+    except Exception:
+        pass
+    return ("needs_setup", "Set SPRITES_TOKEN to use the Sprites backend.")
+
+
 def _probe_terminal_backend(name: str, terminal_cfg: dict) -> tuple:
     """Return ``(status, detail)`` for one backend. Never raises."""
     try:
@@ -15509,6 +15532,8 @@ def _probe_terminal_backend(name: str, terminal_cfg: dict) -> tuple:
             return _probe_modal_backend()
         if name == "daytona":
             return _probe_daytona_backend()
+        if name == "sprites":
+            return _probe_sprites_backend()
         return ("unavailable", f"Unknown backend: {name}")
     except Exception as exc:  # pragma: no cover — belt-and-braces guard
         return ("unavailable", f"Probe failed: {exc}")
