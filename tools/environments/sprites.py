@@ -212,8 +212,11 @@ class SpritesEnvironment(BaseEnvironment):
             shell_cmd = ["bash", "-c", cmd_string]
 
         # The SDK timeout cancels the WebSocket cleanly, so prefer it over
-        # the shell-level ``timeout`` wrapper used by other backends.
-        cmd_timeout = float(timeout) if timeout and timeout > 0 else None
+        # the shell-level ``timeout`` wrapper used by other backends. Never
+        # pass None: the SDK has no kill hook on a running Cmd
+        # (cancel_fn=None below), so an unbounded exec in a persistent VM
+        # could run — and bill — forever. Cap at a generous ceiling instead.
+        cmd_timeout = float(timeout) if timeout and timeout > 0 else 3600.0
 
         def exec_fn() -> tuple[str, int]:
             cmd = sprite.command(*shell_cmd, timeout=cmd_timeout)

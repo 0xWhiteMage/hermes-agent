@@ -451,6 +451,10 @@ OIDC tokens are short-lived and should not be used as the documented deployment 
 
 Runs commands in a [Sprite](https://sprites.dev) — a stateful cloud sandbox on Fly.io, with checkpoint & restore. Sprites persist between sessions by default and are reused by identity: Hermes names them `hermes-{profile}-{task_id}` (just `hermes-{task_id}` on the default profile) and on each session start either resumes the existing Sprite or creates a fresh one. Scoping the name by Hermes profile keeps independent profiles from sharing one live Sprite.
 
+:::info One live Sprite per profile
+Ordinary sessions (and `delegate_task` children) all resolve to the task id `default`, so **every normal session in a profile shares one live Sprite** — typically `hermes-{profile}-default`. That means files, installed packages, environment state, background processes, and the PID space are shared across all of that profile's sessions, and concurrent sessions can interleave in the same VM. This matches the shared-container model of the Docker/Daytona backends, but a Sprite additionally stays *running* across host restarts. If you operate a multi-user gateway or need isolation between workstreams, use separate Hermes profiles — each profile gets its own Sprite.
+:::
+
 ```yaml
 terminal:
   backend: sprites
